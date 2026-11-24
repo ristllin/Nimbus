@@ -1468,6 +1468,34 @@ static void test_the_head_request_carries_the_daemons_effort() {
   TEST_ASSERT_EQUAL_STRING("", plain::headEffortFor("anthropic", "claude-haiku-4-5").c_str());   // it answers 400 to the field
 }
 
+// E2-REP1 (review B, C): a routed head reads the effort of its route's upstream and bare model, as nimbusd
+// does; the summarizer's requests carry the output table's summary (Fold) effort, routed or direct.
+static void test_routed_heads_and_summaries_carry_their_effort() {
+  namespace pr = agent::providers;
+  TEST_ASSERT_EQUAL_STRING("medium", plain::headEffortFor("cumulo", "anthropic/claude-sonnet-5").c_str());
+  TEST_ASSERT_FALSE(plain::headEffortFor("zai", "glm-5.3").empty());
+  TEST_ASSERT_EQUAL_STRING(plain::headEffortFor("zai", "glm-5.3").c_str(), plain::headEffortFor("cumulo", "zai/glm-5.3").c_str());
+  {
+    Device dev;
+    dev.provider = "cumulo";
+    TEST_ASSERT_TRUE(dev.boot("anthropic/claude-sonnet-5").ok());
+    dev.model.push(sp::say("Routed."));
+    TEST_ASSERT_TRUE(dev.say("hello").ok());
+    TEST_ASSERT_TRUE_MESSAGE(has(dev.model.last().body, "\"effort\":\"medium\""), dev.model.last().body.c_str());
+  }
+  const std::string fold = plain::headEffortFor("anthropic", "claude-haiku-5-5", pr::RoundKind::Fold);
+  TEST_ASSERT_FALSE(fold.empty());
+  Device dev;
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  for (int i = 0; i < 9; ++i) {
+    dev.model.push(sp::say("Reply " + std::to_string(i) + "."));
+    TEST_ASSERT_TRUE(dev.say("Message " + std::to_string(i) + " about the garden.").ok());
+  }
+  dev.model.push(sp::say("+F The person talks about the garden."));
+  TEST_ASSERT_TRUE(dev.binding->compactNow().ok());
+  TEST_ASSERT_TRUE_MESSAGE(has(dev.model.last().body, "\"effort\":\"" + fold + "\""), dev.model.last().body.c_str());
+}
+
 // D1: a routine's refused key parks the head too, but its line never reached the person, so the owner's
 // next message gets engine 1's whole notice (the episode's one notice), then the short answer, then nothing.
 static void test_a_routines_refusal_parks_and_leaves_the_notice_to_the_owner() {
@@ -2236,8 +2264,9 @@ static void test_the_custom_verify_reads_the_window_and_the_tool_probe() {
   plain::HeadSlot h;
   TEST_ASSERT_TRUE(plain::headSlotFor(s, "custom", "qwen3-32b", h).ok());
   const std::string list = R"({"data":[{"id":"qwen3-32b","max_model_len":32768}]})";
-  auto run = [&h](sp::ScriptedProvider& model, bool messagesConv) {
-    return plain::customVerify(h, "sk-fake-local", messagesConv, [&model](const agent::HttpRequest& req, std::string& body) {
+  std::string key;   // a LAN endpoint with no key (a key never rides http://: below)
+  auto run = [&h, &key](sp::ScriptedProvider& model, bool messagesConv) {
+    return plain::customVerify(h, key, messagesConv, [&model](const agent::HttpRequest& req, std::string& body) {
       agent::HttpResponse r;
       std::string err;
       (void)model.exec(req, r, err);
@@ -2276,12 +2305,41 @@ static void test_the_custom_verify_reads_the_window_and_the_tool_probe() {
       TEST_ASSERT_EQUAL(2, (int)model.requests().size());
     }
   }
-  {   // a Messages endpoint keeps its tools: no probe
+  {   // E2-REP1 (review E): an http:// base with a key sends nothing; the verify is refused, its cause named
+    key = "sk-fake-local";
+    sp::ScriptedProvider model(sp::Dialect::Chat);
+    const plain::CustomVerify v = run(model, false);
+    TEST_ASSERT_EQUAL(0, v.result);
+    TEST_ASSERT_TRUE(v.cleartextKey);
+    TEST_ASSERT_EQUAL(0, (int)model.requests().size());
+  }
+  s.customBase = "https://llm.example.test/v1";
+  TEST_ASSERT_TRUE(plain::headSlotFor(s, "custom", "qwen3-32b", h).ok());
+  {   // over TLS the chat endpoint gets the key as Bearer
     sp::ScriptedProvider model(sp::Dialect::Chat);
     model.push(sp::raw(200, list));
+    model.push(sp::call(plain::texts::probe::kToolProbeName));
+    TEST_ASSERT_TRUE(run(model, false).tools);
+    for (const sp::Recorded& r : model.requests()) {
+      bool bearer = false;
+      for (const auto& hd : r.req.headers) bearer |= hd.first == "Authorization";
+      TEST_ASSERT_TRUE(bearer);
+    }
+  }
+  {   // a Messages endpoint keeps its tools: no probe; its own headers, its max_input_tokens window
+    sp::ScriptedProvider model(sp::Dialect::Chat);
+    model.push(sp::raw(200, R"({"data":[{"id":"qwen3-32b","max_input_tokens":200000}]})"));
     const plain::CustomVerify v = run(model, true);
     TEST_ASSERT_EQUAL(1, v.result);
+    TEST_ASSERT_EQUAL(200000u, v.window);
     TEST_ASSERT_EQUAL(1, (int)model.requests().size());
+    bool version = false, apiKey = false, bearer = false;
+    for (const auto& hd : model.last().req.headers) {
+      version |= hd.first == "anthropic-version";
+      apiKey |= hd.first == "x-api-key";
+      bearer |= hd.first == "Authorization";
+    }
+    TEST_ASSERT_TRUE(version && apiKey && !bearer);
   }
   {   // a refused key; then no answer at all
     sp::ScriptedProvider model(sp::Dialect::Chat);
@@ -2331,6 +2389,7 @@ int main(int, char**) {
   RUN_TEST(test_a_reply_the_outbound_screen_blocks_sends_nothing);
   RUN_TEST(test_a_flagged_member_message_starts_no_turn);
   RUN_TEST(test_the_head_request_carries_the_daemons_effort);
+  RUN_TEST(test_routed_heads_and_summaries_carry_their_effort);
   RUN_TEST(test_a_routines_refusal_parks_and_leaves_the_notice_to_the_owner);
   RUN_TEST(test_a_withheld_routine_note_is_not_retried);
   RUN_TEST(test_a_kept_messages_turn_is_refused_by_a_parked_provider_with_the_same_line);

@@ -1037,13 +1037,16 @@ class ChatBinding {
     c.omittedThru = [this] { return engine_ ? engine_->omittedThru() : uint64_t(0); };
     c.rungs = [this](std::vector<SummarizerRung>& out) {
       out = cfg_.summarizers;
-      if (!out.empty()) return;
-      SummarizerRung r;
-      r.endpoint = endpoint();
-      r.host = cfg_.provider;
-      r.model = cfg_.summarizerModel.empty() ? cfg_.model : cfg_.summarizerModel;
-      r.dialect = slotDialect(cfg_.provider, r.model, cfg_.dialect);
-      out.push_back(r);
+      if (out.empty()) {
+        SummarizerRung r;
+        r.endpoint = endpoint();
+        r.host = cfg_.provider;
+        r.model = cfg_.summarizerModel.empty() ? cfg_.model : cfg_.summarizerModel;
+        r.dialect = slotDialect(cfg_.provider, r.model, cfg_.dialect);
+        out.push_back(r);
+      }
+      // E2-REP1: each rung's effort from the output table's summary (Fold) row, as engine 1 sends it.
+      for (SummarizerRung& r : out) r.endpoint.effort = headEffortFor(r.host, r.model, providers::RoundKind::Fold);
     };
     c.jobRunning = [](uint32_t) { return false; };   // no agent jobs on engine 2 yet
     c.park = [this](const SummarizerRung&) { say("e2: compaction rung refused its key or credit"); };

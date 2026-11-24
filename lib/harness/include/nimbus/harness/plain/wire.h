@@ -8,6 +8,7 @@
 #include "nimbus/harness/http.h"
 #include "nimbus/harness/output_caps.h"   // tableCap: the head's effort (E2-FIX14)
 #include "nimbus/harness/plain/turn.h"
+#include "nimbus/orch/router_route.h"   // resolveRouterRoute: a routed slot's effort (E2-REP1)
 #include "nimbus/orch/token_usage.h"
 #include "nimbus/orch/tx/rules.h"   // BoundTools (E2-FIX5)
 
@@ -67,8 +68,14 @@ struct HeadEndpoint {
 // table's head-round value (providers::tableCap, the one table engine 1's head rounds read: medium on a
 // Claude family that takes the field, nothing on one that answers 400 to it). The device's binding and
 // nimbusd's engine 2 both read it, so the same model gets the same effort from either.
-inline std::string headEffortFor(const std::string& provider, const std::string& model) {
-  return providers::tableCap(provider, model, providers::RoundKind::ToolRound).effort;
+// E2-REP1: a routed slot ("cumulo") reads the row of its route's upstream and bare model (as nimbusd
+// does), so a routed head, fall-back or summarizer gets the effort its upstream takes. `kind`: the
+// summarizer's requests read the Fold row.
+inline std::string headEffortFor(const std::string& provider, const std::string& model,
+                                 providers::RoundKind kind = providers::RoundKind::ToolRound) {
+  if (provider != "cumulo") return providers::tableCap(provider, model, kind).effort;
+  const nimbus::orch::RouterRoute r = nimbus::orch::resolveRouterRoute(model);
+  return providers::tableCap(r.upstream, r.model, kind).effort;
 }
 
 // A tier-2 payload shown whole, read back by the r item's handle at render time (lane E2-VERB:
