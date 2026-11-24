@@ -77,10 +77,14 @@ struct Tools {
 
   // agent_start's arguments as a spawn on this binding's backend; false when one is not valid.
   bool spawnOf(ArduinoJson::JsonObjectConst a, orch::Spawn& s) const {
-    if (!onlyKeys(a, {"name", "task", "files", "model"})) return false;
+    if (!onlyKeys(a, {"name", "task", "files", "model", "connector"})) return false;
     s.name = str(a, "name");
     s.task = str(a, "task");
     s.model = str(a, "model");
+    // A connector of the owner's the task needs: engine 1's spawn skill, so the JobEngine runs the job on
+    // the connector's provider (a Mistral Studio connector: a Mistral sub on Conversations, which attaches
+    // it) under engine 1's refusals (keyless, router, someone else's turn). Lane E2-REP5, PC-0275.
+    s.skill = str(a, "connector");
     s.provider = d.backend;
     s.category = "research";
     s.project = kAgentsProject;

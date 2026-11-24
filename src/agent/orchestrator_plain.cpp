@@ -1690,6 +1690,8 @@ void jobModelDeps(JobEngine::Deps& d) {
   d.providerHasKey = [](const std::string& p) { return store::providerHasKey(String(p.c_str())); };
   d.overBudget = [](const std::string& p) { return store::providerOverBudget(String(p.c_str())); };
   d.subModel = [](const std::string& p) { return std::string(store::subModel(String(p.c_str())).c_str()); };
+  // A job naming a connector runs on its provider (engine 1's spawn skill routing, E2-REP5 PC-0275).
+  d.connectorProvider = [](const std::string& skill) { return connectors::providerForName(skill); };
   d.modelIsValid = [](const std::string& p, const std::string& m) {
     return store::modelSelectable(String(p.c_str()), String(m.c_str()), nimbus::orch::PickRole::Any);
   };

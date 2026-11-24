@@ -143,7 +143,7 @@ inline constexpr ToolDecl kTools[] = {
     {"agent_start",
      "Start a sub-agent job on a task; it works in the background and its report arrives as a later message. "
      "Returns its id.",
-     R"({"type":"object","properties":{"name":{"type":"string"},"task":{"type":"string"},"files":{"type":"array","items":{"type":"string"}},"model":{"type":"string"}},"required":["name","task"]})",
+     R"({"type":"object","properties":{"name":{"type":"string"},"task":{"type":"string"},"files":{"type":"array","items":{"type":"string"}},"model":{"type":"string"},"connector":{"type":"string"}},"required":["name","task"]})",
      nullptr},
     // The same bytes as RB-N4's kMoreDescription and kMoreSchema (test_plain_request).
     {"more", "List a group's tools with their arguments (group), or call one (name, args).",

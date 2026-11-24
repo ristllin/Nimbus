@@ -7,7 +7,7 @@
 # class tool_results bytes=8951 ceiling=9216 entries=635 sha8=ffa17b15
 # class probe bytes=1344 ceiling=1536 entries=6 sha8=f4dd133a
 # class summarizer bytes=1021 ceiling=1024 entries=17 sha8=a9622cfe
-# class tool_descriptions bytes=10225 ceiling=10240 entries=121 sha8=7967b1d2
+# class tool_descriptions bytes=10255 ceiling=10240 entries=121 sha8=3e8cdb20
 core	lib/core/include/nimbus/orch/tx/digest.h	45822f54	2	": "
 core	lib/core/include/nimbus/orch/tx/digest.h	4f5a2ada	2	" ("
 core	lib/core/include/nimbus/orch/tx/digest.h	ba5ec51d	1	")"
@@ -838,7 +838,7 @@ tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	3c417204	75	"
 tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	158e528b	105	"{\"type\":\"object\",\"properties\":{\"expression\":{\"type\":\"string\",\"maxLength\":256}},\"required\":[\"expression\"]}"
 tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	bf8512bb	11	"agent_start"
 tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	6f8d2c1e	118	"Start a sub-agent job on a task; it works in the background and its report arrives as a later message. Returns its id."
-tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	199059ac	186	"{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"task\":{\"type\":\"string\"},\"files\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"model\":{\"type\":\"string\"}},\"required\":[\"name\",\"task\"]}"
+tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	ba2cd56d	216	"{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"task\":{\"type\":\"string\"},\"files\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"model\":{\"type\":\"string\"},\"connector\":{\"type\":\"string\"}},\"required\":[\"name\",\"task\"]}"
 tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	187897ce	4	"more"
 tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	def3a27e	76	"List a group's tools with their arguments (group), or call one (name, args)."
 tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	6995d4ba	108	"{\"type\":\"object\",\"properties\":{\"group\":{\"type\":\"string\"},\"name\":{\"type\":\"string\"},\"args\":{\"type\":\"object\"}}}"

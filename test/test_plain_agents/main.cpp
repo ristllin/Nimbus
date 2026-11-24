@@ -132,6 +132,7 @@ struct Kept {
   std::map<std::string, std::string> saved;   // the reports the file store kept (path -> text)
   std::string priority = "anthropic";          // the owner's sub-agent order (store::subPriority)
   std::set<std::string> keys{"anthropic"};     // the providers with a key
+  std::map<std::string, std::string> connectors;   // the owner's enabled connectors: name -> provider
 };
 
 // One boot of the device: platform, head, binding, registry, journal and job engine, wired the way
@@ -156,6 +157,10 @@ struct Device {
     j.deliver = [this](const std::string& c, const std::string& t) { delivered.push_back(c + "|" + t); };
     j.subPriority = [this] { return kept.priority; };
     j.providerHasKey = [this](const std::string& p) { return kept.keys.count(p) > 0; };
+    j.connectorProvider = [this](const std::string& skill) {   // orchestrator_plain.cpp jobModelDeps
+      auto it = kept.connectors.find(skill);
+      return it == kept.connectors.end() ? std::string() : it->second;
+    };
     j.readDoc = [this](const std::string&, const std::string& prj, const std::string& name) {
       auto it = kept.saved.find(prj + "/" + name);
       return it == kept.saved.end() ? std::string() : it->second;
@@ -435,6 +440,25 @@ static void test_a_job_runs_on_the_first_provider_of_the_order() {
   TEST_ASSERT_TRUE_MESSAGE(has(listed.output, "scan (job0000, openai/"), listed.output.c_str());
 }
 
+// E2-REP5 (PC-0275): a Mistral head reaches the owner's Mistral Studio connector through a job, as on
+// engine 1 (chat completions carries no provider tool): a job naming the connector runs on its provider,
+// a Mistral sub on Conversations that attaches it, even with another provider first in the order.
+static void test_a_job_naming_a_connector_runs_on_its_provider() {
+  Kept kept;
+  kept.priority = "anthropic,mistral";
+  kept.keys = {"anthropic", "mistral"};
+  kept.connectors = {{"gmail", "mistral"}};
+  kept.adapter.backend = "mistral";
+  kept.adapter.pollScript = {agent::JobState::Running};
+  Device dev(kept);
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  const orch::ToolResult started =
+      dev.call("agent_start", R"({"name":"mail","task":"list today's unread mail","connector":"gmail"})");
+  TEST_ASSERT_TRUE_MESSAGE(started.success, started.error.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(has(started.output, "job=mistral:job-1"), started.output.c_str());
+  TEST_ASSERT_EQUAL(1, (int)kept.adapter.dispatched.size());
+}
+
 // E2-P-SUB2 D2: the job finished and its report was parked while a turn ran; the device restarted
 // before the report turn. After the boot the report (read back whole from its saved file) is a
 // report turn of the chat, and a further restart does not report it again.
@@ -514,6 +538,7 @@ int main(int, char**) {
   RUN_TEST(test_a_report_during_a_turn_is_kept_not_lost);
   RUN_TEST(test_a_job_open_at_restart_reports_after_it);
   RUN_TEST(test_a_job_runs_on_the_first_provider_of_the_order);
+  RUN_TEST(test_a_job_naming_a_connector_runs_on_its_provider);
   RUN_TEST(test_a_report_waiting_at_restart_comes_after_the_boot);
   RUN_TEST(test_a_failed_job_is_a_report_turn);
   RUN_TEST(test_a_queued_job_stops);

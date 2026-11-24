@@ -1585,3 +1585,12 @@ PC-0175, PC-0176: not used.
 - lane: E2-REP4
 - prd: section 5 (photos), ROUTER-DESIGN.md section 7 (the table's image limits), ruling 116, AGENTS.md rule 9
 - why: lib/core/include/nimbus/orch/tx/photo_text.h kPhotoOverLimit, the third end of tx::photoAbsentLine. The planner (plain_plan.cpp rowTakes) now reads the model row's imagesMax, imageFormats and imageMaxKiB: a photo past the row's count (the open turn's own first, then the earlier ones newest first), in a format the row does not take, or larger than its size renders as "[photo p<ref> <when>: <description>; over the model limit]" instead of pixels, so a ten-photo album to a row that takes eight (Mistral Small and Medium) is no longer refused by the provider (review F3, analysis-2026-11-24/review-provider-wires.md). Red scenario: test_plain_conformance test_an_album_past_the_rows_photo_count_sends_the_rest_as_lines (ten image parts before the fix). PC-0274: not used.
+### PC-0275: agent_start names the owner's connector the job needs, so a chat head reaches a provider-run connector through a sub-agent (engine 2 catalog)
+- catalog: e2
+- class: tool_descriptions
+- kind: spec
+- bytes: 10139 -> 10169
+- sha8: df1e7e66 -> db3090eb
+- lane: RB-R4 (lane E2-REP5; the router leftovers file their entries under RB-R4 as PC-0257 did)
+- prd: PRD section 6 (sub-agents on engine 2) and the capability matrix row of the chat codec (no provider connectors on a chat-completions head); AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h agent_start schema gains the optional string "connector". Engine 1's Mistral head runs its tool loop on chat completions with no connector, and reaches the owner's Mistral Studio connectors through a sub-agent whose spawn names the connector as its skill: the JobEngine runs it on the connector's provider, a Mistral sub on the Conversations API that attaches the connectors (connectors_wire.h:20-30, mistral.cpp mistralDispatch). plain_agents.cpp maps the argument to that skill and orchestrator_plain.cpp wires JobEngine::Deps::connectorProvider, so engine 2 does the same under engine 1's refusals. Planned work, not a fix (CUM-1005).

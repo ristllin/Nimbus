@@ -1,10 +1,10 @@
 # Engine-2 request composition on the synthetic Lumi-state fixture (test/test_plain_request).
 # Generated: GOLDEN_UPDATE=1 pio test -e native -f test_plain_request; do not edit.
 # Gate: tools/release_gate/check_plain_ceilings.py.
-measure role=owner host=120s core=1644 index=455 notes=5075 system=6721 digests=6723 tools=14 tools_bytes=5259 longest_description=237
-measure role=owner host=60s core=1644 index=455 notes=5075 system=6721 digests=6723 tools=14 tools_bytes=5258 longest_description=237
-measure role=member host=120s core=1693 index=477 notes=1038 system=2733 digests=6723 tools=14 tools_bytes=5259 longest_description=237
-measure role=member host=60s core=1693 index=477 notes=1038 system=2733 digests=6723 tools=14 tools_bytes=5258 longest_description=237
+measure role=owner host=120s core=1644 index=455 notes=5075 system=6721 digests=6723 tools=14 tools_bytes=5289 longest_description=237
+measure role=owner host=60s core=1644 index=455 notes=5075 system=6721 digests=6723 tools=14 tools_bytes=5288 longest_description=237
+measure role=member host=120s core=1693 index=477 notes=1038 system=2733 digests=6723 tools=14 tools_bytes=5289 longest_description=237
+measure role=member host=60s core=1693 index=477 notes=1038 system=2733 digests=6723 tools=14 tools_bytes=5288 longest_description=237
 measure role=guest host=120s core=1416 index=250 notes=1038 system=2456 digests=6723 tools=7 tools_bytes=2195 longest_description=237
 measure role=guest host=60s core=1416 index=250 notes=1038 system=2456 digests=6723 tools=7 tools_bytes=2195 longest_description=237
 == core (owner, 120s, claude-sonnet-5-5, Europe/London)
@@ -64,7 +64,7 @@ skills/skill-6.md: when the person p
   {"type":"object","properties":{"op":{"type":"string","enum":["create","update","delete","list"]},"kind":{"type":"string","enum":["reminder","routine","wakeup"]},"id":{"type":"string"},"when":{"type":"string"},"text":{"type":"string"},"every":{"type":"string","description":"routine cadence, e.g. daily 07:00"}},"required":["op"]}
 75 105 calc: Exact decimal arithmetic on one expression: + - * / ( ), 15% of 80, 80+15%.
   {"type":"object","properties":{"expression":{"type":"string","maxLength":256}},"required":["expression"]}
-118 186 agent_start: Start a sub-agent job on a task; it works in the background and its report arrives as a later message. Returns its id.
-  {"type":"object","properties":{"name":{"type":"string"},"task":{"type":"string"},"files":{"type":"array","items":{"type":"string"}},"model":{"type":"string"}},"required":["name","task"]}
+118 216 agent_start: Start a sub-agent job on a task; it works in the background and its report arrives as a later message. Returns its id.
+  {"type":"object","properties":{"name":{"type":"string"},"task":{"type":"string"},"files":{"type":"array","items":{"type":"string"}},"model":{"type":"string"},"connector":{"type":"string"}},"required":["name","task"]}
 76 108 more: List a group's tools with their arguments (group), or call one (name, args).
   {"type":"object","properties":{"group":{"type":"string"},"name":{"type":"string"},"args":{"type":"object"}}}
