@@ -2435,7 +2435,9 @@ Status reopenChat(const EngineDeps& deps, PlainEngine::ChatState& c) {
   }
   const std::string memoryLine = c.memoryLine;
   tx::RecentFilesBlock recent = c.recent;
-  if (h.refusedPhotos.empty()) h.refusedPhotos = c.head.refusedPhotos;   // E2-REP4: refused in RAM, kept
+  for (const std::string& ref : c.head.refusedPhotos)   // E2-REP4: refused in RAM, kept (bounded, oldest out)
+    if (std::find(h.refusedPhotos.begin(), h.refusedPhotos.end(), ref) == h.refusedPhotos.end()) h.refusedPhotos.push_back(ref);
+  while (h.refusedPhotos.size() > tx::kHeadMaxRefusedPhotos) h.refusedPhotos.erase(h.refusedPhotos.begin());
   c = PlainEngine::ChatState{};   // afterRestart: the next turn opens cold over the whole conversation
   c.memoryLine = memoryLine;
   c.recent = recent;
