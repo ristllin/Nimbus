@@ -55,6 +55,14 @@ repos:
         pass_filenames: false
         files: '^(tools/router_contract/|test/test_router_refusal_contract/)'
 
+      - id: model-caps-fresh
+        name: router caps table lints clean and matches its generator (tools/model_caps/gen_caps.py)
+        entry: python3 tools/model_caps/gen_caps.py --check
+        language: system
+        pass_filenames: false
+        # Every compiled-in model id must have a row, so any source that can hold one triggers it.
+        files: '^(tools/model_caps/|tools/model_id_|lib/core/|lib/harness/|src/|include/|nimbusd/src/|nimbusd/scenarios/|tools/harness-lab/src/)'
+
       - id: docs-pack-fresh
         name: docs pack header matches its generator
         entry: python3 tools/gen_docs_pack.py --check

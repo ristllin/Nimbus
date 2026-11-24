@@ -659,7 +659,7 @@ def main(argv=None) -> int:
             print(line)
     if args.check:
         if not OUT.exists() or OUT.read_text() != text:
-            print(f"FAIL {OUT.relative_to(REPO)} is stale: run python3 tools/model_caps/gen_caps.py")
+            print(f"FAIL {OUT} is stale: run python3 tools/model_caps/gen_caps.py")
             return 1
     else:
         OUT.write_text(text)
