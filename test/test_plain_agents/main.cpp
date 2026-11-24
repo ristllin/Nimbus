@@ -577,6 +577,30 @@ static void test_a_restart_after_a_report_turn_does_not_report_it_twice() {
   TEST_ASSERT_EQUAL(0, (int)again.model.requests().size());
 }
 
+// E2-REP6 (review F7): a job that failed and was still unreported at a restart is reported as failed,
+// never as a result lost at the restart.
+static void test_a_failed_job_waiting_at_restart_is_reported_as_failed() {
+  Kept kept;
+  kept.adapter.pollScript = {agent::JobState::Error};
+  {
+    Device before(kept);
+    TEST_ASSERT_TRUE(before.boot().ok());
+    TEST_ASSERT_TRUE(before.call("agent_start", R"({"name":"fetch","task":"fetch the page"})").success);
+    before.inTurn = true;   // a person's turn runs: the failure waits in RAM
+    before.pumps(3, 1000);
+    TEST_ASSERT_EQUAL(0, before.reportsRun);
+  }
+  Device after(kept);
+  TEST_ASSERT_TRUE(after.boot().ok());
+  after.model.push(sp::say("The fetch job failed."));
+  after.pumps(2, 1000);
+  TEST_ASSERT_EQUAL(1, after.reportsRun);
+  const std::string body = after.model.last().body;
+  TEST_ASSERT_TRUE_MESSAGE(has(body, "[agent report] fetch id=job0000 failed"), body.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(has(body, "Job [fetch] failed: unknown error"), body.c_str());
+  TEST_ASSERT_FALSE_MESSAGE(has(body, "was lost when the device restarted"), body.c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_the_report_path_is_agents_id_name);
@@ -590,5 +614,6 @@ int main(int, char**) {
   RUN_TEST(test_a_failed_job_is_a_report_turn);
   RUN_TEST(test_a_queued_job_stops);
   RUN_TEST(test_a_restart_after_a_report_turn_does_not_report_it_twice);
+  RUN_TEST(test_a_failed_job_waiting_at_restart_is_reported_as_failed);
   return UNITY_END();
 }

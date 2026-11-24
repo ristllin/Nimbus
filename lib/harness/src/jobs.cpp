@@ -114,6 +114,13 @@ static std::string lostAtRestartLine(const std::string& label) {
   return std::string("The result of [") + label + "] was lost when the device restarted, so it will not arrive.";
 }
 
+// A job that ended in an error, and why (kUnknownError when its reason is not known: the provider
+// gave none, or a restart left it unreported and its reason was not kept: E2-REP6).
+static constexpr char kUnknownError[] = "unknown error";
+static std::string failedLine(const std::string& label, const char* why) {
+  return std::string("Job [") + label + "] failed: " + why;
+}
+
 // The owner's reply when a spawn's dispatch fails: what happened, then the one
 // next step (subagents F3). The switch names every FabricErr with no default,
 // so a new error class fails the build's -Wswitch until it has its own words.
@@ -2002,10 +2009,9 @@ int JobEngine::pump() {
       // results (the final report says which subs failed) instead of pinging
       // the owner mid-run - 50 subs must not mean up to 50 failure messages.
       // A failure with nothing else live IS the final report: deliver as before.
-      const std::string failText = std::string("Job [") + jobLabel(rec) + "] failed: " +
-              (env_ref().error[0] ? env_ref().error : "unknown error");
-      ledgerFinished(rec.tag, LedgerState::Failed, env_ref().error[0] ? env_ref().error : "unknown error",
-                     env_ref().toolNames);
+      const char* why = env_ref().error[0] ? env_ref().error : kUnknownError;
+      const std::string failText = failedLine(jobLabel(rec), why);
+      ledgerFinished(rec.tag, LedgerState::Failed, why, env_ref().toolNames);
       // Engine 2 (E2-P-SUB2): always parked, so it reaches the person as a report turn.
       if (d_.reportTurns || activeCount() > 1 || !pending_.empty()) {   // >1: this job still counts
         parkFailure(rec.tag, jobLabel(rec), rec.chatId, failText);
@@ -2379,8 +2385,8 @@ void JobEngine::restoreUnreported() {
     const char* slash = std::strchr(w.artifact, '/');
     if (!w.failed && slash && d_.readDoc)
       text = d_.readDoc(w.chatId, std::string(w.artifact, (size_t)(slash - w.artifact)), std::string(slash + 1));
-    if (text.empty()) {   // a failure, or a result whose file cannot be read: its words did not survive
-      parkFailure(w.tag, label, w.chatId, lostAtRestartLine(label));
+    if (text.empty()) {   // a failure (said as one: E2-REP6), or a result whose file cannot be read
+      parkFailure(w.tag, label, w.chatId, w.failed ? failedLine(label, kUnknownError) : lostAtRestartLine(label));
     } else {
       addFreshResult(w.tag, label.c_str(), text, nimbus::orch::nsForChat(w.chatId, /*admin=*/false));
       fresh_.back().saved.push_back(w.artifact);

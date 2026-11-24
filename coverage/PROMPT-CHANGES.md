@@ -1603,3 +1603,12 @@ PC-0175, PC-0176: not used.
 - lane: RB-N2b (lane E2-REP3: the hosted daemon's engine-2 binding, RB-N2b's first one, finished)
 - prd: PRD section 4 (the docs and device groups behind more); lane E2-P-HOST2 "Found, not fixed" (docs tools and device.status ran on engine 1 only on nimbusd); AGENTS.md rule 9
 - why: nimbusd/src/hosted_e2_device.h. The hosted engine-2 registrations of docs.search, docs.read (engine 1's hosted handlers, called through its registry, no new text), docs.list (the docs pack's index as JSON) and device.status (the instance's state as JSON): only registry names and JSON keys, no sentence. The declarations are the device's (plain/texts.h, unchanged). Planned work, not a fix (CUM-1010).
+### PC-0277: a failed job a restart left unreported is reported as failed (engine 1 catalog)
+- catalog: e1
+- class: device_notes
+- kind: remove
+- bytes: 54655 -> 54642
+- sha8: bace59ab -> e80baae6
+- lane: E2-REP6
+- prd: review 2026-11-24 storage-history F7; rulings 115, 116 (every failure has a true line); AGENTS.md rule 9
+- why: lib/harness/src/jobs.cpp. restoreUnreported parked the lost-result line ("The result of [<job>] was lost when the device restarted, so it will not arrive.") for a job that had failed, so the model told the person a result was lost when the job had failed. A failed entry now gets the existing failure line, "Job [<job>] failed: unknown error" (its reason is not kept across a restart). No new sentence: the failure line folds into one helper (failedLine) and its two "unknown error" literals into one constant, so the class shrinks by 13 B (CUM-1006).

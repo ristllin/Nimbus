@@ -2,7 +2,7 @@
 # Regenerate with --write. Gate: tools/release_gate/check_no_prompt_patch.py (coverage/PROMPT-CHANGES.md).
 # One entry per line: class, source, sha8, bytes, the text as a JSON string.
 # class system bytes=43781 ceiling=47989 entries=411 sha8=035ecd2c
-# class device_notes bytes=54655 ceiling=54203 entries=1466 sha8=bace59ab
+# class device_notes bytes=54642 ceiling=54203 entries=1465 sha8=e80baae6
 # class tool_descriptions bytes=21789 ceiling=23131 entries=99 sha8=62a30ab5
 # class tool_results bytes=34918 ceiling=41962 entries=1059 sha8=702310bb
 # class side_prompts bytes=7395 ceiling=9795 entries=117 sha8=68383f73
@@ -1110,6 +1110,9 @@ device_notes	lib/harness/src/engine_fold.cpp	01cae4f8	21	" of 5 sections for a "
 device_notes	lib/harness/src/engine_fold.cpp	b45fb4bd	9	" B digest"
 device_notes	lib/harness/src/jobs.cpp	08dba534	15	"The result of ["
 device_notes	lib/harness/src/jobs.cpp	85412f78	60	"] was lost when the device restarted, so it will not arrive."
+device_notes	lib/harness/src/jobs.cpp	3e4443e5	13	"unknown error"
+device_notes	lib/harness/src/jobs.cpp	406a89da	5	"Job ["
+device_notes	lib/harness/src/jobs.cpp	6bb3d025	10	"] failed: "
 device_notes	lib/harness/src/jobs.cpp	dd846b7f	29	"Couldn't start that agent on "
 device_notes	lib/harness/src/jobs.cpp	e89d387c	13	"The agent on "
 device_notes	lib/harness/src/jobs.cpp	49ea5bc4	115	" didn't respond in time - it may have run without me getting its result. Try a smaller task or split it into steps."
@@ -1256,10 +1259,6 @@ device_notes	lib/harness/src/jobs.cpp	a59c04d9	64	" for 15 minutes - giving up o
 device_notes	lib/harness/src/jobs.cpp	d724c3be	80	" to stop it and has counted it at an estimate, so it cannot keep billing unseen."
 device_notes	lib/harness/src/jobs.cpp	34f07441	12	"lost contact"
 device_notes	lib/harness/src/jobs.cpp	184401ef	39	"its provider stopped answering about it"
-device_notes	lib/harness/src/jobs.cpp	406a89da	5	"Job ["
-device_notes	lib/harness/src/jobs.cpp	6bb3d025	10	"] failed: "
-device_notes	lib/harness/src/jobs.cpp	3e4443e5	13	"unknown error"
-device_notes	lib/harness/src/jobs.cpp	3e4443e5	13	"unknown error"
 device_notes	lib/harness/src/jobs.cpp	be2b8de7	10	"QW4-STOP 1"
 device_notes	lib/harness/src/jobs.cpp	f6e91333	26	"I could not confirm that ["
 device_notes	lib/harness/src/jobs.cpp	4c3f441d	91	"] stopped within a day. It is counted at an estimate, and its result will not be delivered."
