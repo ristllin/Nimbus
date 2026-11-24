@@ -1308,3 +1308,13 @@ PC-0175, PC-0176: not used.
 - lane: E2-FIX11
 - prd: section 8.9 (the closed list of harness-written lines), ruling 116, AGENTS.md rule 9
 - why: lib/harness/include/nimbus/harness/plain/texts.h kReasonSep, the two bytes ": " between "refused the request (HTTP n)" and the provider's own message in the owner's status line (plain_exchange.cpp exchangeLine). The line goes to the person only: every kept copy (the chat's history row, which an older engine puts into a prompt) is the line without the reason (ExchangeResult::errorLineStored, TurnOutcome::statusStored), so no text a model reads changes. The reason is reduced in code to printable ASCII on one line, with the characters Telegram's and the web chat's Markdown read as markup replaced, and is dropped whole when it looks like a key; no catalogued text was added for that.
+
+### PC-0225: how to work asks for tools when asked, and promises nothing unscheduled, instead of inviting acts (engine 2)
+- catalog: e2
+- class: core
+- kind: build
+- bytes: 1686 -> 1674
+- sha8: e3d00845 -> a5a17e0d
+- lane: E2-FIX16
+- prd: section 4 (System prompt, how to work), AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h core::kHowToWork opens "when asked for something a tool can do, do it in this reply" instead of "act with your tools in this reply; when asked for something a tool can do, do it now", and core::kNoLater "There is no later unless you schedule it." becomes "Promise nothing for later that you have not scheduled." The old opener told the head to act with tools in every reply, and the no-later line read as a cue to save or schedule now: in the head-to-head of 902391f7f (lanes/E2-H2H, long-chat, where the person says "No need to comment on it, just say you have it") Sonnet wrote 22 journal files in 2 of 3 runs (0.45 USD a run against 0.14 USD), and offered a reminder nobody asked for (recent-compare-plain rep2). Replays of the captured first long-chat request (lanes/E2-FIX16/scratch/probe.py): Sonnet wrote a file in 5 of 6 before, 0 of 6 with this text and PC-0226; Haiku scheduled an unasked reminder in 5 of 10 before and 0 of 10 without the no-later line. Saving when asked is unchanged: the asked case keeps "do it in this reply". 12 bytes fewer.
