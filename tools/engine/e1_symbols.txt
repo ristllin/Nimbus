@@ -2,7 +2,7 @@
 # objects of tools/engine/engine1_only.txt in the engine-1 builds named below; never edit by hand.
 # check_elf_symbols.py --engine1-absent fails when an engine-2 ELF defines any of them.
 # One mangled name per line, then '#' and the engine1_only source that defines it.
-# envs: esp32s3 esp32s3-cyd esp32s3-cyd-35 esp32s3-cyd-40 test test-cyd; 419 symbols
+# envs: esp32s3 esp32s3-cyd esp32s3-cyd-35 esp32s3-cyd-40 test test-cyd; 357 symbols
 
 _ZN5agent10FoldDriver10capReachedEmRKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE  # lib/harness/src/fold_driver.cpp
 _ZN5agent10FoldDriver10maybeAlertERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEPKN6nimbus4orch8ChatFoldEml  # lib/harness/src/fold_driver.cpp
@@ -41,32 +41,6 @@ _ZN5agent10FoldDriver9endManualERKNSt7__cxx1112basic_stringIcSt11char_traitsIcES
 _ZN5agent10FoldDriver9stopAtCapEv  # lib/harness/src/fold_driver.cpp
 _ZN5agent10FoldDriverC1ERNS_10TurnEngineERN6nimbus4orch9FoldStoreENS4_9FoldCtlIOENS_15FoldDriverHooksE  # lib/harness/src/fold_driver.cpp
 _ZN5agent10FoldDriverC2ERNS_10TurnEngineERN6nimbus4orch9FoldStoreENS4_9FoldCtlIOENS_15FoldDriverHooksE  # lib/harness/src/fold_driver.cpp
-_ZN5agent10SkillStore10agentWriteERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEENS_7SkillMdERKNS0_6StoredEb  # lib/harness/src/skill_store.cpp
-_ZN5agent10SkillStore11storedCountEv  # lib/harness/src/skill_store.cpp
-_ZN5agent10SkillStore12pendingCountEv  # lib/harness/src/skill_store.cpp
-_ZN5agent10SkillStore12spawnCapsuleERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE  # lib/harness/src/skill_store.cpp
-_ZN5agent10SkillStore3getERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEERKNS_9SkillSideEPb  # lib/harness/src/skill_store.cpp
-_ZN5agent10SkillStore3rawERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE  # lib/harness/src/skill_store.cpp
-_ZN5agent10SkillStore4denyERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEERKNS_11SkillCallerE  # lib/harness/src/skill_store.cpp
-_ZN5agent10SkillStore4findERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEERNS_9SkillMetaE  # lib/harness/src/skill_store.cpp
-_ZN5agent10SkillStore4listEv  # lib/harness/src/skill_store.cpp
-_ZN5agent10SkillStore4loadERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEj  # lib/harness/src/skill_store.cpp
-_ZN5agent10SkillStore4saveERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEES8_RKNS_11SkillCallerEb  # lib/harness/src/skill_store.cpp
-_ZN5agent10SkillStore5writeERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEERKNS_7SkillMdERS6_  # lib/harness/src/skill_store.cpp
-_ZN5agent10SkillStore6metaOfERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEERNS_9SkillMetaE  # lib/harness/src/skill_store.cpp
-_ZN5agent10SkillStore6removeERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEERKNS_11SkillCallerE  # lib/harness/src/skill_store.cpp
-_ZN5agent10SkillStore7approveERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEERKNS_11SkillCallerE  # lib/harness/src/skill_store.cpp
-_ZN5agent10SkillStore7discardERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEERKNS_11SkillCallerE  # lib/harness/src/skill_store.cpp
-_ZN5agent10SkillStore7rawNextERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE  # lib/harness/src/skill_store.cpp
-_ZN5agent10SkillStore7readDocERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEERNS_7SkillMdEj  # lib/harness/src/skill_store.cpp
-_ZN5agent10SkillStore7validIdERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE  # lib/harness/src/skill_store.cpp
-_ZN5agent10SkillStore8liveBodyERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEERKNS_9SkillSideE  # lib/harness/src/skill_store.cpp
-_ZN5agent10SkillStore9indexTextB5cxx11Ev  # lib/harness/src/skill_store.cpp
-_ZN5agent10SkillStore9saveAgentERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEERKNS_7SkillMdERKNS0_6StoredERKNS_11SkillCallerEb  # lib/harness/src/skill_store.cpp
-_ZN5agent10SkillStore9saveOwnerERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEERKNS_7SkillMdERKNS0_6StoredE  # lib/harness/src/skill_store.cpp
-_ZN5agent10SkillStore9similarToERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE  # lib/harness/src/skill_store.cpp
-_ZN5agent10SkillStoreC1ERNS_7SkillFsENS_16SkillStoreConfigESt8functionIFNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEvEE  # lib/harness/src/skill_store.cpp
-_ZN5agent10SkillStoreC2ERNS_7SkillFsENS_16SkillStoreConfigESt8functionIFNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEvEE  # lib/harness/src/skill_store.cpp
 _ZN5agent10TurnEngine10cachedRowsERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEERKNS_12HistoryMarksERKNS_13HistoryBudgetEb  # lib/harness/src/engine_history.cpp
 _ZN5agent10TurnEngine10foldBoundsERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEERKNS_12HistoryMarksERKNS_13HistoryBudgetERKNS_14HistoryOptionsEbRNS0_10FoldBoundsE  # lib/harness/src/engine_history.cpp
 _ZN5agent10TurnEngine10foldCursorERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEES8_  # lib/harness/src/engine_history.cpp
@@ -163,15 +137,9 @@ _ZN5agent13fxKindForToolERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE 
 _ZN5agent13hostForPromptB5cxx11ERKNS_14ProviderConfigE  # lib/harness/src/compose.cpp
 _ZN5agent13kDidLabelOpenE  # lib/harness/src/conversation.cpp
 _ZN5agent13kEarlierLabelE  # lib/harness/src/conversation.cpp
-_ZN5agent13lintSkillSaveB5cxx11ERKNS_7SkillMdES2_  # lib/harness/src/skill_store.cpp
 _ZN5agent13renderHistoryERKSt6vectorINS_8HistTurnESaIS1_EERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEl  # lib/harness/src/conversation.cpp
 _ZN5agent13repeatStampOfERKN6nimbus4orch15EpisodicMessageE  # lib/harness/src/conversation.cpp
-_ZN5agent13skillTooLargeERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEjj  # lib/harness/src/skill_store.cpp
 _ZN5agent13toolCallFlagsERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEES7_  # lib/harness/src/apply.cpp
-_ZN5agent14SkillTurnScopeC1Eb  # lib/harness/src/skill_store.cpp
-_ZN5agent14SkillTurnScopeC2Eb  # lib/harness/src/skill_store.cpp
-_ZN5agent14SkillTurnScopeD1Ev  # lib/harness/src/skill_store.cpp
-_ZN5agent14SkillTurnScopeD2Ev  # lib/harness/src/skill_store.cpp
 _ZN5agent14earlierBulletsERKSt6vectorIN6nimbus4orch15EpisodicMessageESaIS3_EERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEESF_l  # lib/harness/src/conversation.cpp
 _ZN5agent14foldAlertRouteERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEbS7_S7_S7_  # lib/harness/src/fold_driver.cpp
 _ZN5agent14foldAnswerThinERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEjj  # lib/harness/src/engine_fold.cpp
@@ -190,7 +158,6 @@ _ZN5agent15kCoverageHeaderE  # lib/harness/src/conversation.cpp
 _ZN5agent15memWriteOutcomeERKN6nimbus4orch10ToolResultE  # lib/harness/src/apply.cpp
 _ZN5agent15renderTurnLinesB5cxx11ERKNS_8HistTurnEPS1_l  # lib/harness/src/conversation.cpp
 _ZN5agent15salvageForOwnerERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEES7_b  # lib/harness/src/turn_contract.cpp
-_ZN5agent15skillStatusSlugENS_11SkillStatusE  # lib/harness/src/skill_store.cpp
 _ZN5agent15utcOffsetAtUnixEm  # lib/harness/src/conversation.cpp
 _ZN5agent15utcOffsetFromTmERK2tmS2_  # lib/harness/src/conversation.cpp
 _ZN5agent16builtinSkillBodyERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEb  # lib/harness/src/builtin_skills.cpp
@@ -202,9 +169,6 @@ _ZN5agent16kSummaryUserHeadE  # lib/harness/src/conversation.cpp
 _ZN5agent16liveConversationERKSt6vectorIN6nimbus4orch15EpisodicMessageESaIS3_EERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEj  # lib/harness/src/conversation.cpp
 _ZN5agent16placeholderCheckERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEES7_  # lib/harness/src/turn_contract.cpp
 _ZN5agent16replyAlreadyAsksERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEES7_  # lib/harness/src/apply.cpp
-_ZN5agent16skillGrowthNotesERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEERKNS_7SkillMdE  # lib/harness/src/skill_store.cpp
-_ZN5agent16skillOutcomeSlugENS_12SkillOutcomeE  # lib/harness/src/skill_store.cpp
-_ZN5agent16skillTurnTaintedEv  # lib/harness/src/skill_store.cpp
 _ZN5agent16skillsAttachTextERKSt6vectorINS_10AttachPickESaIS1_EERKSt8functionIFNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEERKSC_EEj  # lib/harness/src/skill_attach.cpp
 _ZN5agent16takePseudoSpawnsERKN6nimbus4orch12HeadToolCallERNS_12PseudoSpawnsE  # lib/harness/src/turn_contract.cpp
 _ZN5agent17RingRecentActions6recentERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEjRSt6vectorINS_12RecentActionESaISA_EE  # lib/harness/src/compose.cpp
@@ -221,7 +185,6 @@ _ZN5agent18isPlaceholderReplyERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaI
 _ZN5agent18isTelegramOnlyToolERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE  # lib/harness/src/engine.cpp
 _ZN5agent18kClearBoundaryTextE  # lib/harness/src/conversation.cpp
 _ZN5agent18recordFreshResultsERN6nimbus4orch11TurnEffectsEii  # lib/harness/src/apply.cpp
-_ZN5agent18skillAuthorKeysDocB5cxx11Ev  # lib/harness/src/skill_store.cpp
 _ZN5agent19composeInstructionsB5cxx11ERKNS_13ComposeInputsE  # lib/harness/src/compose.cpp
 _ZN5agent19historyCoverageLineB5cxx11ERKNS_8ConvSpanEmyl  # lib/harness/src/conversation.cpp
 _ZN5agent19kCutNothingSalvagedE  # lib/harness/src/turn_contract.cpp
@@ -234,7 +197,6 @@ _ZN5agent23dropRecoveredContainersERN6nimbus4orch4TurnE  # lib/harness/src/turn_
 _ZN5agent23recentConversationBlockERKSt6vectorIN6nimbus4orch15EpisodicMessageESaIS3_EERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEj  # lib/harness/src/conversation.cpp
 _ZN5agent23unansweredOwnerMessagesB5cxx11ERKSt6vectorINS_7HistMsgESaIS1_EE  # lib/harness/src/conversation.cpp
 _ZN5agent24kUnverifiedMemoryRefusalE  # lib/harness/src/apply.cpp
-_ZN5agent24skillSelfApproveFromFileERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE  # lib/harness/src/skill_store.cpp
 _ZN5agent26kUnreadableNothingSalvagedE  # lib/harness/src/turn_contract.cpp
 _ZN5agent5dream10isReservedERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE  # lib/harness/src/dream.cpp
 _ZN5agent5dream11noteTurnEndEm  # src/agent/dream_subsystem.cpp
@@ -283,26 +245,6 @@ _ZN5agent6layout5splitERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE  #
 _ZN5agent6layout7displayERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE  # lib/harness/src/prompt_layout.cpp
 _ZN5agent6layout8TurnGaps4noteERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEm  # lib/harness/src/prompt_layout.cpp
 _ZN5agent6layout8cacheKeyERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEES8_  # lib/harness/src/prompt_layout.cpp
-_ZN5agent6skills10attachBodyERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE  # src/agent/skills.cpp
-_ZN5agent6skills11sdAvailableEv  # src/agent/skills.cpp
-_ZN5agent6skills12pendingCountEv  # src/agent/skills.cpp
-_ZN5agent6skills12spawnCapsuleERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE  # src/agent/skills.cpp
-_ZN5agent6skills13selfApproveOnEv  # src/agent/skills.cpp
-_ZN5agent6skills14setSelfApproveEb  # src/agent/skills.cpp
-_ZN5agent6skills3getERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEPb  # src/agent/skills.cpp
-_ZN5agent6skills3rawERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE  # src/agent/skills.cpp
-_ZN5agent6skills4denyERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEERKNS_11SkillCallerE  # src/agent/skills.cpp
-_ZN5agent6skills4listEv  # src/agent/skills.cpp
-_ZN5agent6skills4saveERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEES8_RKNS_11SkillCallerE  # src/agent/skills.cpp
-_ZN5agent6skills5storeEv  # src/agent/skills.cpp
-_ZN5agent6skills6removeERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEERKNS_11SkillCallerE  # src/agent/skills.cpp
-_ZN5agent6skills7approveERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEERKNS_11SkillCallerE  # src/agent/skills.cpp
-_ZN5agent6skills7discardERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEERKNS_11SkillCallerE  # src/agent/skills.cpp
-_ZN5agent6skills7rawNextERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE  # src/agent/skills.cpp
-_ZN5agent6skills8dropChatERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE  # src/agent/skills.cpp
-_ZN5agent6skills8noteUsedERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEES8_  # src/agent/skills.cpp
-_ZN5agent6skills8picksForERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE  # src/agent/skills.cpp
-_ZN5agent6skills9indexTextB5cxx11Ev  # src/agent/skills.cpp
 _ZN5agent7TurnFit10dropSkillsEv  # lib/harness/src/turn_fit.cpp
 _ZN5agent7TurnFit11clipResultsEj  # lib/harness/src/turn_fit.cpp
 _ZN5agent7TurnFit11dropHistoryEbj  # lib/harness/src/turn_fit.cpp
@@ -349,7 +291,6 @@ _ZN5agent9fixedZoneEl  # lib/harness/src/conversation.cpp
 _ZN5agent9foldSliceERKSt6vectorINS_8HistTurnESaIS1_EEjjblRKNS_13HistoryBudgetE  # lib/harness/src/conversation.cpp
 _ZN5agent9localZoneERKNS_14HistoryOptionsE  # lib/harness/src/conversation.cpp
 _ZN5agent9splitRefsERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE  # lib/harness/src/conversation.cpp
-_ZN6nimbus3net19registerSkillRoutesER14AsyncWebServer  # src/net/web_skills.cpp
 _ZN6nimbus4orch20registerSessionToolsERNS0_12ToolRegistryERKNS0_15SessionHandlersE  # lib/core/src/orch_session_tools.cpp
 _ZN6nimbus4orch4aids2e112partHeadIntoERNS1_6detail3TxtERKNS2_8PartHeadEPKy  # lib/core/src/orch_file_aids_e1.cpp
 _ZN6nimbus4orch4aids2e14editERNS1_9AidSourceERNS1_7AidSinkEyRKNS2_8EditCallERNS2_11RemovedRowsERNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE  # lib/core/src/orch_file_aids_e1.cpp
@@ -377,9 +318,6 @@ _ZNK5agent10FoldDriver8offsetAtEm  # lib/harness/src/fold_driver.cpp
 _ZNK5agent10FoldDriver9gatesOpenEv  # lib/harness/src/fold_driver.cpp
 _ZNK5agent10FoldDriver9paidTodayEm  # lib/harness/src/fold_driver.cpp
 _ZNK5agent10FoldDriver9wantsFoldERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE  # lib/harness/src/fold_driver.cpp
-_ZNK5agent10SkillStore5dirOfERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE  # lib/harness/src/skill_store.cpp
-_ZNK5agent10SkillStore8livePathERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE  # lib/harness/src/skill_store.cpp
-_ZNK5agent10SkillStore8nextPathERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE  # lib/harness/src/skill_store.cpp
 _ZNK5agent10TurnEngine10canFoldNowEv  # lib/harness/src/engine_fold.cpp
 _ZNK5agent10TurnEngine10newTurnFitERNS_13ComposeInputsERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEPNS_9HeadToolsE  # lib/harness/src/engine_history.cpp
 _ZNK5agent10TurnEngine10telegramOnERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE  # lib/harness/src/engine.cpp

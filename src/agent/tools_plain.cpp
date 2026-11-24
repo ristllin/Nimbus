@@ -18,6 +18,7 @@
 #include "notes_device.h"                   // lane RB-N1: note
 #include "orchestrator.h"                   // turnInFlight, turnCount - the note tool's origin (lane E2-DEV)
 #include "schedule_device.h"                // lane RB-U1b, E2-SCHED: schedule
+#include "tools_plain_skills.h"             // lane E2-P-SKILL: skill_list, skill_save, skill_delete
 #include "store.h"                          // providerOverBudget, recordProviderCall
 #include "tools_plain_send.h"               // lane E2-P-OUT1: send and speak
 #include "tools_plain_files.h"              // lane E2-P-OUT2: the files_admin and media tools
@@ -120,6 +121,7 @@ void registerMemoryFamilies(nimbus::orch::ToolRegistry& reg, const nimbus::orch:
   historydev::registerHistory(reg, ctx);   // E2-SRCH: answered through the turn; E2-P-MEM: scope memories reads ctx
   registerSend(reg);                         // E2-P-OUT1: send and speak (tools_plain_send.cpp)
   plainfiles::registerDevice(reg);         // E2-P-OUT2: image, PDF, share, stat, fetch, music (behind more)
+  skillsplain::registerSkills(reg, turnOrigin);   // E2-P-SKILL: the skills group behind more
   nimbus::orch::registerMore(reg);
 }
 

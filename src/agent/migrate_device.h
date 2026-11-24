@@ -17,8 +17,9 @@
 //     /mem/tx-pre-e2/chatsum.txt. Engine 2 never writes /data/chatsum.txt (lane E2-FIX2B, P5); a
 //     record an earlier engine-2 build replaced with its mirror is put back from that copy once.
 //   - importRulesOnce(): the earlier engine's active standing rules into the owner's notes as
-//     pinned rules (tx::importRules), once per boot; /data/notes/rules_import.txt records what was
-//     copied, so a second run adds nothing and an edit made on engine 2 is kept.
+//     pinned rules (tx::importRules), at start and again after each save of the rules file (lane
+//     E2-P-SKILL: the Rules page and /prefs apply to the next turn); /data/notes/rules_import.txt
+//     records what was copied, so a second run adds nothing and an edit made on engine 2 is kept.
 // Engine 2 only (tools/engine/engine2_only.txt). tg_poll only.
 namespace agent::migratedev {
 

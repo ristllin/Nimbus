@@ -31,6 +31,7 @@
 #include "orchestrator_common.h"    // deliver
 #include "schedule_device.h"        // /remind through the schedule tool, /loop delete's state (E2-SCHED)
 #include "telegram.h"               // turnMessageDate, turnIsVoiceNote
+#include "tools_plain_skills.h"     // /skill, /prefs (lane E2-P-SKILL)
 #include "version.h"
 
 namespace agent {
@@ -218,6 +219,7 @@ const HelpLine kHelpLines[] = {
     {"skill", "/skill approve|deny|delete <id> - decide on the assistant's skill changes"},
     {"skill", "/skill auto on|off - may the assistant approve its own skill changes"},
     {"prefs", "/prefs - list your standing rules; /prefs add <rule> saves one"},
+    {"prefs", "/prefs approve|deny note <id> - decide on a note kept for your approval"},
     {"usage", "/usage - this month's spending, limits and what is paused"},
     {"budget", "/budget <provider|all> <USD> - change a monthly limit (asks you to confirm)"},
     {"model", "/model - which provider and model the assistant uses, and what is paused"},
@@ -294,6 +296,7 @@ void shared(const nimbus::orch::Command& cmd, const String& chatId, bool owner, 
   if (v == "loops") return say(chatId, selfTag() + loops::loopsText());
   if (v == "loop") return loop(chatId, cmd.args);
   if (v == "remind") return remind(chatId, cmd.args);
+  if (v == "skill" || v == "prefs") return say(chatId, selfTag() + agent::tools::skillsplain::command(v, cmd.args));   // E2-P-SKILL
   if (v == "usage" || v == "budget" || v == "model") return say(chatId, selfTag() + spending(cmd, chatId, owner, pseudo));
   alogf("e2: /%s has no shared handler", v.c_str());   // the route table and this list disagree
   say(chatId, selfTag() + kNotYetLine);

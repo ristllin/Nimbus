@@ -4,7 +4,10 @@
 #include <string>
 #include <vector>
 
+#include "nimbus/harness/skill_store.h"   // the /skill table and words (lane E2-P-SKILL)
 #include "nimbus/orch/command.h"
+#include "nimbus/orch/notes.h"              // the held notes /prefs answers
+#include "nimbus/orch/prefs_tools.h"        // prefsCommand: engine 1's /prefs
 #include "nimbus/orch/tx/log.h"   // TxFiles, kTxRoot - /clear's generation file
 
 // plain/chat_commands.h - where an owner's slash command goes on an engine-2 device (lane E2-CHAT).
@@ -12,14 +15,15 @@
 //   Shared      the handler engine 1 calls (it does not depend on the engine): /help, /start,
 //               /update, /ota, /play, /fetch, /loops, /loop, /usage, /model, and /budget with
 //               arguments (a limit change and its confirm); /remind (lane E2-SCHED: a reminder
-//               made through the schedule tool's own code, as the owner's);
+//               made through the schedule tool's own code, as the owner's); /skill and /prefs
+//               (lane E2-P-SKILL, plain/chat_skill_tools.h: engine 1's store and rules file; the
+//               rules reach engine 2 through the notes, and /prefs answers the held notes);
 //   Clear       a new conversation on engine 2 (the stored one is kept on the card);
 //   Compact     a compaction of this chat now;
 //   BudgetView  a bare /budget: engine 2's budget view (the system prompt in tokens), then the
 //               spending text a bare /budget gives on engine 1;
-//   NotYet      engine 1 only for now, answered with one plain line: /skill (the skill store is
-//               engine 1's), /mcp (engine 2 reaches no
-//               tool server), /prefs (engine 2 reads notes, not standing rules);
+//   NotYet      engine 1 only for now, answered with one plain line: /mcp (engine 2 reaches no
+//               tool server);
 //   Unknown     a verb the table does not know: the same "try /help" answer as engine 1.
 // test_plain_chat_commands walks every verb of the table: a verb added there with no route here
 // fails it.
@@ -47,7 +51,7 @@ inline ChatCommandRoute chatCommandRoute(const nimbus::orch::Command& c) {
   if (v == "clear") return ChatCommandRoute::Clear;
   if (v == "compact") return ChatCommandRoute::Compact;
   if (v == "budget") return c.args.empty() ? ChatCommandRoute::BudgetView : ChatCommandRoute::Shared;
-  if (v == "skill" || v == "mcp" || v == "prefs") return ChatCommandRoute::NotYet;
+  if (v == "mcp") return ChatCommandRoute::NotYet;
   return ChatCommandRoute::Shared;
 }
 
@@ -156,6 +160,75 @@ inline bool storeGeneration(nimbus::orch::tx::TxFiles& f, const std::string& cha
   if (writeGeneration(f, chatId, g)) return true;
   uint32_t back = 0;
   return readGeneration(f, chatId, back) == GenRead::Value && back == g;
+}
+
+// ---- /skill and /prefs (lane E2-P-SKILL) -----------------------------------------------------
+// /skill: engine 1's sub-commands (parseSkillCmd, skillListText, skillShowText, skillResultText).
+// /prefs: engine 1's command over the standing-rules file (prefsCommand); engine 2 reads the rules
+// through the owner's notes, and the device copies the file into them again after every change
+// (migratedev::importRulesOnce), so a rule applies to the next turn. /prefs also lists the notes held
+// for approval (notes.h: a turn that read outside content, or none a person started) and answers
+// them: /prefs approve note <id>, /prefs deny note <id>. Owner copy, never sent to a model.
+// ---- /skill ----------------------------------------------------------------------------------
+// Engine 1's /skill (orchestrator_e1.cpp), over the shared store. The caller holds the store lock.
+inline std::string skillCommand(SkillStore& st, const std::string& args, bool selfApprove,
+                                const std::function<bool(bool)>& setSelfApprove) {
+  std::string arg;
+  const SkillCmd sub = parseSkillCmd(args, arg);
+  if (sub == SkillCmd::List) return skillListText(st, selfApprove);
+  if (sub == SkillCmd::Show) return skillShowText(st, arg);
+  if (sub == SkillCmd::Auto) {
+    if (arg != "on" && arg != "off") return skillCmdUsage();
+    if (!setSelfApprove || !setSelfApprove(arg == "on")) return "The switch could not be written.";
+    return std::string("The assistant may approve its own skill changes: ") + arg + ".";
+  }
+  const SkillCaller owner = SkillCaller::ownerCall();
+  if (sub == SkillCmd::Approve) return skillResultText(arg, st.approve(arg, owner));
+  if (sub == SkillCmd::Deny) return skillResultText(arg, st.deny(arg, owner));
+  if (sub == SkillCmd::Delete) return skillResultText(arg, st.remove(arg, owner));
+  return skillCmdUsage();
+}
+
+// ---- the held notes --------------------------------------------------------------------------
+// One held call as the owner reads it: "p1: set key [rule]: value (after outside content)".
+inline std::string heldNoteLine(const nimbus::orch::notes::PendingNote& p) {
+  std::string what = p.remove ? "remove " + p.note.key : "set " + nimbus::orch::notes::formatLine(p.note);
+  return p.id + ": " + what + (p.why == "outside" ? " (after outside content)" : " (from a routine)");
+}
+
+// The owner's held notes as a short list; "" with none.
+inline std::string heldNotesText(nimbus::orch::notes::Notebook& nb, const nimbus::orch::Principal& owner) {
+  std::vector<nimbus::orch::notes::PendingNote> held;
+  if (!nb.pending(owner, held) || held.empty()) return std::string();
+  std::string out = "Notes waiting for your approval:";
+  for (const auto& p : held) out += "\n" + heldNoteLine(p);
+  return out + "\nApprove with /prefs approve note <id>, or deny with /prefs deny note <id>.";
+}
+
+// "approve note p1" or "deny note p1": the owner's answer. False: `args` is not one.
+inline bool heldNoteAnswer(nimbus::orch::notes::Notebook& nb, const nimbus::orch::Principal& owner,
+                           const std::string& args, std::string& reply) {
+  const bool approve = args.rfind("approve note ", 0) == 0;
+  if (!approve && args.rfind("deny note ", 0) != 0) return false;
+  std::string id = args.substr(approve ? 13 : 10);
+  while (!id.empty() && id.back() == ' ') id.pop_back();
+  const nimbus::orch::ToolResult r = approve ? nb.approve(owner, id) : nb.reject(owner, id);
+  if (!r.success) reply = "Not changed: " + r.error;
+  else reply = approve ? "Approved " + id + ": " + r.output + " It applies from the next reply." : "Denied " + id + ".";
+  return true;
+}
+
+// ---- /prefs ----------------------------------------------------------------------------------
+// Engine 1's /prefs over the rules file, plus the held notes: listed with the rules, answered with
+// approve note / deny note. The device copies the rules into the notes after a change.
+inline std::string prefsCommandPlain(const nimbus::orch::PrefsToolContext& ctx, nimbus::orch::notes::Notebook& nb,
+                                     const nimbus::orch::Principal& owner, const std::string& args) {
+  std::string reply;
+  if (heldNoteAnswer(nb, owner, args, reply)) return reply;
+  reply = nimbus::orch::prefsCommand(ctx, args);
+  if (!args.empty() && args != "list") return reply;
+  const std::string held = heldNotesText(nb, owner);
+  return held.empty() ? reply : reply + "\n\n" + held;
 }
 
 }  // namespace plain

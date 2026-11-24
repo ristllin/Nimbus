@@ -1463,3 +1463,22 @@ PC-0175, PC-0176: not used.
 - lane: RB-I2
 - prd: section 4 (files_admin and media behind more)
 - why: src/agent/tools_plain_files.cpp namespace tool_descriptions: one description and one schema per tool (image_generate, pdf_write, share_file, file_stat, fetch_url, media_play, media_pause, media_stop), shown only in `more`'s group listing, never in the always-on array or the cached start of a request. Engine 1's facts each restates: what the handler does, its arguments in engine 2's path form, what it returns. Written by lane E2-P-OUT2 (RB-I2, the device binding on engine 2). Planned work, not a fix (CUM-1002). PC-0242: not used.
+### PC-0247: the skills group's declarations, skill_list, skill_save and skill_delete (engine 2)
+- catalog: e2
+- class: tool_descriptions
+- kind: build
+- bytes: 4866 -> 5438
+- sha8: 8e3dd670 -> 360231dc
+- lane: E2-P-SKILL
+- prd: section 4 (groups behind more: skills; skill.save and skill.delete with the owner's approval), inventory parity-autonomy-memory-safety S3, AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h kBehindMore: skill_list (no arguments), skill_save (id, md: the front matter keys an assistant save needs, desc required, and that the owner approves it first) and skill_delete (id) join the skills group lib/core/src/orch_tool_groups.cpp already names and the skills index already points at ("skill_list through more"). They bind engine 1's skill.save and skill.delete over the same store. Planned work, not a fix (CUM-1004).
+
+### PC-0248: the skill tools' results and errors (engine 2)
+- catalog: e2
+- class: tool_results
+- kind: build
+- bytes: 7228 -> 7781
+- sha8: 56f1887e -> 584fd061
+- lane: E2-P-SKILL
+- prd: section 4 (skills), inventory parity-autonomy-memory-safety S3, AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/chat_skill_tools.h, engine 1's skill.save and skill.delete handler words (memory_subsystem.cpp, e1 catalog, unchanged) bound for engine 2: the admin refusals, the near-duplicate line, "skill '<id>' deleted"; skill_list's line per skill ("skills/<id>.md: approved | waiting for the owner | approved, an edit waiting for the owner - <desc>", "no saved skills"); the store's own result words (skill_store.cpp, skill_commands.cpp) are engine 1's, unchanged. PC-0249 in the same file: the store's two lines that name engine 1's tools are said in engine 2's words (the size refusal names "skill_save with id <id>-more"; a skill past 4,096 B is "listed and read when needed (read_file skills/<id>.md reads it all)", true on engine 2, which has no attached copy). Facts only, inside the ceiling (no ceiling raised). Planned work, not a fix (CUM-1004).

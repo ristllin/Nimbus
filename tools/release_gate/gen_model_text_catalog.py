@@ -198,6 +198,9 @@ NON_MODEL_FILES: dict = {
     "lib/harness/include/nimbus/harness/plain/head_gate.h": "E2-FIX14: engine 1's own lines for a turn its gates "
     "stop (the provider's monthly limit, a parked or paused provider), sent to the person's chat with system "
     "provenance by the engine-2 device seam before any turn, never stored in a transcript or shown to a model",
+    "src/agent/tools_plain_skills.cpp": "E2-P-SKILL: the Rules page's rows for the held notes and their answers, "
+    "owner copy on the web page and the owner's chat, and log lines; the skill tools' model text is "
+    "plain/chat_skill_tools.h (E2_EXTRA_SOURCES)",
     "src/agent/migrate_device.cpp": "E2-MIG: the earlier engine's import; its literals are log lines and the test "
     "console's TXASIDE answers (test builds), never sent to a model",
     "nimbusd/src/engine2_parity.h": "E2-P-HOST2: the hosted daemon's engine-2 parts: the owner-facing binding lines "
@@ -282,6 +285,8 @@ E2_EXTRA_SOURCES: tuple = (
     # E2-P-OUT2: the files_admin and media tools over engine 1's handlers: their descriptions (namespace
     # tool_descriptions), their path lines and engine-2 tool names, and the argument names they map.
     ("src/agent/tools_plain_files.cpp", "tool_results"),
+    # E2-P-SKILL: skill_list, skill_save, skill_delete over the shared skill store (PC-0247 to PC-0249).
+    ("lib/harness/include/nimbus/harness/plain/chat_skill_tools.h", "tool_results"),
 )
 # The engine-2 files that may hold no model text of their own once texts.h exists.
 E2_ENGINE_GLOBS = (r"lib/harness/src/plain_[^/]*\.(cpp|h)$", r"lib/harness/src/providers/plain_wire_[^/]*\.(cpp|h)$")

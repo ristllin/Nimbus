@@ -14,8 +14,6 @@
 src/agent/orchestrator_e1.cpp
 src/agent/tools_e1.cpp
 src/agent/dream_subsystem.cpp
-src/agent/skills.cpp
-src/net/web_skills.cpp
 
 # lib/harness: the old turn engine and its prompt machinery.
 lib/harness/src/apply.cpp
@@ -30,7 +28,6 @@ lib/harness/src/engine_history.cpp
 lib/harness/src/fold_driver.cpp
 lib/harness/src/prompt_layout.cpp
 lib/harness/src/skill_attach.cpp
-lib/harness/src/skill_store.cpp
 lib/harness/src/turn_contract.cpp
 lib/harness/src/turn_fit.cpp
 lib/harness/src/turn_inbox.cpp

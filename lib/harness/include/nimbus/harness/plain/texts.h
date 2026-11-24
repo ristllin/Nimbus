@@ -161,6 +161,15 @@ inline constexpr ToolDecl kBehindMore[] = {
     // The media group (lane E2-P-OUT1, src/agent/tools_plain_send.*; PC-0238): engine 1's reply.speak.
     {"speak", "Say text aloud on the device speaker.",
      R"({"type":"object","properties":{"text":{"type":"string"}},"required":["text"]})", nullptr},
+    // The skills group (lane E2-P-SKILL, plain/chat_skill_tools.h; PC-0247).
+    {"skill_list", "List the saved skills with their state (approved, waiting for the owner, an edit waiting).",
+     R"({"type":"object","properties":{}})", nullptr},
+    {"skill_save",
+     "Save or edit a skill, a how-to kept as skills/<id>.md. id: a-z 0-9 - _, at most 23. md: front matter (desc: when "
+     "to read it, required; title; inject: context or spawn) then the text. The owner approves it first.",
+     R"({"type":"object","properties":{"id":{"type":"string"},"md":{"type":"string"}},"required":["id","md"]})", nullptr},
+    {"skill_delete", "Delete a skill you wrote, by id.",
+     R"({"type":"object","properties":{"id":{"type":"string"}},"required":["id"]})", nullptr},
 };
 }  // namespace tool_descriptions
 

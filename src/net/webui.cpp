@@ -120,9 +120,7 @@
 #include "../agent/connectors.h"           // /api/connectors - known catalog + host
 #include "web_memory.h"
 #include "web_files.h"                   // E1: /api/files* artifact-store routes
-#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
-#include "web_skills.h"
-#endif
+#include "web_skills.h"                  // the Skills page routes (both engines since lane E2-P-SKILL)
 #if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
 #include "nimbus/harness/plain/chat_commands.h"   // E2-FIX14: kNoAssistantMemoryLine
 #endif
@@ -4607,9 +4605,7 @@ void beginWeb(const WebConfig& wc) {
 
   // Dynamic skills (roadmap P2): /api/skills/list /get /save /delete - token-
   // gated owner CRUD over the SD capsules (the model can read, never write).
-#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
   registerSkillRoutes(s_server);
-#endif
   registerPrefsRoutes(s_server);   // lane J: the standing rules
 
   // CUM-401: bind /api/errlog (and any future self-registered route) from the

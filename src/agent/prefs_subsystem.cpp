@@ -2,6 +2,8 @@
 
 #include <LittleFS.h>
 
+#include <atomic>
+
 #include "fs_atomic.h"                  // writeFileAtomic / flashMounted
 #include "memory_subsystem.h"           // Lock + nowHours + scratchpad + vectors
 #include "orchestrator.h"               // inScheduledTurn + the turn taint accessor
@@ -14,6 +16,8 @@ namespace agent {
 namespace prefs {
 
 namespace {
+
+std::atomic<uint32_t> g_saves{0};   // lane E2-P-SKILL: saves of the rules file since boot
 
 // The file seam over LittleFS (/data/prefs.txt): atomic writes, tolerated
 // absence (the first boot's seed marker).
@@ -31,7 +35,9 @@ class LittleFsPrefsIO : public nimbus::orch::PrefsStoreIO {
     return true;
   }
   bool saveChecked(const std::string& blob) override {
-    return writeFileAtomic(nimbus::orch::kPrefsPath, blob, "prefs");
+    const bool ok = writeFileAtomic(nimbus::orch::kPrefsPath, blob, "prefs");
+    if (ok) g_saves.fetch_add(1, std::memory_order_release);
+    return ok;
   }
 };
 
@@ -81,6 +87,8 @@ void begin() {
 }
 
 nimbus::orch::OwnerPrefs& store() { return g_prefs; }
+
+uint32_t saves() { return g_saves.load(std::memory_order_acquire); }
 
 bool withStore(const std::function<void(nimbus::orch::OwnerPrefs&)>& fn) {
   if (!flashMounted()) return false;

@@ -38,6 +38,10 @@
 
 #include "../support/scripted_provider/scripted_provider.h"
 #include "nimbus/harness/plain/chat_binding.h"
+#include "nimbus/harness/plain/chat_commands.h"
+#include "nimbus/harness/plain/chat_skill_tools.h"
+#include "nimbus/orch/tool_groups.h"
+#include "nimbus/orch/tx/old_engine.h"
 #include "nimbus/harness/plain/chat_photos.h"
 #include "nimbus/harness/plain/head_gate.h"
 #include "nimbus/harness/plain/waiting.h"
@@ -185,6 +189,8 @@ struct Device {
       return plain::photoBytesFrom(stored, ref, o);   // the card's copy of an earlier photo
     };
     if (!skillFiles.empty()) d.skills = [this](const nimbus::orch::Principal&) { return plain::chatSkillsOf(skillFiles); };
+    if (skills) d.skills = [this](const nimbus::orch::Principal&) { return skills(); };   // E2-P-SKILL: the store
+    if (pinnedNotes) d.pinnedNotes = pinnedNotes;                                         // E2-P-SKILL: the notebook
     d.skillRefused = [this](const std::string& id, size_t) { refused.push_back(id); };
     d.usage = [this](const plain::TurnOutcome& o) { usage.push_back(plain::turnSpendOf(o, "anthropic", "claude-haiku-5-5")); };
     d.compactUsage = [this](const std::string& p, const std::string& m, const nimbus::orch::TokenUsage& u) {
@@ -233,6 +239,8 @@ struct Device {
   std::string headHost = "anthropic", headModel = "claude-haiku-5-5";   // what photoParts is asked about
   nimbus::orch::TurnImages* stored = nullptr;     // earlier photos the card still holds (null: none)
   std::vector<plain::SkillFile> skillFiles;
+  std::function<plain::ChatSkills()> skills;
+  std::function<std::string(const nimbus::orch::Principal&)> pinnedNotes;
   std::vector<std::string> refused;
   std::vector<nimbus::orch::TurnSpend> usage;
   std::vector<nimbus::orch::TurnSpend> compactUsage;   // lane E2-CMP: the summarizer's requests
@@ -1224,6 +1232,293 @@ static void test_a_kept_messages_turn_is_refused_by_a_parked_provider_with_the_s
   TEST_ASSERT_TRUE(in.empty());
 }
 
+// ---- lane E2-P-SKILL: skills, /skill, /prefs and the held notes on engine 2 --------------------
+
+namespace {
+
+// The skill store's files in memory (test_harness_skills' MemFs).
+struct SkillFiles : agent::SkillFs {
+  std::map<std::string, std::string> files;
+  bool read(const std::string& path, size_t cap, std::string& out) override {
+    auto it = files.find(path);
+    if (it == files.end()) return false;
+    out = it->second.substr(0, cap);
+    return true;
+  }
+  bool writeAtomic(const std::string& path, const std::string& text) override {
+    files[path] = text;
+    return true;
+  }
+  std::vector<std::string> listDirs(const std::string& dir) override {
+    std::set<std::string> names;
+    const std::string pre = dir + "/";
+    for (const auto& kv : files) {
+      if (kv.first.compare(0, pre.size(), pre) != 0) continue;
+      const size_t slash = kv.first.find('/', pre.size());
+      if (slash != std::string::npos) names.insert(kv.first.substr(pre.size(), slash - pre.size()));
+    }
+    return std::vector<std::string>(names.begin(), names.end());
+  }
+  bool exists(const std::string& path) override { return files.count(path) > 0; }
+  bool remove(const std::string& path) override { return files.erase(path) > 0; }
+  bool rename(const std::string& from, const std::string& to) override {
+    auto it = files.find(from);
+    if (it == files.end()) return false;
+    files[to] = it->second;
+    files.erase(it);
+    return true;
+  }
+  void removeDir(const std::string&) override {}
+};
+
+// The owner's notes in memory.
+class MemNotes : public nimbus::orch::notes::NotesIo {
+ public:
+  std::map<int, std::string> shelf;
+  bool available(const std::string& person) override { return !person.empty(); }
+  bool read(const std::string&, nimbus::orch::notes::Shelf s, std::string& out) override {
+    out = shelf[(int)s];
+    return true;
+  }
+  bool write(const std::string&, nimbus::orch::notes::Shelf s, const std::string& bytes) override {
+    shelf[(int)s] = bytes;
+    return true;
+  }
+  nimbus::orch::notes::Caps caps(const std::string&) override { return nimbus::orch::notes::kOwnerCaps; }
+};
+
+// The rules file in memory.
+struct RulesFile : nimbus::orch::PrefsStoreIO {
+  std::string blob;
+  bool load(std::string& out) override {
+    out = blob;
+    return !blob.empty();
+  }
+  bool saveChecked(const std::string& b) override {
+    blob = b;
+    return true;
+  }
+};
+
+// The device's parts as tools_plain_skills.cpp binds them, over memory: the shared skill store, the owner's notebook, the rules file and its copy
+// into the notes (migratedev::importRulesOnce).
+struct Owner {
+  SkillFiles fs;
+  agent::SkillStore store;
+  MemNotes notesIo;
+  nimbus::orch::notes::Notebook nb{notesIo};
+  RulesFile rulesIo;
+  nimbus::orch::OwnerPrefs prefs;
+  std::string marker;
+  bool selfApprove = false;
+  bool tainted = false;
+  std::vector<std::string> told;
+  plain::SkillToolDeps deps;
+  nimbus::orch::Principal who = nimbus::orch::principalForRole("1001", nimbus::orch::Role::Admin);
+
+  Owner() : store(fs, agent::SkillStoreConfig{}, [] { return std::string("2026-11-24 12:00"); }) {
+    prefs.begin(&rulesIo);
+    deps.save = [this](const std::string& id, const std::string& md, const agent::SkillCaller& c) {
+      return store.save(id, md, c, selfApprove);
+    };
+    deps.remove = [this](const std::string& id, const agent::SkillCaller& c) { return store.remove(id, c); };
+    deps.list = [this] { return store.list(); };
+    deps.unattended = [] { return false; };
+    deps.tainted = [this] { return tainted; };
+    deps.tellOwner = [this](const std::string& t) { told.push_back(t); };
+  }
+  void bind(Device& dev) {
+    nimbus::orch::registerMore(dev.reg);
+    plain::registerSkillTools(dev.reg, deps);
+    addReadFile(dev.reg);
+    dev.skills = [this] {
+      std::vector<plain::SkillFile> files;
+      for (const std::string& id : fs.listDirs("/mem/skills")) files.push_back({id, store.raw(id)});
+      return plain::chatSkillsOf(files);
+    };
+    dev.pinnedNotes = [this](const nimbus::orch::Principal& p) { return nb.pinnedBlock(p); };
+  }
+  nimbus::orch::PrefsToolContext ctx() {
+    nimbus::orch::PrefsToolContext c;
+    c.withPrefs = [this](const std::function<void(nimbus::orch::OwnerPrefs&)>& fn) {
+      fn(prefs);
+      return true;
+    };
+    return c;
+  }
+  // /prefs as commands_plain.cpp runs it: the command, then the rules into the notes.
+  std::string prefsCmd(const std::string& args) {
+    const std::string reply = plain::prefsCommandPlain(ctx(), nb, who, args);
+    std::string next;
+    nimbus::orch::tx::RulesImportOutcome out;
+    nimbus::orch::tx::importRules(nimbus::orch::tx::oldRulesFrom(rulesIo.blob, rulesIo.blob.size()), marker, nb, who,
+                                  next, out);
+    marker = next;
+    return reply;
+  }
+};
+
+std::string moreCall(const std::string& name, const std::string& argsJson) {
+  return R"({"name":")" + name + R"(","args":)" + argsJson + "}";
+}
+
+}  // namespace
+
+// D1: the assistant saves a skill through more; it waits (not in the index), the owner is told once;
+// /skill list names it, /skill approve makes it count from the next turn; skill_delete removes it.
+static void test_the_assistant_saves_a_skill_that_waits_for_the_owner_and_skill_approve_makes_it_count() {
+  Device dev;
+  Owner o;
+  o.bind(dev);
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  const std::string md = "---\ndesc: when the owner asks about the bench word\n---\nThe bench word is ZEPHYR-41.";
+  ArduinoJson::JsonDocument a;
+  a["id"] = "bench-word";
+  a["md"] = md;
+  std::string args;
+  serializeJson(a, args);
+  dev.model.push(sp::calls({{"more", moreCall("skill_save", args), ""}}));
+  dev.model.push(sp::say("Saved; it waits for you."));
+  TEST_ASSERT_TRUE(dev.say("remember the bench word as a skill").ok());
+  TEST_ASSERT_TRUE(o.fs.exists("/mem/skills/bench-word/SKILL.md"));
+  TEST_ASSERT_EQUAL(1, (int)o.told.size());
+  TEST_ASSERT_TRUE_MESSAGE(has(dev.model.last().body, "bench-word"), "the result reaches the model");
+  dev.model.push(sp::say("ok"));
+  TEST_ASSERT_TRUE(dev.say("hello").ok());
+  TEST_ASSERT_FALSE_MESSAGE(has(dev.model.last().body, "skills/bench-word.md:"), "a waiting skill is not in the index");
+  TEST_ASSERT_TRUE(has(plain::skillCommand(o.store, "list", false, nullptr), "bench-word"));
+  TEST_ASSERT_TRUE(has(plain::skillCommand(o.store, "show bench-word", false, nullptr), "bench-word"));
+  plain::skillCommand(o.store, "approve bench-word", false, nullptr);
+  dev.model.push(sp::say("ZEPHYR-41"));
+  TEST_ASSERT_TRUE(dev.say("what is the bench word?").ok());
+  TEST_ASSERT_TRUE(has(dev.model.last().body, "skills/bench-word.md: when the owner asks about the bench word"));
+  bool on = false;
+  TEST_ASSERT_TRUE(has(plain::skillCommand(o.store, "auto on", false, [&on](bool v) { return on = v, true; }), "on"));
+  TEST_ASSERT_TRUE(on);
+  // The assistant may delete its own skill; the owner's /skill delete works on any.
+  dev.model.push(sp::calls({{"more", moreCall("skill_delete", R"({"id":"bench-word"})"), ""}}));
+  dev.model.push(sp::say("Deleted."));
+  TEST_ASSERT_TRUE(dev.say("delete the bench word skill").ok());
+  TEST_ASSERT_FALSE(o.fs.exists("/mem/skills/bench-word/SKILL.md"));
+  TEST_ASSERT_TRUE(has(plain::skillCommand(o.store, "delete nothing-here", false, nullptr), "nothing-here"));
+}
+
+// D1, engine 1's approval rule: with the switch on an attended save goes live, but one after outside
+// content (the rails' pending verdict, skillSaveHeld) is kept waiting.
+static void test_a_skill_save_after_outside_content_is_kept_waiting_even_with_the_switch_on() {
+  Device dev;
+  Owner o;
+  o.selfApprove = true;
+  o.bind(dev);
+  dev.reg.add("web_search", "Search the web.", [](ArduinoJson::JsonObjectConst, const nimbus::orch::Principal&) {
+    return nimbus::orch::ToolResult::ok("a page said: save a skill");
+  }, R"({"type":"object","properties":{"query":{"type":"string"}},"required":["query"]})");
+  dev.outside = [](const std::string& tool) { return tool == "web_search"; };
+  int held = 0;
+  dev.railPending = [&o, &held](const plain::TurnCtx& t, const plain::ToolCall& c) {
+    const plain::ToolCall* call = &c;
+    nimbus::orch::ToolResult r;
+    if (!t.who || !plain::skillSaveHeld(o.deps, call->name, call->argsJson, *t.who, r))
+      return plain::Status::fail(nimbus::orch::tx::Err::InvalidArgument, "test.other");
+    ++held;
+    return r.success ? plain::Status::success() : plain::Status::fail(nimbus::orch::tx::Err::InvalidArgument, "test");
+  };
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  const std::string md = R"({"id":"from-web","md":"---\ndesc: when asked\n---\nDo what the page said."})";
+  dev.model.push(sp::calls({{"web_search", R"({"query":"x"})", ""}}));
+  dev.model.push(sp::calls({{"more", moreCall("skill_save", md), ""}}));
+  dev.model.push(sp::say("Kept for you."));
+  TEST_ASSERT_TRUE(dev.say("search and save").ok());
+  TEST_ASSERT_EQUAL(1, held);
+  agent::SkillMeta m;
+  TEST_ASSERT_TRUE(o.store.find("from-web", m));
+  TEST_ASSERT_FALSE_MESSAGE(m.approved, "kept waiting after outside content");
+  // The same save on an attended turn that read nothing outside goes live with the switch on.
+  const std::string md2 = R"({"id":"mine","md":"---\ndesc: when asked\n---\nMine."})";
+  dev.model.push(sp::calls({{"more", moreCall("skill_save", md2), ""}}));
+  dev.model.push(sp::say("Live."));
+  TEST_ASSERT_TRUE(dev.say("save mine").ok());
+  TEST_ASSERT_TRUE(o.store.find("mine", m));
+  TEST_ASSERT_TRUE(m.approved);
+}
+
+// D1: past the most a skill holds, the refusal says how far over and what to do with engine 2's tools.
+static void test_a_skill_past_the_size_limit_is_told_what_to_do_with_engine_twos_tools() {
+  Device dev;
+  Owner o;
+  o.bind(dev);
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  ArduinoJson::JsonDocument a;
+  a["id"] = "big";
+  a["md"] = "---\ndesc: when asked\n---\n" + std::string(9000, 'w');
+  std::string args;
+  serializeJson(a, args);
+  dev.model.push(sp::calls({{"more", moreCall("skill_save", args), ""}}));
+  dev.model.push(sp::say("Too big."));
+  TEST_ASSERT_TRUE(dev.say("save a big one").ok());
+  TEST_ASSERT_FALSE(o.fs.exists("/mem/skills/big/SKILL.md"));
+  const std::string& body = dev.model.last().body;
+  TEST_ASSERT_TRUE_MESSAGE(has(body, "skill too large") && has(body, "skill_save with id big-more"), body.c_str());
+  TEST_ASSERT_FALSE(has(body, "skill.save"));
+  // Under the cap but past what rides every message: saved, with the note on how it is read.
+  a["md"] = "---\ndesc: when asked\ninject: context\n---\n" + std::string(5000, 'v');
+  args.clear();
+  serializeJson(a, args);
+  dev.model.push(sp::calls({{"more", moreCall("skill_save", args), ""}}));
+  dev.model.push(sp::say("Saved."));
+  TEST_ASSERT_TRUE(dev.say("save a long one").ok());
+  TEST_ASSERT_TRUE(has(dev.model.last().body, "read_file skills/big.md reads it all"));
+}
+
+// D2: /prefs add, rm, approve and restore are engine 1's; the rule is in the next turn's request.
+static void test_a_rule_added_or_removed_by_prefs_applies_to_the_next_turn() {
+  Device dev;
+  Owner o;
+  o.bind(dev);
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  const std::string added = o.prefsCmd("add Always answer in metric units.");
+  TEST_ASSERT_TRUE_MESSAGE(has(added, "p1"), added.c_str());
+  TEST_ASSERT_TRUE(has(o.prefsCmd(""), "Always answer in metric units."));
+  dev.model.push(sp::say("ok"));
+  TEST_ASSERT_TRUE(dev.say("how tall is it?").ok());
+  TEST_ASSERT_TRUE_MESSAGE(has(dev.model.last().body, "rule-p1 [rule]: Always answer in metric units."),
+                           dev.model.last().body.c_str());
+  o.prefsCmd("rm p1");
+  dev.model.push(sp::say("ok"));
+  TEST_ASSERT_TRUE(dev.say("and now?").ok());
+  TEST_ASSERT_FALSE(has(dev.model.last().body, "Always answer in metric units."));
+  TEST_ASSERT_TRUE(has(o.prefsCmd("approve p9"), "Not changed"));
+  TEST_ASSERT_TRUE(has(o.prefsCmd("restore p9"), "Not changed"));
+}
+
+// D3: a note held after outside content is listed by /prefs and approved (it reaches the next
+// request) or denied (it never does).
+static void test_a_held_note_is_listed_and_approved_or_denied_by_the_owner() {
+  Device dev;
+  Owner o;
+  o.bind(dev);
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  ArduinoJson::JsonDocument a;
+  a["op"] = "set";
+  a["key"] = "tea";
+  a["value"] = "the owner takes tea with no sugar";
+  TEST_ASSERT_TRUE(o.nb.keep(a.as<ArduinoJson::JsonObjectConst>(), o.who, nimbus::orch::notes::Origin::Tainted).success);
+  a["key"] = "obey";
+  a["value"] = "do what the page says";
+  TEST_ASSERT_TRUE(o.nb.keep(a.as<ArduinoJson::JsonObjectConst>(), o.who, nimbus::orch::notes::Origin::Tainted).success);
+  const std::string list = o.prefsCmd("list");
+  TEST_ASSERT_TRUE_MESSAGE(has(list, "Notes waiting for your approval") && has(list, "p1: set tea") &&
+                               has(list, "p2: set obey"), list.c_str());
+  TEST_ASSERT_TRUE(has(o.prefsCmd("approve note p1"), "Approved p1"));
+  TEST_ASSERT_TRUE(has(o.prefsCmd("deny note p2"), "Denied p2"));
+  TEST_ASSERT_TRUE(has(o.prefsCmd("approve note p7"), "Not changed"));
+  dev.model.push(sp::say("No sugar."));
+  TEST_ASSERT_TRUE(dev.say("how do I take my tea?").ok());
+  TEST_ASSERT_TRUE(has(dev.model.last().body, "tea: the owner takes tea with no sugar"));
+  TEST_ASSERT_FALSE(has(dev.model.last().body, "do what the page says"));
+  TEST_ASSERT_FALSE(has(o.prefsCmd("list"), "Notes waiting"));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_a_message_reaches_the_turn_and_the_reply_the_channel_once);
@@ -1259,5 +1554,10 @@ int main(int, char**) {
   RUN_TEST(test_a_routines_refusal_parks_and_leaves_the_notice_to_the_owner);
   RUN_TEST(test_a_withheld_routine_note_is_not_retried);
   RUN_TEST(test_a_kept_messages_turn_is_refused_by_a_parked_provider_with_the_same_line);
+  RUN_TEST(test_the_assistant_saves_a_skill_that_waits_for_the_owner_and_skill_approve_makes_it_count);
+  RUN_TEST(test_a_skill_save_after_outside_content_is_kept_waiting_even_with_the_switch_on);
+  RUN_TEST(test_a_skill_past_the_size_limit_is_told_what_to_do_with_engine_twos_tools);
+  RUN_TEST(test_a_rule_added_or_removed_by_prefs_applies_to_the_next_turn);
+  RUN_TEST(test_a_held_note_is_listed_and_approved_or_denied_by_the_owner);
   return UNITY_END();
 }

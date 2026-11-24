@@ -9,7 +9,6 @@
 #include "memory_subsystem.h"          // dataFs() + haveSd() + Lock (SD serialization)
 #include "orchestrator.h"              // telegramForTurn / fileSendForTurn (CUM-523 sides)
 #include "../sys/agent_log.h"
-#include "nimbus/harness/builtin_skills.h"   // isBuiltinSkill (the un-shadowable ids)
 
 namespace agent::skills {
 
@@ -103,7 +102,9 @@ class DeviceSkillFs : public agent::SkillFs {
 
 DeviceSkillFs g_fs;
 agent::SkillStore* g_store = nullptr;   // constructed on first use (the tier is known then)
-agent::AttachTable g_attach;            // RAM only, lost on restart by design
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
+agent::AttachTable g_attach;            // RAM only, lost on restart by design (engine 1)
+#endif
 
 // Device clock as "YYYY-MM-DD HH:MM" ("" before SNTP sync - honest absence
 // beats a 1970 stamp).
@@ -164,6 +165,7 @@ bool setSelfApprove(bool on) {
 
 // ---- the engine's attach surface ----------------------------------------------
 
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
 std::string indexText() { return storeFor().indexText(); }
 
 
@@ -186,6 +188,8 @@ void noteUsed(const std::string& chat, const std::string& id) {
 }
 
 void dropChat(const std::string& chat) { g_attach.dropChat(chat); }
+
+#endif
 
 // ---- the tool and web surface ---------------------------------------------------
 

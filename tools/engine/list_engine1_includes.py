@@ -66,7 +66,6 @@ ENGINE1_HEADERS: Tuple[Tuple[str, str], ...] = (
     ("lib/harness/include/nimbus/harness/prompt_layout.h", "the old prompt layout"),
     ("lib/harness/include/nimbus/harness/router_refusal.h", "the old engine's router refusal turn"),
     ("lib/harness/include/nimbus/harness/skill_attach.h", "built-in skill attach"),
-    ("lib/harness/include/nimbus/harness/skill_store.h", "the old skill store and its tools"),
     ("lib/harness/include/nimbus/harness/turn_contract.h", "the old turn contract"),
     ("lib/harness/include/nimbus/harness/turn_fit.h", "the old request fitter"),
     ("lib/harness/include/nimbus/harness/turn_inbox.h", "the old engine's turn inbox"),

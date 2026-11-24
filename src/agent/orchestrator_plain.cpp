@@ -99,6 +99,7 @@
 #include "prefs_subsystem.h"          // filtersForRole (E2-FIX14)
 #include "version.h"                  // NIMBUS_FW_VERSION (E2-FIX14)
 #include "notes_device.h"       // notesdev::pinnedNotesFor, notebook (the rails' pending shelf)
+#include "tools_plain_skills.h"  // E2-P-SKILL: skill_save on the rails, the held notes' answers
 #include "schedule_device.h"    // scheduledev::fire, host - the schedule entries (lane E2-SCHED)
 #include "skills_device.h"      // skillsdev::chatSkills
 #include "spend_ceiling_store.h"   // spend::frozen, spend::commit, spend::limitMicro
@@ -527,6 +528,8 @@ plain::ChatBinding* chatFor(const String& chatId, const std::string& model, nimb
   // outside result, so the turn is tainted; the rails then keep its note changes on the pending shelf.
   d.outside = [](const std::string&) { return tools::takeOutsideCall(); };
   d.railPending = [](const plain::TurnCtx& t, const plain::ToolCall& c) {
+    plain::Status held;
+    if (tools::skillsplain::railHeld(t, c, held)) return held;   // E2-P-SKILL: kept waiting in the store
     if (c.name != "note" || !t.who) return plain::Status::fail(nimbus::orch::tx::Err::InvalidArgument, "e2.rails.other");
     const PsramFirstScope psram;
     JsonDocument args;
@@ -1692,7 +1695,8 @@ void serveWebAsks() {
 int pollJobs() {
   if (!s_begun) return 0;
   serveWebAsks();         // E2-P-SURF: the web pages' asks, between turns
-  migratedev::importRulesOnce();   // once: the earlier engine's standing rules as pinned notes
+  migratedev::importRulesOnce();   // the earlier engine's standing rules as pinned notes, again after a change
+  tools::skillsplain::pump();       // E2-P-SKILL: the Rules page's answers to held notes
   bootLostChat();         // once: a person's message a restart cut is resumed (E2-FIX12)
   bootOwnerChat();        // once: the owner chat's transcript and seen index before its next message
   loadWaitingLists();     // E2-FIX13: the messages a restart left kept for the read-in

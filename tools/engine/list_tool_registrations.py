@@ -56,6 +56,7 @@ ENGINE2_REGISTRATION_FILES: Tuple[str, ...] = (
     "src/agent/tools_plain_send.h",
     "src/agent/tools_plain_send.cpp",
     "src/agent/tools_plain_files.cpp",
+    "src/agent/tools_plain_skills.cpp",  # lane E2-P-SKILL: skill_list, skill_save, skill_delete
 )
 
 # A registry receiver: any identifier with "reg" in it (reg, g_reg, registry, toolReg, ...) or a

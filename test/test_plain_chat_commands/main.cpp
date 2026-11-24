@@ -23,9 +23,9 @@ struct Expect {
 // Every verb of the table and its route (a bare command).
 constexpr Expect kExpected[] = {
     {"help", R::Shared},   {"start", R::Shared},   {"update", R::Shared},    {"loops", R::Shared},
-    {"loop", R::Shared},   {"compact", R::Compact}, {"skill", R::NotYet},    {"fetch", R::Shared},
+    {"loop", R::Shared},   {"compact", R::Compact}, {"skill", R::Shared},    {"fetch", R::Shared},
     {"remind", R::Shared}, {"clear", R::Clear},     {"mcp", R::NotYet},      {"play", R::Shared},
-    {"prefs", R::NotYet},  {"usage", R::Shared},    {"budget", R::BudgetView}, {"model", R::Shared},
+    {"prefs", R::Shared},  {"usage", R::Shared},    {"budget", R::BudgetView}, {"model", R::Shared},
     {"ota", R::Shared},
 };
 

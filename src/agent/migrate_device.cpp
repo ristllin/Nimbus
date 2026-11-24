@@ -18,6 +18,7 @@
 #include "notes_device.h"        // notesdev::notebook
 #include "orchestrator.h"        // orchestrator::utcOffsetAt
 #include "nimbus/orch/owner_prefs.h"   // kPrefsPath - the earlier engine's rules file
+#include "prefs_subsystem.h"     // prefs::saves - a change of the rules file (E2-P-SKILL)
 #include "tx_store_device.h"     // txdev::cardTxFiles - is there a transcript yet
 
 namespace agent::migratedev {
@@ -179,9 +180,15 @@ bool historyReady(const std::string& chatKey, bool quiet) {
 uint32_t lastQueries() { return s_rows ? s_rows->queries() : 0; }
 
 void importRulesOnce() {
-  static bool done = false;
-  if (done) return;
-  done = true;
+  // Lane E2-P-SKILL: at start, then again after each save of the rules file (the web Rules page,
+  // /prefs), so a rule changed there applies to the next turn; the import is a sync (added, updated,
+  // removed by its record), so running it again changes only what changed.
+  static bool started = false;
+  static uint32_t seen = 0;
+  const uint32_t saves = prefs::saves();
+  if (started && saves == seen) return;
+  started = true;
+  seen = saves;
   if (!flashMounted()) return;
   const uint32_t t0 = millis();
   // R5: the rules from the file itself, read under the store's lock and checked whole; a read that
