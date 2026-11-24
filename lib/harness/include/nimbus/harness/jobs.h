@@ -262,6 +262,11 @@ class JobEngine {
     // engine owns only the coalesce/fallback clock that triggers it.
     std::function<void(const std::string& chatId)> synthesize;
     std::function<bool()> turnInFlight;
+    // Engine 2 (lane E2-P-SUB2): every finished or failed job comes back as its own report turn.
+    // A failure is parked like a result (never a bare line), the finished ring marks each parked
+    // result unreported until markReported, and the first pump after a boot parks again the
+    // results a restart left unreported (read from the file each was saved to, through readDoc).
+    bool reportTurns = false;
     // Reserved for parity with the device's ttsAnnounce helper; no job path
     // currently fires it (the device function is uncalled today). Nullable.
     std::function<void(const std::string& text)> ttsAnnounce;
@@ -329,6 +334,11 @@ class JobEngine {
   bool dispatchQueued();
 
   bool cancel(const char* tagOrJobId);
+  // Lane E2-P-SUB2: a spawn of `chatId` still queued (not dispatched) whose name is `name` leaves
+  // the queue; its ledger line says stopped. False when none is queued under that name.
+  bool cancelQueued(const std::string& chatId, const std::string& name);
+  // Lane E2-P-SUB2 (reportTurns): `tag`'s report turn ran; its finished-ring entry is reported.
+  void markReported(const std::string& tag);
   // Lane QW4 (CUM-774): true while a job's stop is asked but not yet confirmed by its
   // provider (it is on the background stop list: asked again, polled, counted).
   bool stopping(const char* tagOrJobId) const;
@@ -515,6 +525,10 @@ class JobEngine {
   struct ReapEntry { uint32_t key; uint32_t dueAt; };
 
   void dispatchSpawn(const PendingSpawn& p);
+  // Lane E2-P-SUB2 (reportTurns): park again, once per boot, the results the finished ring marks
+  // unreported from before this boot.
+  void restoreUnreported();
+  bool restoredUnreported_ = false;
   // Where a spawn runs: the provider (explicit hint, connector routing, then
   // firstSubProvider), its adapter and the model. A provider with no key of its
   // own runs on the Cumulo router when the router offers its model (CUM-541).

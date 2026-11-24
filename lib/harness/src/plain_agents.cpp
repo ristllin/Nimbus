@@ -146,7 +146,8 @@ struct Tools {
     orch::JobRecord r;
     const bool open = findRecord(journal(), id, r);
     const bool mine = open && (chatId == r.chatId || who.owner);
-    if (mine ? d.jobs->cancel(r.tag) : (!open && d.jobs->stopping(id.c_str())))
+    if (mine ? d.jobs->cancel(r.tag)
+             : (!open && (d.jobs->stopping(id.c_str()) || d.jobs->cancelQueued(chatId, id))))
       return orch::ToolResult::ok(std::string(tr::kAgentStopping) + (open ? r.tag : id.c_str()));
     return orch::ToolResult::fail(std::string(tr::kAgentNoJob) + id);
   }
@@ -200,6 +201,7 @@ Status deliverReports(JobEngine& jobs, const std::string& chatId, const ReportTu
       jobs.restoreFresh(std::vector<JobEngine::FreshResult>(taken.begin() + (long)i, taken.end()));
       return st;
     }
+    jobs.markReported(f.tag);
     ++ran;
   }
   return Status::success();

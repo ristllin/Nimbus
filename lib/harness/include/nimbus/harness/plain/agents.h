@@ -12,13 +12,14 @@
 // fabric.cpp), lane E2-P-SUB. Nothing here is a second copy of the job machinery: the JobEngine
 // queues, dispatches, polls, journals (a job survives a restart), meters and stops; this file is
 // the model's three tools over it and the arrival of a report as its own turn.
-//   - agent_start({name, task, files up to 4, model?}): the job is queued in the JobEngine on the
-//     one backend the binding names, with the files as attachments and the agents project as its
+//   - agent_start({name, task, files up to 4, model?}): the job is queued in the JobEngine, which
+//     picks its provider as on engine 1 (a connector's provider, the file route, else the first
+//     keyed provider of the owner's sub-agent order: the provider slots), with the files as attachments and the agents project as its
 //     result's home; `dispatchNow` lets a remote-job backend start inside the turn, so the result
 //     is 'started id=<tag> job=<provider id>', the refusal's own reason, or 'queued' when the
 //     dispatch waits for a free slot. Briefs carry the task and the files, never the transcript.
 //   - agent_list: the chat's jobs from the ledger, then any open journal job a restart left.
-//   - agent_stop({id}): JobEngine::cancel.
+//   - agent_stop({id}): JobEngine::cancel; a job still queued is stopped by its name.
 //   - arrival: the JobEngine's synthesis seam names a chat with parked results; each result of
 //     that chat's scope becomes one report turn (Trigger::AgentResult: its text is stored as one
 //     agent device note, outside content, and the turn's writes go through the rails). A turn
@@ -39,7 +40,7 @@ Status agentReportPath(const std::string& id, const std::string& name, std::stri
 
 struct AgentsDeps {
   JobEngine* jobs = nullptr;
-  std::string backend = "anthropic";            // the provider every job runs on
+  std::string backend;   // a provider every job is held to; "" (the products): the JobEngine's routing
   std::function<std::string()> chat;            // the running turn's chat ("" outside a turn)
   // JobEngine::dispatchQueued, so a queued job is dispatched inside the turn (one request on the
   // same task, never concurrent; no poll and no report turn inside it). Null: the next pump.
@@ -59,7 +60,8 @@ std::string agentReportNote(const JobEngine::FreshResult& f);
 using ReportTurnFn = std::function<Status(const std::string& chatId, const std::string& note)>;
 
 // The arrival: every parked result of `chatId`'s scope, oldest first, one report turn each (in
-// the chat that started the job). `ran` counts the turns that ran. A turn that did not start
+// the chat that started the job). `ran` counts the turns that ran; each one's job is marked
+// reported (JobEngine::markReported), so a restart never reports it again. A turn that did not start
 // stops the arrival and puts that result and the rest back, in order; its status is returned.
 Status deliverReports(JobEngine& jobs, const std::string& chatId, const ReportTurnFn& turn, int& ran);
 

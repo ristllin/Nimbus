@@ -9,7 +9,10 @@
 //     job's spend is counted once and the report turn's usage is handed over;
 //   - agent_list names the chat's jobs; agent_stop stops one; a stranger's id is not stopped;
 //   - a report that arrives while a turn runs is kept and runs after it, never dropped;
-//   - a job open at a restart is polled again by the new engine and its report arrives then.
+//   - a job open at a restart is polled again by the new engine and its report arrives then;
+//   - lane E2-P-SUB2: a job runs on the first keyed provider of the owner's sub-agent order (no
+//     Anthropic default); a report parked in RAM at a restart is a report turn after the boot, once;
+//     a failed job is a report turn with its true line, never a bare line; a queued job stops.
 #include <unity.h>
 
 #include <cstdlib>
@@ -127,6 +130,8 @@ struct Kept {
   FakeStore store;
   harness_test::FakeAdapter adapter;
   std::map<std::string, std::string> saved;   // the reports the file store kept (path -> text)
+  std::string priority = "anthropic";          // the owner's sub-agent order (store::subPriority)
+  std::set<std::string> keys{"anthropic"};     // the providers with a key
 };
 
 // One boot of the device: platform, head, binding, registry, journal and job engine, wired the way
@@ -140,7 +145,7 @@ struct Device {
     platform.allocLarge = [](size_t n) { return std::malloc(n); };
     platform.freeLarge = [](void* p) { std::free(p); };
     model.clock = &ms;
-    kept.adapter.backend = "anthropic";
+    if (kept.adapter.backend == "fake") kept.adapter.backend = "anthropic";
     fabric.registerAdapter(&kept.adapter);
     journal.begin(&kept.store);
     agent::JobEngine::Deps j;
@@ -149,8 +154,13 @@ struct Device {
     j.journal = &journal;
     j.principalFor = [](const std::string& c) { return orch::principalForRole(c, orch::Role::Admin); };
     j.deliver = [this](const std::string& c, const std::string& t) { delivered.push_back(c + "|" + t); };
-    j.subPriority = [] { return std::string("anthropic"); };
-    j.providerHasKey = [](const std::string& p) { return p == "anthropic"; };
+    j.subPriority = [this] { return kept.priority; };
+    j.providerHasKey = [this](const std::string& p) { return kept.keys.count(p) > 0; };
+    j.readDoc = [this](const std::string&, const std::string& prj, const std::string& name) {
+      auto it = kept.saved.find(prj + "/" + name);
+      return it == kept.saved.end() ? std::string() : it->second;
+    };
+    j.reportTurns = true;   // engine 2's wiring (orchestrator_plain.cpp buildJobDeps)
     j.subModel = [](const std::string&) { return std::string("claude-haiku-5-5"); };
     j.modelIsValid = [](const std::string&, const std::string& m) { return m == "claude-haiku-5-5"; };
     j.recordSpawnUsage = [this](const std::string& b, const std::string& m, const orch::TokenUsage& u) {
@@ -187,6 +197,8 @@ struct Device {
   plain::Status boot() {
     plain::ChatBindingConfig c;
     c.chatKey = kChat;
+    c.host = "api.anthropic.com";   // E2-R8a: a binding names its head's slot (no default)
+    c.provider = "anthropic";
     c.model = "claude-haiku-5-5";
     c.summarizerModel = "claude-haiku-5-5";
     c.timeZone = "Europe/London";
@@ -403,6 +415,95 @@ static void test_a_job_open_at_restart_reports_after_it() {
   TEST_ASSERT_EQUAL(1, (int)kept.saved.count("agents/job0000-long-read.md"));
 }
 
+// E2-P-SUB2 D1: the job's provider follows the owner's sub-agent order, as on engine 1: with OpenAI
+// first and keyed, the job runs there (it was held to Anthropic before).
+static void test_a_job_runs_on_the_first_provider_of_the_order() {
+  Kept kept;
+  kept.priority = "openai,anthropic";
+  kept.keys = {"openai", "anthropic"};
+  kept.adapter.backend = "openai";
+  kept.adapter.pollScript = {agent::JobState::Running};
+  Device dev(kept);
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  const orch::ToolResult started = dev.call("agent_start", R"({"name":"scan","task":"scan the news"})");
+  TEST_ASSERT_TRUE_MESSAGE(started.success, started.error.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(has(started.output, "job=openai:job-1"), started.output.c_str());
+  TEST_ASSERT_EQUAL(1, (int)kept.adapter.dispatched.size());
+  const orch::ToolResult listed = dev.call("agent_list", "{}");
+  TEST_ASSERT_TRUE_MESSAGE(has(listed.output, "scan (job0000, openai/"), listed.output.c_str());
+}
+
+// E2-P-SUB2 D2: the job finished and its report was parked while a turn ran; the device restarted
+// before the report turn. After the boot the report (read back whole from its saved file) is a
+// report turn of the chat, and a further restart does not report it again.
+static void test_a_report_waiting_at_restart_comes_after_the_boot() {
+  Kept kept;
+  kept.adapter.pollScript = {agent::JobState::Done};
+  kept.adapter.doneReply = "The answer is 42.";
+  {
+    Device before(kept);
+    TEST_ASSERT_TRUE(before.boot().ok());
+    TEST_ASSERT_TRUE(before.call("agent_start", R"({"name":"sum","task":"add it up"})").success);
+    before.inTurn = true;   // a person's turn runs: the report waits in RAM
+    before.pumps(3, 1000);
+    TEST_ASSERT_EQUAL(0, before.reportsRun);
+    TEST_ASSERT_EQUAL(1, (int)before.jobs->peekFreshFor(before.jobs->freshScopeFor(kChat)).size());
+    TEST_ASSERT_EQUAL(0, before.journal.count());   // finished: nothing for the next engine to poll
+  }
+  {
+    Device after(kept);
+    TEST_ASSERT_TRUE(after.boot().ok());
+    after.model.push(sp::say("It is 42."));
+    after.pumps(2, 1000);
+    TEST_ASSERT_EQUAL(1, after.reportsRun);
+    TEST_ASSERT_TRUE_MESSAGE(has(after.model.last().body, "The answer is 42."), after.model.last().body.c_str());
+    TEST_ASSERT_TRUE(has(after.model.last().body, "[agent report] sum id=job0000 saved whole as agents/job0000-sum.md"));
+    TEST_ASSERT_EQUAL_STRING("1001|It is 42.", after.sent.back().c_str());
+  }
+  Device again(kept);
+  TEST_ASSERT_TRUE(again.boot().ok());
+  again.pumps(3, 1000);
+  TEST_ASSERT_EQUAL(0, again.reportsRun);   // reported once
+  std::string why;
+  TEST_ASSERT_TRUE_MESSAGE(again.model.verify(why), why.c_str());
+}
+
+// E2-P-SUB2 D3: a failed job with nothing else running is a report turn carrying the true line.
+static void test_a_failed_job_is_a_report_turn() {
+  Kept kept;
+  kept.adapter.pollScript = {agent::JobState::Error};
+  Device dev(kept);
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  TEST_ASSERT_TRUE(dev.call("agent_start", R"({"name":"fetch","task":"fetch the page"})").success);
+  dev.model.push(sp::say("The fetch job failed."));
+  dev.pumps(4);
+  TEST_ASSERT_EQUAL(1, dev.reportsRun);
+  const std::string body = dev.model.last().body;
+  TEST_ASSERT_TRUE_MESSAGE(has(body, "[agent report] fetch id=job0000 failed"), body.c_str());
+  TEST_ASSERT_TRUE(has(body, "failed: unknown error"));
+  TEST_ASSERT_TRUE(dev.delivered.empty());   // no bare line outside the conversation
+  TEST_ASSERT_EQUAL_STRING("1001|The fetch job failed.", dev.sent.back().c_str());
+}
+
+// E2-P-SUB2 D4: a job still queued (every slot busy) is stopped by its name and never starts.
+static void test_a_queued_job_stops() {
+  Kept kept;
+  kept.adapter.pollScript = {agent::JobState::Running};
+  Device dev(kept);
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  for (int i = 0; i < 4; ++i)
+    TEST_ASSERT_TRUE(dev.call("agent_start", "{\"name\":\"busy" + std::to_string(i) + "\",\"task\":\"wait\"}").success);
+  const orch::ToolResult queued = dev.call("agent_start", R"({"name":"later","task":"run later"})");
+  TEST_ASSERT_EQUAL_STRING(plain::texts::tool_results::kAgentQueued, queued.output.c_str());
+  TEST_ASSERT_EQUAL(1, dev.jobs->pendingCount());
+  const orch::ToolResult stopped = dev.call("agent_stop", R"({"id":"later"})");
+  TEST_ASSERT_TRUE_MESSAGE(stopped.success, stopped.error.c_str());
+  TEST_ASSERT_EQUAL(0, dev.jobs->pendingCount());
+  TEST_ASSERT_TRUE(has(dev.call("agent_list", "{}").output, "- later: stopped"));
+  dev.pumps(3);
+  TEST_ASSERT_EQUAL(4, (int)kept.adapter.dispatched.size());   // it never started
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_the_report_path_is_agents_id_name);
@@ -410,5 +511,9 @@ int main(int, char**) {
   RUN_TEST(test_list_and_stop);
   RUN_TEST(test_a_report_during_a_turn_is_kept_not_lost);
   RUN_TEST(test_a_job_open_at_restart_reports_after_it);
+  RUN_TEST(test_a_job_runs_on_the_first_provider_of_the_order);
+  RUN_TEST(test_a_report_waiting_at_restart_comes_after_the_boot);
+  RUN_TEST(test_a_failed_job_is_a_report_turn);
+  RUN_TEST(test_a_queued_job_stops);
   return UNITY_END();
 }

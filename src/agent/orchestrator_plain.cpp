@@ -1732,6 +1732,7 @@ JobEngine::Deps buildJobDeps() {
   // (a direct call: the report turn's frames never sit under the pump's, nor under a std::function a
   // turn also calls, which the tg_poll stack gate would read as a turn inside a turn).
   d.synthesize = [](const std::string& chatId) { s_reportsFor = chatId; };
+  d.reportTurns = true;   // E2-P-SUB2: a failure is a report turn; a report a restart left waiting comes after it
   return d;
 }
 

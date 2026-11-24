@@ -70,6 +70,7 @@ size_t serializeFinished(const FinishedJob& f, char* buf, size_t sz) {
   d["q"] = f.seq;
   d["cid"] = f.chatId;
   if (f.failed) d["fail"] = true;
+  if (f.unreported) d["unrep"] = true;
   const size_t need = measureJson(d);
   if (need + 1 > sz) {
     if (sz) buf[0] = 0;
@@ -92,6 +93,7 @@ bool deserializeFinished(const char* buf, FinishedJob& f) {
   f.finishedEpoch = d["ts"] | 0u;
   f.seq = d["q"] | 0u;
   f.failed = d["fail"] | false;
+  f.unreported = d["unrep"] | false;
   return f.tag[0] != 0;
 }
 
@@ -205,6 +207,14 @@ bool Journal::finish(const char* tag, const FinishedJob& f, JobState final) {
   records_[r].resultSeen = true;
   const bool seenLanded = saveSlot(r);
   return ringLanded && seenLanded;
+}
+
+bool Journal::markReported(const char* tag) {
+  const int i = tag ? finishedSlotFor(tag) : -1;
+  if (i < 0) return false;
+  if (!fin_[i].job.unreported) return true;
+  fin_[i].job.unreported = false;
+  return saveFinished(i);
 }
 
 bool Journal::finished(int idx, FinishedJob& out, bool* beforeBoot) const {

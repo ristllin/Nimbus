@@ -78,6 +78,9 @@ struct FinishedJob {
   uint32_t finishedEpoch = 0;   // Unix seconds (0 = the clock was not set)
   uint32_t seq = 0;             // ring order across restarts (newest = highest)
   bool     failed = false;      // ended in an error, a loss or a cancel
+  // Engine 2 (lane E2-P-SUB2): its result waits for its report turn. Set at the finish, cleared once
+  // the report turn ran; one still set at a boot is read back and reported then.
+  bool     unreported = false;
 };
 
 // Same contract as serializeRecord: nothing usable is written when it would not fit.
@@ -153,6 +156,9 @@ class Journal {
   int  finishedCount() const { return finCount_; }
   // Newest first. `beforeBoot` (optional) says whether it finished before this boot.
   bool finished(int idx, FinishedJob& out, bool* beforeBoot = nullptr) const;
+  // Lane E2-P-SUB2: `tag`'s report turn ran: clear its ring entry's unreported mark and store it.
+  // False when the ring holds no such entry or the write did not land.
+  bool markReported(const char* tag);
   // The highest NNNN of a "jobNNNN" tag held anywhere in the journal (-1 = none), so
   // a new boot never hands out a tag a restored or finished job still carries.
   long highestTagNumber() const;

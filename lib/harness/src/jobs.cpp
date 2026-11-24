@@ -716,6 +716,8 @@ std::string JobEngine::ownerText(const FreshScope* scope) const {
 
 void JobEngine::deliverOwnerFallback() {
   hlog::log("orchestrator: synthesis stuck - delivering raw results (fallback)");
+  if (d_.reportTurns)   // delivered raw below: none is reported again after a restart
+    for (const FreshResult& f : fresh_) markReported(f.tag);
   // Each chat's results to that chat (CUM-830), consumed so nothing is delivered twice.
   while (!fresh_.empty()) {
     const std::string chatId = nextFreshChat();
@@ -1682,6 +1684,8 @@ void JobEngine::finishJob(const orch::JobRecord& rec, const std::string& artifac
   if (d_.nowString) strncpy(f.finishedAt, d_.nowString().c_str(), sizeof(f.finishedAt) - 1);
   f.finishedEpoch = d_.nowEpoch ? d_.nowEpoch() : 0;
   f.failed = final != orch::JobState::Done;
+  // Engine 2: a parked result waits for its report turn (a stopped job has none).
+  f.unreported = d_.reportTurns && final != orch::JobState::Cancelled;
   if (!d_.journal->finish(rec.tag, f, final))
     hlog::logf("orchestrator: finished record %s not stored", rec.tag);
 }
@@ -1734,6 +1738,7 @@ bool JobEngine::dispatchQueued() {
 
 int JobEngine::pump() {
   if (!d_.fabric || !d_.journal) return 0;
+  if (d_.reportTurns && !restoredUnreported_) restoreUnreported();   // once per boot (E2-P-SUB2)
   reapDone();     // collapse any delivered sub-agent arcs whose grace has elapsed
   stopFrozenHelpers();   // lane QW4 (CUM-778): a spend freeze stops paid helpers
   serviceStopList();     // lane QW4 (CUM-774): helpers whose stop is not yet confirmed
@@ -1818,9 +1823,16 @@ int JobEngine::pump() {
       // A synchronous sub's result lived in the device's RAM, so a job restored after a
       // restart cannot be collected: say that, not "expired" (subagents F4.4).
       const bool lost = d_.journal->restored(rec.tag) && backendRunsSync(rec.backend);
-      deliver(rec.chatId, lost ? std::string("The result of [") + jobLabel(rec) +
-                                     "] was lost when the device restarted, so it will not arrive."
-                               : std::string("Job [") + jobLabel(rec) + "] expired or was not found.");
+      const std::string goneText = lost ? std::string("The result of [") + jobLabel(rec) +
+                                              "] was lost when the device restarted, so it will not arrive."
+                                        : std::string("Job [") + jobLabel(rec) + "] expired or was not found.";
+      if (d_.reportTurns) {   // engine 2 (E2-P-SUB2): the failure is a report turn, not a bare line
+        addFreshResult(rec.tag, jobLabel(rec).c_str(), std::string("FAILED: ") + goneText,
+                       nimbus::orch::nsForChat(rec.chatId, /*admin=*/false), /*failed=*/true);
+        freshChatId_ = rec.chatId;
+      } else {
+        deliver(rec.chatId, goneText);
+      }
       ledgerFinished(rec.tag, LedgerState::Failed,
                      lost ? "its result was lost when the device restarted"
                           : "it expired or was not found on its provider");
@@ -1855,7 +1867,7 @@ int JobEngine::pump() {
         // Same owner-delivery discipline as a normal sub failure (W19): while
         // other work runs, the failure joins the fresh results so the final
         // synthesis reports it; alone, it IS the report.
-        if (activeCount() > 1 || !pending_.empty()) {
+        if (d_.reportTurns || activeCount() > 1 || !pending_.empty()) {
           addFreshResult(rec.tag, jobLabel(rec).c_str(), std::string("FAILED: ") + failText,
                          nimbus::orch::nsForChat(rec.chatId, /*admin=*/false), /*failed=*/true);
           freshChatId_ = rec.chatId;
@@ -1983,7 +1995,8 @@ int JobEngine::pump() {
               (env_ref().error[0] ? env_ref().error : "unknown error");
       ledgerFinished(rec.tag, LedgerState::Failed, env_ref().error[0] ? env_ref().error : "unknown error",
                      env_ref().toolNames);
-      if (activeCount() > 1 || !pending_.empty()) {   // >1: this job still counts
+      // Engine 2 (E2-P-SUB2): always parked, so it reaches the person as a report turn.
+      if (d_.reportTurns || activeCount() > 1 || !pending_.empty()) {   // >1: this job still counts
         addFreshResult(rec.tag, jobLabel(rec).c_str(), std::string("FAILED: ") + failText,
                        nimbus::orch::nsForChat(rec.chatId, /*admin=*/false), /*failed=*/true);
         freshChatId_ = rec.chatId;
@@ -2311,6 +2324,56 @@ bool JobEngine::stopping(const char* tagOrJobId) const {
   for (const Stopping& e : stopping_)
     if (e.tag == tagOrJobId || e.jobId == tagOrJobId) return true;
   return false;
+}
+
+bool JobEngine::cancelQueued(const std::string& chatId, const std::string& name) {
+  if (name.empty()) return false;
+  for (auto it = pending_.begin(); it != pending_.end(); ++it) {
+    if (chatId != it->chatId || name != it->name) continue;
+    if (LedgerEntry* e = queuedEntry(*it)) {
+      e->state = LedgerState::Cancelled;
+      e->atMs = nowMs();
+    }
+    hlog::logf("orchestrator: queued spawn %s stopped before it started", it->name);
+    pending_.erase(it);
+    return true;
+  }
+  return false;
+}
+
+void JobEngine::markReported(const std::string& tag) {
+  if (!d_.reportTurns || !d_.journal || tag.empty()) return;
+  if (!d_.journal->markReported(tag.c_str()))
+    hlog::logf("orchestrator: report mark for %s not stored", tag.c_str());
+}
+
+// The results a restart left unreported: each one's saved file read back whole (the result as
+// it was parked, before the 3500-char view), or a true line when it cannot be.
+void JobEngine::restoreUnreported() {
+  restoredUnreported_ = true;
+  if (!d_.journal) return;
+  std::vector<orch::FinishedJob> waiting;
+  orch::FinishedJob f;
+  bool before = false;
+  for (int i = 0; d_.journal->finished(i, f, &before); i++)
+    if (before && f.unreported) waiting.insert(waiting.begin(), f);   // oldest first
+  for (const orch::FinishedJob& w : waiting) {
+    const std::string label = w.name[0] ? std::string(w.name) : std::string(w.tag);
+    std::string text;
+    const char* slash = std::strchr(w.artifact, '/');
+    if (!w.failed && slash && d_.readDoc)
+      text = d_.readDoc(w.chatId, std::string(w.artifact, (size_t)(slash - w.artifact)), std::string(slash + 1));
+    bool failed = text.empty();
+    if (w.failed)
+      text = "FAILED: Job [" + label + "] ended without a result before the device restarted; its reason was not kept.";
+    else if (failed)
+      text = "FAILED: Job [" + label + "] finished before the device restarted, but its saved result " +
+             (w.artifact[0] ? std::string("(") + w.artifact + ") could not be read." : std::string("was not kept."));
+    addFreshResult(w.tag, label.c_str(), text, nimbus::orch::nsForChat(w.chatId, /*admin=*/false), failed);
+    if (!failed && w.artifact[0]) fresh_.back().saved.push_back(w.artifact);
+    freshChatId_ = w.chatId;
+    hlog::logf("orchestrator: %s's report waited at the restart; it comes now", w.tag);
+  }
 }
 
 bool JobEngine::cancel(const char* tagOrJobId) {
