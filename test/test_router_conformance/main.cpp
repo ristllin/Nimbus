@@ -23,6 +23,7 @@
 #include "../support/tx_battery/pending.h"
 #include "../support/tx_battery/render.h"
 #include "../support/tx_battery/rows.h"
+#include "../support/wire_shape/chat_shape.h"
 #include "row_props.h"
 
 namespace tx = nimbus::orch::tx;
@@ -38,16 +39,19 @@ namespace {
 size_t g_ran = 0, g_ranAnthropic = 0;
 
 // Run `body` on every row; a row still waiting for `extra` lanes or its codec is logged, not run.
-// An engine turn on a routed row also waits for `routedLane` (the route of a routed head, design lane R4a).
+// An engine turn on a routed row also waits for `routedLane` (the route of a routed head, design lane R4a);
+// a case on a row whose table row offers no tools (text mode) waits for `toolsOffLane` when one is named
+// (lane E2-R6: text-mode history is lane R4b's, a custom endpoint's tools R8's verify step).
 void forEachRow(const char* property, std::initializer_list<const char*> extra,
                 const std::function<void(const txb::Row&)>& body, const char* routedLane = nullptr,
-                bool routedOnly = false) {
+                bool routedOnly = false, const char* toolsOffLane = nullptr) {
   size_t waiting = 0, rows = 0;
   for (const txb::Row& r : txb::tableRows()) {
     if (routedOnly && !r.routed) continue;
     ++rows;
     std::string lane = txb::rowWaitsFor(r, extra);
     if (lane.empty() && r.routed && routedLane) lane = txb::rowWaitsFor(r, {routedLane});
+    if (lane.empty() && toolsOffLane && r.dialect == plain::Dialect::ChatCompletions && !txb::rowTools(r)) lane = txb::rowWaitsFor(r, {toolsOffLane});
     if (lane.rfind("ERROR ", 0) == 0) TEST_FAIL_MESSAGE(lane.c_str());
     if (!lane.empty()) {
       txb::waitLog().note(property, r, lane);
@@ -64,6 +68,19 @@ void forEachRow(const char* property, std::initializer_list<const char*> extra,
 }
 
 std::string msgOf(const txb::Row& r, const std::string& what) { return r.name + ": " + what; }
+
+// The guard round's tool choice: none, or auto on a known row that does not take none (design section 7:
+// the same tools array, auto, and every call of that answer stored not complete).
+const char* guardChoice(const txb::Row& r) {
+  const caps::Caps c = caps::capsFor(r.slot, r.model.c_str(), r.routed);
+  return c.known && !(c.row.toolChoice & caps::choice::kNone) ? "auto" : "none";
+}
+
+// A row whose cap mode leaves the output cap out (custom chat; OpenAI direct).
+bool capOmitted(const txb::Row& r) {
+  const caps::CapMode m = caps::capsFor(r.slot, r.model.c_str(), r.routed).row.capMode;
+  return m == caps::CapMode::Omit || (m == caps::CapMode::OmitDirectCeilRouted && !r.routed);
+}
 
 // The stored transcripts every render property reads: the four-turn day, snapshot by snapshot.
 std::vector<txb::Snapshot> dayFor(const txb::Row& r) { return txb::dayOfFourTurns(r.dialect); }
@@ -167,7 +184,7 @@ void test_p1_same_input_same_bytes() {
       TEST_ASSERT_TRUE_MESSAGE(rc::sameBytes(a.body, b.body, s.name + " twice", why), msgOf(r, why).c_str());
       TEST_ASSERT_TRUE_MESSAGE(rc::sameBytes(a.body, c.body, s.name + " reloaded", why), msgOf(r, why).c_str());
     }
-  });
+  }, nullptr, false, "RB-R4b");
 }
 
 // ---- 2. stable prefix after appending a turn; the tools array is identical every round, guard round too -----------
@@ -187,10 +204,10 @@ void test_p2_stable_prefix_and_tools() {
     const txb::Snapshot& last = snaps[snaps.size() - 2];
     txb::Rendered guard;
     TXB_OK(txb::renderItems(fx, last.c, 0, guard, last.openTurn, true));
-    TEST_ASSERT_EQUAL_STRING_MESSAGE("none", guard.view.toolChoice.c_str(), msgOf(r, "guard round").c_str());
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(guardChoice(r), guard.view.toolChoice.c_str(), msgOf(r, "guard round").c_str());
     std::string why;
     TEST_ASSERT_TRUE_MESSAGE(rc::toolsSame(out[0].view, guard.view, why), msgOf(r, "guard round: " + why).c_str());
-  });
+  }, nullptr, false, "RB-R4b");
 }
 
 // ---- 3. pairing: every call has exactly one result after it, at every stub pointer ----------------------------------
@@ -205,7 +222,7 @@ void test_p3_every_call_has_one_result() {
         TEST_ASSERT_TRUE_MESSAGE(txb::viewPaired(out.view, why),
                                  msgOf(r, s.name + " pointer " + std::to_string(p) + ": " + why).c_str());
       }
-  });
+  }, nullptr, false, "RB-R4b");
 }
 
 // ---- 4. tool round trip through the engine ------------------------------------------------------------------------------
@@ -224,7 +241,7 @@ void test_p4_tool_round_trip() {
     TEST_ASSERT_TRUE_MESSAGE(rc::roundTripHolds(b.world.dispatched, "read_file", next, why), msgOf(r, why).c_str());
     TEST_ASSERT_EQUAL_STRING_MESSAGE("It says alpha.", out.text.c_str(), r.name.c_str());
     TEST_ASSERT_TRUE_MESSAGE(b.model.verify(why), msgOf(r, why).c_str());
-  }, "RB-R4a");
+  }, "RB-R4a", false, "RB-R8");
 }
 
 // ---- 5. a not-complete answer's calls never run (in parse and after the exchange) --------------------------------------
@@ -265,12 +282,14 @@ void test_p5_cut_answer_calls_never_run() {
 void test_p6_no_retry_on_billing_auth_or_unknown_model() {
   forEachRow("p6 no retry", {"RB-E1a"}, [](const txb::Row& r) {
     std::vector<sp::WireFixture> fs = fixturesFor(r);
-    if (r.dialect == plain::Dialect::AnthropicMessages && !r.routed)
+    // Scripted 401 and 402 for direct Anthropic and for a custom chat endpoint (no provider fixtures of its own).
+    const bool custom = r.slot == caps::Slot::CustomChat;
+    if ((r.dialect == plain::Dialect::AnthropicMessages && !r.routed) || custom)
       for (int status : {401, 402}) {
         sp::WireFixture f;
-        f.file = "scripted anthropic " + std::to_string(status);
+        f.file = std::string(custom ? "scripted chat " : "scripted anthropic ") + std::to_string(status);
         f.status = status;
-        f.body = sp::renderError(sp::Dialect::Anthropic, status);
+        f.body = sp::renderError(custom ? sp::Dialect::Chat : sp::Dialect::Anthropic, status);
         f.expect = status == 401 ? "class=key_auth retry=no" : "class=billing retry=no";
         fs.push_back(f);
       }
@@ -335,7 +354,7 @@ void test_p10_history_never_shrinks() {
       if (i) TEST_ASSERT_TRUE_MESSAGE(rc::historyKept(prev.view, cur.view, why), msgOf(r, snaps[i].name + ": " + why).c_str());
       prev = cur;
     }
-  });
+  }, nullptr, false, "RB-R4b");
 }
 
 // ---- 9. handoff and replay scope (lane E2-R4b) ------------------------------------------------------------------
@@ -583,9 +602,9 @@ void test_p11_limits() {
         TXB_OK(txb::renderItems(fx, s.c, p, out, s.openTurn));
         std::string why;
         TEST_ASSERT_TRUE_MESSAGE(rc::limitsHold(out.body, why), msgOf(r, s.name + ": " + why).c_str());
-        TEST_ASSERT_TRUE_MESSAGE(out.view.maxTokens > 0, msgOf(r, s.name + ": no output cap").c_str());
+        TEST_ASSERT_TRUE_MESSAGE(out.view.maxTokens > 0 || capOmitted(r), msgOf(r, s.name + ": no output cap").c_str());
       }
-  });
+  }, nullptr, false, "RB-R4b");
 }
 
 void test_p11_routed_request_declares_deadline_and_cap() {
@@ -597,6 +616,56 @@ void test_p11_routed_request_declares_deadline_and_cap() {
     std::string why;
     TEST_ASSERT_TRUE_MESSAGE(rc::routedDeclares(b.model.last().req, b.model.last().view, why), msgOf(r, why).c_str());
   }, nullptr, true);
+}
+
+// ---- 12. every rendered chat body passes the Chat shape checker (lane E2-R6; design section 11, L2) --------------------
+// Each snapshot of the day at two stub pointers, and the guard round, through the row's route and pre-flight. A Mistral
+// row waits for the planner's id rule and a text-mode row for its text history (lane R4b).
+wire_shape::ChatFlavor flavorOf(caps::Slot s) {
+  return s == caps::Slot::Mistral ? wire_shape::ChatFlavor::Mistral
+         : s == caps::Slot::Zai   ? wire_shape::ChatFlavor::Zai
+                                  : wire_shape::ChatFlavor::Custom;
+}
+
+void shapeOf(const txb::Row& r, const txb::Rendered& out, const std::string& what) {
+  wire_shape::Request q;
+  q.method = out.req.method;
+  q.path = out.req.path;
+  q.tls = out.req.tls;
+  for (const auto& h : out.req.headers) q.headers.emplace_back(h.first, h.second);
+  q.body = out.body;
+  std::string why;
+  TEST_ASSERT_TRUE_MESSAGE(wire_shape::chatRequest(q, flavorOf(r.slot), why), msgOf(r, what + ": " + why).c_str());
+}
+
+void test_p12_chat_bodies_pass_the_shape_checker() {
+  size_t ran = 0, waiting = 0;
+  for (const txb::Row& r : txb::tableRows()) {
+    if (r.dialect != plain::Dialect::ChatCompletions) continue;
+    std::string lane = txb::rowWaitsFor(r, {"RB-T1"});
+    const bool needsPlanner = !txb::rowTools(r) || caps::capsFor(r.slot, r.model.c_str(), r.routed).row.idRule == caps::IdRule::Mistral9;
+    if (lane.empty() && needsPlanner) lane = txb::rowWaitsFor(r, {"RB-R4b"});
+    if (!lane.empty()) {
+      txb::waitLog().note("p12 chat shape", r, lane);
+      std::printf("WAITING p12 chat shape | %s | %s\n", r.name.c_str(), lane.c_str());
+      ++waiting;
+      continue;
+    }
+    txb::RenderFixture fx(r);
+    for (const txb::Snapshot& s : dayFor(r)) {
+      for (uint64_t p : {(uint64_t)0, s.c.q}) {
+        txb::Rendered out;
+        TXB_OK(txb::renderItems(fx, s.c, p, out, s.openTurn));
+        shapeOf(r, out, s.name + " pointer " + std::to_string(p));
+      }
+      txb::Rendered guard;
+      TXB_OK(txb::renderItems(fx, s.c, 0, guard, s.openTurn, true));
+      shapeOf(r, guard, s.name + " guard round");
+    }
+    ++ran;
+    ++g_ran;
+  }
+  std::printf("p12 chat shape: %zu rows ran, %zu waiting\n", ran, waiting);
 }
 
 // ---- counter-tests: each checker goes red on a deliberate break -----------------------------------------------------------
@@ -716,6 +785,7 @@ int main(int, char**) {
   RUN_TEST(test_p10_history_never_shrinks);
   RUN_TEST(test_p11_limits);
   RUN_TEST(test_p11_routed_request_declares_deadline_and_cap);
+  RUN_TEST(test_p12_chat_bodies_pass_the_shape_checker);
   RUN_TEST(test_zz_waiting_cases_are_counted);
   return UNITY_END();
 }

@@ -90,6 +90,18 @@ inline std::vector<Row> tableRows() {
   return out;
 }
 
+// The model a turn on the row names: a routed chat row names its upstream in the router selector
+// ("zai/glm-5.3"); a bare id would reach the router's default upstream (lane E2-R6).
+inline std::string turnModel(const Row& r) {
+  if (!r.routed || r.dialect != plain::Dialect::ChatCompletions) return r.model;
+  return std::string(caps::slotName(r.slot)) + "/" + r.model;
+}
+
+// Whether the row's table row offers tools (false: text mode, a custom endpoint before its verify).
+inline bool rowTools(const Row& r) {
+  return (caps::capsFor(r.slot, r.model.c_str(), r.routed).row.flags & caps::flag::kTools) != 0;
+}
+
 // The first lane a (row, extra lanes) case still waits for; "" when it runs. A lane with no sentinel
 // fails the case (a battery bug), as TXB_WAITS_FOR does.
 inline std::string rowWaitsFor(const Row& r, std::initializer_list<const char*> extra = {}) {

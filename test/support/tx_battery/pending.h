@@ -175,6 +175,9 @@ inline bool sentinelFor(const std::string& lane, std::function<tx::Status()>& ou
       {"RB-R4a", probeRoute},
       // Router design lane R8 (bindings and routed): the device's bindings ask resolveRoute per provider.
       {"RB-R8", [] { return tx::Status::pending("RB-R8 engine-2 bindings per provider"); }},
+      // Router design lane R4b (storage, planner cases): the id rule (Mistral's 9 alphanumerics) and
+      // text-mode history (stored calls and results as text). Lane R4b replaces this row with a probe.
+      {"RB-R4b", [] { return tx::Status::pending("RB-R4b id mapping and text-mode history in the planner"); }},
   };
   for (const Row& r : rows)
     if (lane == r.lane) {

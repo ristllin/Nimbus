@@ -58,10 +58,13 @@ struct RenderFixture {
   // The same inputs for one provider table row (lane E2-R3a): its dialect, endpoint, model and route.
   explicit RenderFixture(const Row& r) : RenderFixture(r.dialect) {
     turn.host = r.host;
-    turn.model = r.model;
+    turn.model = turnModel(r);
     head.host = r.host;
     head.routed = r.routed;
+    routeAndPreflight = r.dialect == plain::Dialect::ChatCompletions || r.dialect == plain::Dialect::Flat;
   }
+  // Lane E2-R6: a chat row renders as the exchange sends it, through its route and pre-flight.
+  bool routeAndPreflight = false;
 };
 
 struct Rendered {
@@ -109,6 +112,12 @@ inline tx::Status renderItems(const RenderFixture& fx, const Convo& c, uint64_t 
     o.fileId = "file_" + ref;
     return tx::Status::success();
   };
+  plain::Route route;
+  plain::PreflightState own;
+  if (fx.routeAndPreflight) {
+    if (!(st = plain::resolveRoute(fx.head, turn, route)).ok()) return st;
+    (void)plain::preflight(route, 0, own, in);
+  }
   if (!(st = wire->render(in, out.req)).ok()) return st;
   out.body = agent::materializeBody(out.req);
   sp::parseRequest(viewDialect(fx.dialect, out.req.path), out.body, out.view);

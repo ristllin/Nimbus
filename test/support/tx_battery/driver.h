@@ -68,7 +68,7 @@ class Battery {
   // scripted provider answering in that provider's own chat shape.
   explicit Battery(const Row& r) : Battery(r.dialect) {
     hostOverride = r.host;
-    modelOverride = r.model;
+    modelOverride = turnModel(r);   // a routed chat row names its upstream (lane E2-R6)
     routed = r.routed;
     model.chatShape = r.slot == caps::Slot::Mistral ? sp::ChatShape::Mistral
                       : r.slot == caps::Slot::Zai   ? sp::ChatShape::Zai

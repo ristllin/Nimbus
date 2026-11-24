@@ -27,7 +27,7 @@ Status wireFor(Dialect dialect, const WireCodec*& out) {
     case Dialect::AnthropicMessages: return found(anthropicWire(), out);
     case Dialect::Flat:   // the Chat codec with the row's tools bit off (router design section 2 C10)
     case Dialect::ChatCompletions:   // lane R6
-      return Status::pending(dialect == Dialect::Flat ? "plain::wireFor flat" : "plain::wireFor chat");
+      return found(chatWire(), out);
   }
   return Status::fail(Err::InvalidArgument, "plain::wireFor");
 }
