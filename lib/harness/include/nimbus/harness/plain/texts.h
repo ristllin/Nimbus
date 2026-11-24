@@ -313,6 +313,10 @@ inline constexpr char kEarlierRan[] = "[device] earlier I ran ";   // then the t
 // A model the provider does not know (lane E2-R4b; PC-0259): "<model> is not available on <provider>.", the
 // exchange's line in place of the refusal (here, not in device_notes, whose ceiling it would pass).
 inline constexpr char kNotAvailableOn[] = " is not available on ";
+// A round that moved to another head (lane E2-P-FO; PC-0263): one line per switch for the person,
+// "<provider A> failed (<class slug>); this answer came from <model B>." (exchangeErrSlug).
+inline constexpr char kFailedOver[] = " failed (";
+inline constexpr char kAnswerFrom[] = "); this answer came from ";
 }  // namespace stubs
 namespace tool_results {
 // The results the loop itself gives a call that did not run (lane RB-E1a, plain_engine.cpp).

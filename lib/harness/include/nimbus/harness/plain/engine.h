@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "nimbus/harness/plain/deliver.h"
+#include "nimbus/harness/plain/exchange.h"   // ExchangeErr: the class a fail-over is asked for (E2-P-FO)
 #include "nimbus/harness/plain/guards.h"
 #include "nimbus/harness/plain/hooks.h"
 #include "nimbus/harness/plain/request.h"
@@ -112,6 +113,37 @@ struct TurnSetup {
   uint32_t bodyCapLimit = 0;
 };
 using TurnSetupFn = std::function<Status(const TurnCtx& turn, TurnSetup& out)>;
+
+// Lane E2-P-FO (router design section 9, "Fail-over"): a round that failed on a class engine 1 switches
+// on (transport, server, rate limit, a refused key or credit, a cut, an unreadable answer, a refusal of
+// this request by this host; never a request unreadable everywhere, a context refusal or a moderation
+// block) runs again on another head, at most kMaxFailovers times a turn. The binding names the heads in
+// the owner's fallback order (only keyed ones, none parked, paused or over its budget; none at all with
+// midTurnFailover off); the engine takes the first whose body budget holds the request it replaces.
+inline constexpr uint8_t kMaxFailovers = 2;
+struct FailoverAsk {
+  std::string provider;            // the head that failed: its slot and model
+  std::string model;
+  ExchangeErr err = ExchangeErr::None;
+  int httpStatus = 0;
+};
+struct FailoverTarget {
+  std::string provider;            // its slot: price, spend, park ("openai")
+  std::string host;                // TurnCtx::host (HeadSlot::turnHost)
+  std::string model;
+  Dialect dialect = Dialect::AnthropicMessages;
+  HeadEndpoint head;               // with its own key
+  HeadCost cost;                   // its rates (a target with no price row is never named)
+  bool seesPhotos = false;         // the owner chose this provider for vision: pixels; else each photo's line
+};
+using FailoverFn = std::function<void(const FailoverAsk& ask, std::vector<FailoverTarget>& out)>;
+// What one head of a switched turn was billed (TurnOutcome::shares), booked to the model that answered.
+struct HeadShare {
+  std::string provider;
+  std::string model;
+  uint32_t promptTokens = 0, outputTokens = 0, cacheReadTokens = 0, cacheWriteTokens = 0, cacheWrite1hTokens = 0;
+  uint16_t requests = 0;
+};
 // One delivery (plain/deliver.h); unset: deliverTurn over the channel. A test or a host may
 // put its own here; it keeps deliverTurn's contract (progress recorded per send, fromPart).
 using DeliverFn = std::function<Status(const DeliverInput& in, DeliverOutcome& out)>;
@@ -153,6 +185,8 @@ struct EngineDeps {
   // and its stable cache points carry the 1-hour lifetime. False (a routine's own run, the battery by
   // default): the blocks are composed afresh at every turn open and every point has 5 minutes.
   bool stablePrefix = false;
+  // Lane E2-P-FO: the heads a failed round may move to (FailoverFn). Null: no fail-over.
+  FailoverFn failover;
 };
 
 // What a turn starts from. A person's message (Owner, Console) is stored as a u item before
@@ -190,6 +224,10 @@ struct TurnOutcome {
   std::string parkText;          // its kind from them (lane E2-FIX14); never stored, never shown
   bool modelUnusable = false;    // the provider does not know the head model (E2-R8a: the device marks it)
   bool failOver = false;         // routed: the router said fail over to the next target
+  // Lane E2-P-FO: rounds moved to another head (at most kMaxFailovers), and then what each head was
+  // billed, in order (empty with no switch: the whole turn is the head's). parkHost is the first head's.
+  uint8_t switches = 0;
+  std::vector<HeadShare> shares;
   // Effects the turn's tools asked for after the turn (a stored, successful result each): the
   // binding runs them in Deferred order once runTurn returns, the reply and the turn's items
   // already stored. The mask survives a refused allocation; an argument may not.

@@ -157,6 +157,10 @@ inline void noteHeadOutcome(const std::string& provider, const std::string& key,
     if (k != orch::ParkKind::None && told) (void)park.noticeDue(p);
     return;
   }
+  if (out.switches) {   // E2-P-FO: the head failed and another answered: no answer of its own ends an episode
+    if (probe) park.releaseProbe(p);
+    return;
+  }
   if (out.rounds > 0) {
     (void)park.noteSuccess(p, orch::PaidSeam::Chat);
     return;

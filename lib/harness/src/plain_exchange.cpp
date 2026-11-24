@@ -14,6 +14,7 @@
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/harness/providers.h"   // kRoutedDeadlineHeader, kRoutedDeadlineSlackMs
 #include "nimbus/orch/billing_refusal.h"
+#include "nimbus/orch/head_loop.h"   // classifyHttpStatus: engine 1's switch rule (E2-P-FO)
 #include "nimbus/orch/compact.h"   // isContextOverflowError: each provider's words for a size refusal
 #include "nimbus/orch/provider_error.h"   // providerErrorText: the message of a provider's error body
 #include "nimbus/orch/request_budget.h"
@@ -656,6 +657,25 @@ std::string exchangeLine(ExchangeErr err, const std::string& slug, int httpStatu
     case ExchangeErr::Other: break;
   }
   return refusedLine(who, code, reason);
+}
+
+std::string failoverLine(const std::string& fromSlug, ExchangeErr err, const std::string& toModel) {
+  return std::string(providerName(fromSlug)) + texts::stubs::kFailedOver + exchangeErrSlug(err) + texts::stubs::kAnswerFrom +
+         toModel + ".";
+}
+
+bool switchesHost(ExchangeErr err, int httpStatus, const std::string& body) {
+  switch (err) {
+    case ExchangeErr::Transport:
+    case ExchangeErr::Server:
+    case ExchangeErr::RateLimited:
+    case ExchangeErr::KeyRefused:
+    case ExchangeErr::Cut:
+    case ExchangeErr::Malformed: return true;
+    case ExchangeErr::Other:   // engine 1's Rejected moves, its BadRequest does not
+      return httpStatus > 0 && nimbus::orch::classifyHttpStatus(httpStatus, body) != nimbus::orch::StepErr::BadRequest;
+    default: return false;
+  }
 }
 
 bool targetQualified(const HeadTarget& t, hq::Line line) {

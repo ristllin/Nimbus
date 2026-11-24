@@ -171,6 +171,15 @@ struct Turn {
   const std::string& storedLine() const { return statusStored.empty() || statusRef != &statusText ? *statusRef : statusStored; }
   bool parkHost = false, failOver = false;
   bool modelUnusable = false;          // the provider does not know the model (E2-R8a: the store marks it)
+  // Lane E2-P-FO: rounds moved to another head, the heads tried (slot/model), the answering head's slot
+  // (set at the first switch), the person's line per switch, what each head left was billed, and the
+  // turn's totals when the head now answering took over (its share is the rest).
+  uint8_t switches = 0;
+  std::vector<std::string> tried;
+  std::string slot;
+  std::string switchLines;
+  std::vector<HeadShare> shares;
+  HeadShare base;
   int parkStatus = 0;                  // the park's refusal: its status and body (E2-FIX14)
   std::string parkText;
   std::string cause;
@@ -960,10 +969,92 @@ class TurnRun {
     account(t_.ex);
     if (!st.ok()) return failed(ExchangeErr::Other, st);
     if (photosRefused()) return ask();   // E2-P-PHOTO: once, the refused photos as their lines
+    if (failOver()) {   // E2-P-FO: the same round on the next head, the conversation unchanged
+      const Status cs = compose();
+      if (!cs.ok() || !wired().ok()) return failed(ExchangeErr::Other, cs.ok() ? Status::fail(Err::NotFound, "plain::wireFor") : cs);
+      return ask();
+    }
     if (t_.ex.err == ExchangeErr::Cut) return cut();
     if (t_.ex.err != ExchangeErr::None) return failed(t_.ex.err, Status::success());
     ++t_.rounds;
     return Status::success();
+  }
+
+  // ---- fail-over at the round boundary (lane E2-P-FO, router design section 9) ------------------
+  // The answering head's slot: the setup's, else the target's once a round moved.
+  std::string slotNow() const { return t_.slot.empty() ? headSlugOf(t_.ctx, t_.setup.head) : t_.slot; }
+  // A round that failed on a class engine 1 switches on moves to the first head of the binding's order
+  // that was not tried this turn and whose body budget holds the request it replaces (design 6 item 7);
+  // at most kMaxFailovers a turn. Nothing stored changes: the round is rendered again for the new head
+  // (its own reasoning tag and call ids: the planner), and the person gets one line per switch.
+  bool failOver() {
+    const ExchangeResult& ex = t_.ex;
+    if (!d_.failover || ex.err == ExchangeErr::None || t_.switches >= kMaxFailovers) return false;
+    if (!ex.failOver && !switchesHost(ex.err, ex.httpStatus, ex.providerBody)) return false;
+    FailoverAsk ask;
+    ask.provider = slotNow();
+    ask.model = t_.ctx.model;
+    ask.err = ex.err;
+    ask.httpStatus = ex.httpStatus;
+    std::vector<FailoverTarget> order;
+    d_.failover(ask, order);
+    if (t_.tried.empty()) t_.tried.push_back(ask.provider + "/" + ask.model);
+    for (FailoverTarget& tg : order) {
+      const std::string id = tg.provider + "/" + tg.model;
+      if (std::find(t_.tried.begin(), t_.tried.end(), id) != t_.tried.end()) continue;
+      tx::HeadBudget b;
+      if (!tx::budgetFor(tx::HeadKey{tg.provider, tg.model, tg.head.routed}, t_.ctx.profile, b).ok()) continue;
+      const uint32_t cap = t_.setup.bodyCapLimit ? std::min(b.bodyCap, t_.setup.bodyCapLimit) : b.bodyCap;
+      if (cap < ex.requestBytes) {   // never to a smaller body
+        hlog::logf("plain(%s): fail-over skips %s: body %u B over its cap %u B", d_.chatKey.c_str(), id.c_str(),
+                   (unsigned)ex.requestBytes, (unsigned)cap);
+        continue;
+      }
+      moveTo(tg, cap, ask);
+      return true;
+    }
+    hlog::logf("plain(%s): %s failed (%s): no head to fail over to", d_.chatKey.c_str(), ask.provider.c_str(),
+               exchangeErrSlug(ex.err));
+    return false;
+  }
+  void moveTo(FailoverTarget& tg, uint32_t cap, const FailoverAsk& ask) {
+    closeShare(ask.provider, ask.model);
+    if (!t_.switchLines.empty()) t_.switchLines += "\n";
+    t_.switchLines += failoverLine(ask.provider, ask.err, tg.model);
+    event("failover:" + ask.provider + ">" + tg.provider + ":" + exchangeErrSlug(ask.err));
+    hlog::logf("plain(%s): %s/%s failed (%s): the round goes to %s/%s", d_.chatKey.c_str(), ask.provider.c_str(),
+               ask.model.c_str(), exchangeErrSlug(ask.err), tg.provider.c_str(), tg.model.c_str());
+    t_.tried.push_back(tg.provider + "/" + tg.model);
+    ++t_.switches;
+    t_.slot = tg.provider;
+    t_.ctx.host = tg.host;
+    t_.ctx.model = tg.model;
+    t_.ctx.dialect = tg.dialect;
+    if (!tg.seesPhotos) t_.ctx.photosBlind = true;   // each photo as its line, never pixels (design 9)
+    t_.setup.head = std::move(tg.head);
+    t_.setup.cost = tg.cost;   // the spend guard prices what follows at the new head's rates
+    t_.setup.wire = nullptr;
+    t_.bodyCap = cap;
+  }
+  // What the head left was billed since it took over (the turn's totals less `base`).
+  void closeShare(const std::string& provider, const std::string& model) {
+    HeadShare s;
+    s.provider = provider;
+    s.model = model;
+    const tx::TurnEndFacts& e = t_.end;
+    s.promptTokens = e.promptTokens - t_.base.promptTokens;
+    s.outputTokens = e.outputTokens - t_.base.outputTokens;
+    s.cacheReadTokens = e.cacheReadTokens - t_.base.cacheReadTokens;
+    s.cacheWriteTokens = e.cacheWriteTokens - t_.base.cacheWriteTokens;
+    s.cacheWrite1hTokens = e.cacheWrite1hTokens - t_.base.cacheWrite1hTokens;
+    s.requests = (uint16_t)(e.headRequests - t_.base.requests);
+    t_.base.promptTokens = e.promptTokens;
+    t_.base.outputTokens = e.outputTokens;
+    t_.base.cacheReadTokens = e.cacheReadTokens;
+    t_.base.cacheWriteTokens = e.cacheWriteTokens;
+    t_.base.cacheWrite1hTokens = e.cacheWrite1hTokens;
+    t_.base.requests = e.headRequests;
+    t_.shares.push_back(std::move(s));
   }
 
   // Lane E2-P-PHOTO: the provider refused the request for its image (imageparts::refusedImages: a
@@ -1017,8 +1108,9 @@ class TurnRun {
     const uint64_t size = (uint64_t)t_.sizeTokens + rt.prompt + rt.cacheRead + rt.cacheWrite;
     t_.sizeTokens = (uint32_t)std::min<uint64_t>(size, UINT32_MAX);
     t_.end.microUsd = (uint32_t)std::min<uint64_t>((uint64_t)t_.end.microUsd + requestMicroUsd(t_.setup.cost, rt), UINT32_MAX);
-    t_.parkHost |= ex.parkHost;
-    if (ex.parkHost) {   // E2-FIX14: the refusal the binding hands the shared park
+    if (ex.parkHost && t_.switches) event("park:fallback");   // E2-P-FO: the binding parks the first head only
+    t_.parkHost |= ex.parkHost && !t_.switches;
+    if (ex.parkHost && !t_.switches) {   // E2-FIX14: the refusal the binding hands the shared park
       t_.parkStatus = ex.httpStatus;
       t_.parkText = ex.parkBody;
     }
@@ -1328,6 +1420,15 @@ class TurnRun {
     t_.status = s;
     t_.statusRef = &t_.statusText;
   }
+  // E2-P-FO: a reply that came from a fallback head carries one line per switch, before any other line
+  // of the turn (a cut's): the status line is one message.
+  void switchedLine() {
+    if (t_.status == StatusLine::None) return setStatus(StatusLine::ProviderError, t_.switchLines);
+    if (t_.statusRef != &t_.statusText) return;
+    if (t_.statusStored.empty()) t_.statusStored = t_.statusText;
+    t_.statusText.insert(0, t_.switchLines + "\n");
+    t_.statusStored.insert(0, t_.switchLines + "\n");
+  }
   // A line kept outside the turn (the memory line): taken with no allocation.
   void setStatusRef(StatusLine s, const std::string& kept) noexcept {
     if (rank(s) <= rank(t_.status)) return;
@@ -1351,6 +1452,11 @@ class TurnRun {
   void settle() {
     t_.replyText = replyOf();
     t_.reply = t_.replyText != nullptr;   // a pointer: the reply is never copied to go out
+    if (t_.switches && t_.shares.size() == t_.switches) {   // E2-P-FO: the answering head's share, once
+      closeShare(slotNow(), t_.ctx.model);
+      const bool fromFallback = t_.ex.err == ExchangeErr::None || t_.ex.err == ExchangeErr::Cut;
+      if (t_.reply && fromFallback) switchedLine();   // a failed last head: the plain failure line alone
+    }
     if (t_.reply && t_.trip != GuardTrip::None && personTrigger(t_.ctx.trigger))   // the guard that stopped it
       setStatus(StatusLine::LimitReached, std::string(texts::device_notes::kLimitStopped) + guardTripSlug(t_.trip) +
                                               texts::device_notes::kLimitStoppedEnd);
@@ -2115,6 +2221,7 @@ Status PlainEngine::runTurn(const TurnInput& in, TurnOutcome& out) {
   out.parkStatus = t->parkStatus;
   out.failOver = t->failOver;
   out.modelUnusable = t->modelUnusable;
+  out.switches = t->switches;
   // A deferred effect's bit is set only once its argument is copied: never a head switch without its head.
   for (size_t k = 0; k < kDeferredKinds; ++k) {
     if (!((t->deferred.mask >> k) & 1u)) continue;
@@ -2133,6 +2240,7 @@ Status PlainEngine::runTurn(const TurnInput& in, TurnOutcome& out) {
     out.end = t->end;
     out.end.cause = t->cause;   // also when no e item could be stored
     out.parkText = t->parkText;
+    out.shares = t->shares;
   } catch (const std::bad_alloc&) {
   }
   return st;

@@ -237,6 +237,13 @@ std::string refusalReason(const std::string& body);
 // for ExchangeErr::Other with a status: "<who> refused the request (HTTP n): <reason>".
 std::string exchangeLine(ExchangeErr err, const std::string& providerSlug, int httpStatus,
                          const std::string& reason = std::string());
+// Lane E2-P-FO: the person's line for one switch: "<provider A> failed (<class>); this answer came from <model B>."
+std::string failoverLine(const std::string& fromSlug, ExchangeErr err, const std::string& toModel);
+// Lane E2-P-FO: does engine 1 move a round that failed this way to another host (fabricRuleFor's switch
+// classes)? Transport, server, rate limit, a refused key or credit, a cut, an unreadable answer, and a
+// refusal of this request by this host (`httpStatus` and `body` say which: one the same body gets on every
+// host, an invalid or unreadable request, never moves). Never a context refusal or a moderation block.
+bool switchesHost(ExchangeErr err, int httpStatus, const std::string& body);
 
 }  // namespace plain
 }  // namespace agent

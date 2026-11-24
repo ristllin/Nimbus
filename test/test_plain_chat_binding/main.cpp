@@ -228,6 +228,18 @@ struct Device {
       };
     d.noCard = [this] { return noCardFitted; };
     d.railPending = railPending;
+    if (!fallbacks.empty())   // lane E2-P-FO: as the device's fallbacksFor, by the shipped rule set
+      d.fallbacks = [this](const plain::FailoverAsk& ask, std::vector<plain::HeadSlot>& out) {
+        if (!midFail) return;
+        plain::FallbackPlan plan;
+        for (const auto& f : fallbacks) plan.priority.push_back(f.first);
+        plan.model = [this](const std::string& p) {
+          for (const auto& f : fallbacks)
+            if (f.first == p) return f.second;
+          return std::string();
+        };
+        plain::fallbackSlots(slots(), plan, ask, out);
+      };
     binding.reset(new plain::ChatBinding(c, d));
     return binding->boot();
   }
@@ -290,6 +302,9 @@ struct Device {
   std::function<bool(const std::string&, const std::string&)> replyScreen;
   std::function<std::string(const std::string&, const std::string&)> inbound;
   bool overBudget = false;
+  // Lane E2-P-FO: the fallback providers in priority order with their head models, and midTurnFailover.
+  std::vector<std::pair<std::string, std::string>> fallbacks;
+  bool midFail = true;
   std::unique_ptr<plain::ChatBinding> binding;
   plain::TurnOutcome out;
 };
@@ -1711,6 +1726,123 @@ static void test_every_slot_runs_a_turn_a_summary_and_a_routine() {
   }
 }
 
+
+// ---- lane E2-P-FO: fail-over at the round boundary ---------------------------------------------
+// Each request answered by the host it went to: `byHost` maps a host to the step it gets.
+void answerByHost(Device& dev, std::map<std::string, sp::Step> byHost) {
+  dev.model.respondWith([byHost](const sp::Recorded& r, size_t) {
+    const auto it = byHost.find(r.req.host);
+    return it == byHost.end() ? sp::httpError(500) : it->second;
+  });
+}
+std::vector<std::string> hostsAsked(Device& dev) {
+  std::vector<std::string> h;
+  for (const sp::Recorded& r : dev.model.requests()) h.push_back(r.req.host);
+  return h;
+}
+
+// D4: a server error on the first provider (after its two same-host retries), then the answer from the
+// second; the person gets the reply and one line; the spend is booked to the model that answered.
+static void test_a_server_error_moves_the_round_to_the_next_provider() {
+  Device dev;
+  dev.fallbacks = {{"openai", "gpt-5.6-luna"}, {"mistral", "mistral-large-4-0"}};
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  sp::Step ok = sp::say("From the second provider.");
+  ok.usage.input = 900;
+  ok.usage.output = 40;
+  answerByHost(dev, {{"api.anthropic.com", sp::httpError(500)}, {"api.openai.com", ok}});
+  TEST_ASSERT_TRUE(dev.say("Hello there.").ok());
+  const std::vector<std::string> h = hostsAsked(dev);
+  TEST_ASSERT_EQUAL(4, (int)h.size());   // three to Anthropic (two retries), one to OpenAI
+  TEST_ASSERT_EQUAL_STRING("api.anthropic.com", h[2].c_str());
+  TEST_ASSERT_EQUAL_STRING("api.openai.com", h[3].c_str());
+  TEST_ASSERT_EQUAL_STRING("/v1/responses", dev.model.last().req.path.c_str());
+  TEST_ASSERT_EQUAL(1, (int)dev.out.switches);
+  TEST_ASSERT_EQUAL_STRING("From the second provider.", dev.out.text.c_str());
+  TEST_ASSERT_EQUAL_STRING("Anthropic failed (server); this answer came from gpt-5.6-luna.", dev.out.statusText.c_str());
+  TEST_ASSERT_TRUE(has(dev.sent.back(), "this answer came from gpt-5.6-luna."));
+  const nimbus::orch::TurnSpend& u = dev.usage.back();
+  TEST_ASSERT_EQUAL(1, (int)u.billedSlots());   // the refused requests billed nothing
+  TEST_ASSERT_EQUAL_STRING("openai", u.slot[0].host);
+  TEST_ASSERT_TRUE(has(u.slot[0].model, "gpt-5.6-luna"));
+  TEST_ASSERT_EQUAL(2, (int)dev.out.shares.size());
+  TEST_ASSERT_EQUAL(3, (int)dev.out.shares[0].requests);
+}
+
+// D4: a cut answer (after its own retry) moves the round; nothing of the cut answer is kept or run, and
+// what the cut requests were billed stays with the model that wrote them.
+static void test_a_cut_answer_moves_the_round_to_the_next_provider() {
+  Device dev;
+  dev.fallbacks = {{"openai", "gpt-5.6-luna"}};
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  sp::Step cut = sp::cut("half an ans");
+  cut.usage.input = 500;
+  cut.usage.output = 64;
+  sp::Step ok = sp::say("Whole answer.");
+  ok.usage.input = 700;
+  ok.usage.output = 20;
+  answerByHost(dev, {{"api.anthropic.com", cut}, {"api.openai.com", ok}});
+  TEST_ASSERT_TRUE(dev.say("Tell me everything.").ok());
+  TEST_ASSERT_EQUAL_STRING("api.openai.com", dev.model.last().req.host.c_str());
+  TEST_ASSERT_EQUAL(1, (int)dev.out.switches);
+  TEST_ASSERT_EQUAL_STRING("Whole answer.", dev.out.text.c_str());
+  TEST_ASSERT_EQUAL_STRING("Anthropic failed (cut); this answer came from gpt-5.6-luna.", dev.out.statusText.c_str());
+  TEST_ASSERT_FALSE(has(dev.model.last().body, "half an ans"));
+  const nimbus::orch::TurnSpend& u = dev.usage.back();
+  TEST_ASSERT_EQUAL(2, (int)u.billedSlots());
+  TEST_ASSERT_EQUAL_STRING("anthropic", u.slot[0].host);
+  TEST_ASSERT_EQUAL_STRING("openai", u.slot[1].host);
+}
+
+// D4: two switches at most; the third head's failure is the plain failure line, no switch line.
+static void test_two_switches_then_the_plain_failure_line() {
+  Device dev;
+  dev.fallbacks = {{"openai", "gpt-5.6-luna"}, {"mistral", "mistral-large-4-0"}, {"zai", "glm-5.3"}};
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  answerByHost(dev, {});   // every host answers 500
+  (void)dev.say("Anyone there?");
+  std::set<std::string> asked;
+  for (const std::string& h : hostsAsked(dev)) asked.insert(h);
+  TEST_ASSERT_EQUAL(3, (int)asked.size());
+  TEST_ASSERT_FALSE(asked.count("api.z.ai"));
+  TEST_ASSERT_EQUAL(2, (int)dev.out.switches);
+  TEST_ASSERT_FALSE(dev.out.delivered);
+  TEST_ASSERT_EQUAL_STRING("No reply: Mistral had a server error (HTTP 500). Try again in a minute.", dev.out.statusText.c_str());
+  TEST_ASSERT_FALSE(has(dev.sent.back(), "this answer came from"));
+}
+
+// D1: never to a head whose body budget is smaller than the request it replaces (design section 6 item 7):
+// the routed Sonnet (85,000 B) is passed over for a request the direct Sonnet (250,000 B) sent.
+static void test_no_switch_to_a_smaller_body() {
+  Device dev;
+  dev.fallbacks = {{"cumulo", "anthropic/claude-sonnet-5-5"}};
+  TEST_ASSERT_TRUE(dev.boot("claude-sonnet-5-5").ok());
+  const std::string longReply(9000, 'w');
+  for (int i = 0; i < 11; ++i) {
+    dev.model.push(sp::say(longReply + " " + std::to_string(i)));
+    TEST_ASSERT_TRUE(dev.say("Part " + std::to_string(i) + ".").ok());
+  }
+  answerByHost(dev, {{"api.anthropic.com", sp::httpError(500)}, {"app.cumulo-nimbus.ai", sp::say("Routed.")}});
+  (void)dev.say("And now?");
+  TEST_ASSERT_TRUE(dev.model.last().body.size() > 85000u);
+  for (const std::string& h : hostsAsked(dev)) TEST_ASSERT_EQUAL_STRING("api.anthropic.com", h.c_str());
+  TEST_ASSERT_EQUAL(0, (int)dev.out.switches);
+  TEST_ASSERT_TRUE(has(dev.out.statusText, "server error"));
+}
+
+// D1: with midTurnFailover off the failed round is the turn's end, on the head only.
+static void test_no_switch_with_the_setting_off() {
+  Device dev;
+  dev.fallbacks = {{"openai", "gpt-5.6-luna"}};
+  dev.midFail = false;
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  answerByHost(dev, {{"api.anthropic.com", sp::httpError(500)}, {"api.openai.com", sp::say("No.")}});
+  (void)dev.say("Hello?");
+  for (const std::string& h : hostsAsked(dev)) TEST_ASSERT_EQUAL_STRING("api.anthropic.com", h.c_str());
+  TEST_ASSERT_EQUAL(0, (int)dev.out.switches);
+  TEST_ASSERT_EQUAL_STRING("No reply: Anthropic had a server error (HTTP 500). Try again in a minute.", dev.out.statusText.c_str());
+}
+
 // The ledger reads OpenAI, Mistral, Z.ai, a custom endpoint and the router (unlifted) with the cache
 // inside the input count; engine 2 reports it outside, so the binding adds it back (not for Anthropic).
 static void test_spend_is_booked_in_each_providers_counts() {
@@ -1843,5 +1975,10 @@ int main(int, char**) {
   RUN_TEST(test_spend_is_booked_in_each_providers_counts);
   RUN_TEST(test_no_binding_names_a_provider);
   RUN_TEST(test_the_custom_endpoint_follows_its_verify);
+  RUN_TEST(test_a_server_error_moves_the_round_to_the_next_provider);
+  RUN_TEST(test_a_cut_answer_moves_the_round_to_the_next_provider);
+  RUN_TEST(test_two_switches_then_the_plain_failure_line);
+  RUN_TEST(test_no_switch_to_a_smaller_body);
+  RUN_TEST(test_no_switch_with_the_setting_off);
   return UNITY_END();
 }

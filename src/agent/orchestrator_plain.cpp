@@ -481,6 +481,32 @@ std::vector<plain::SummarizerRung> summarizerLadder(const std::string& head, con
   return rungs;
 }
 
+// Lane E2-P-FO: the heads a failed round may move to (engine 1's fallbackOrder, plain::fallbackSlots):
+// none with midTurnFailover off; else by the owner's rule set over the provider priority, each provider
+// keyed and not parked, paused or over its monthly limit, on its own head model.
+void fallbacksFor(const plain::SlotSettings& set, const plain::FailoverAsk& ask, std::vector<plain::HeadSlot>& out) {
+  if (!store::midTurnFailover()) return;
+  plain::FallbackPlan plan;
+  plan.rulesJson = store::fallbackRulesJson().c_str();
+  const std::string pri(store::providerPriority().c_str());
+  for (size_t at = 0; at <= pri.size();) {
+    size_t end = pri.find(',', at);
+    if (end == std::string::npos) end = pri.size();
+    std::string p = pri.substr(at, end - at);
+    while (!p.empty() && p.front() == ' ') p.erase(0, 1);
+    while (!p.empty() && p.back() == ' ') p.pop_back();
+    if (!p.empty()) plan.priority.push_back(p);
+    at = end + 1;
+  }
+  plan.open = [](const std::string& p) {
+    const String ps(p.c_str());
+    std::string held;
+    return store::providerHasKey(ps) && !plain::headHeld(p, keyOf(p), store::providerOverBudget(ps), (uint32_t)millis(), held);
+  };
+  plan.model = [](const std::string& p) { return std::string(store::orchModel(String(p.c_str())).c_str()); };
+  plain::fallbackSlots(set, plan, ask, out);
+}
+
 // The provider said it does not know the model (lane E2-R8a, design section 9): its row in the provider's
 // model store is marked unusable, so the pickers stop offering it (as the verify's usability probe does).
 void markUnusable(const std::string& provider, const std::string& model) {
@@ -686,6 +712,7 @@ plain::ChatBinding* chatFor(const String& chatId, nimbus::orch::Role role) {
            nimbus::orch::ModAction::Block;
   };
   d.overBudget = [](const std::string& p) { return store::providerOverBudget(String(p.c_str())); };   // E2-FIX14: the resume
+  d.fallbacks = [set](const plain::FailoverAsk& ask, std::vector<plain::HeadSlot>& out) { fallbacksFor(set, ask, out); };   // E2-P-FO
   const uint32_t spiFree0 = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
   const uint32_t spiBig0 = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
   const uint32_t t0 = millis();

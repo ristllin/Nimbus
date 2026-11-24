@@ -24,6 +24,8 @@
 #include "nimbus/harness/plain/unattended.h"   // OwnerSink, RoutineDeps (lane E2-SCHED)
 #include "nimbus/harness/plain/rails.h"   // installRails - the safety rails (lane E2-FSAFE)
 #include "nimbus/harness/platform.h"
+#include "nimbus/orch/fallback_rules.h"   // the owner's fallback rule set (E2-P-FO)
+#include "nimbus/orch/model_catalog.h"    // modelSizeClass
 #include "nimbus/orch/model_price_defaults.h"
 #include "nimbus/orch/rbac.h"
 #include "nimbus/orch/seen_index.h"
@@ -137,6 +139,11 @@ struct ChatBindingDeps {
   // The provider's own monthly limit is reached (store::providerOverBudget). Null: none. Read with parkHead
   // before the crash resume's one request (lane E2-FIX14 after E2-FIX12).
   std::function<bool(const std::string& provider)> overBudget;
+  // Lane E2-P-FO: the heads a failed round may move to, in the owner's fallback order (fallbackSlots);
+  // the device leaves it null with midTurnFailover off. Null: no fail-over.
+  std::function<void(const FailoverAsk& ask, std::vector<HeadSlot>& out)> fallbacks;
+  // The owner chose `provider` for vision: a fallback head there sees photos as pixels. Null: none did.
+  std::function<bool(const std::string& provider)> visionChosen;
   // Lane E2-FIX14: what engine 1's deliver() does to a model's reply before it leaves
   // (src/agent/orchestrator_common.cpp), each the shared code engine 1 calls. replyFilter: the owner's
   // output rules for this chat (prefs::filtersForRole, orch::applyOutputFilters: the no-dash rule);
@@ -250,12 +257,84 @@ struct ChatMessage {
   bool probe = false;                            // the park's re-check request (MessageGate::probe, E2-FIX14)
 };
 
+// Lane E2-P-FO: the heads a failed round may move to, as engine 1's fallbackOrder picks them
+// (lib/harness/src/engine.cpp): the owner's rule set (the shipped size-class defaults over the priority
+// when none is set) for the head's provider, model, size class and the error's class, up to three
+// providers, each open (keyed, not parked, paused or over its budget); none by the rules, the priority
+// walk. Each on its provider slot with the rule's model, else that provider's head model.
+struct FallbackPlan {
+  std::string rulesJson;                                           // "" = the shipped defaults
+  std::vector<std::string> priority;                               // provider slugs, in order
+  std::function<bool(const std::string& provider)> open;
+  std::function<std::string(const std::string& provider)> model;   // the provider's head model
+};
+inline nimbus::orch::ErrorClass fallbackClassOf(ExchangeErr e) {
+  using nimbus::orch::ErrorClass;
+  switch (e) {
+    case ExchangeErr::Transport: return ErrorClass::Network;
+    case ExchangeErr::Server:
+    case ExchangeErr::Malformed: return ErrorClass::ServerError;
+    case ExchangeErr::RateLimited: return ErrorClass::RateLimited;
+    case ExchangeErr::KeyRefused: return ErrorClass::Auth;
+    case ExchangeErr::Cut: return ErrorClass::Timeout;
+    case ExchangeErr::Other: return ErrorClass::BadRequest;
+    default: return ErrorClass::None;
+  }
+}
+inline void fallbackSlots(const SlotSettings& set, const FallbackPlan& plan, const FailoverAsk& ask, std::vector<HeadSlot>& out) {
+  namespace orch = nimbus::orch;
+  orch::FallbackRuleSet rs;
+  if (!plan.rulesJson.empty()) orch::parseFallbackRules(plan.rulesJson, rs);
+  if (rs.rules.empty()) rs = orch::defaultRuleSet(plan.priority);
+  orch::TurnContext ctx;
+  ctx.provider = ask.provider;
+  ctx.model = ask.model;
+  ctx.sizeClass = orch::sizeClassWord(orch::modelSizeClass(ask.provider, ask.model));
+  ctx.capability = "chat";
+  ctx.errorClass = fallbackClassOf(ask.err);
+  std::vector<orch::FallbackTarget> picks;
+  auto usable = [&](const std::string& p) {
+    if (p == ask.provider || (plan.open && !plan.open(p))) return false;
+    for (const orch::FallbackTarget& t : picks)
+      if (t.provider == p) return false;
+    return true;
+  };
+  for (int i = 0; i < 3; ++i) {
+    const orch::FallbackChoice ch = orch::selectFallback(rs, ctx, [&](const std::string& p, const std::string&) { return usable(p); });
+    if (!ch.found) break;
+    picks.push_back(ch.target);
+  }
+  if (picks.empty())   // never below the priority walk (engine 1's rawAlternates)
+    for (const std::string& p : plan.priority)
+      if (usable(p)) picks.push_back(orch::FallbackTarget{p, ""});
+  for (const orch::FallbackTarget& t : picks) {
+    HeadSlot h;
+    const std::string model = t.model.empty() && plan.model ? plan.model(t.provider) : t.model;
+    if (!model.empty() && headSlotFor(set, t.provider, model, h).ok()) out.push_back(std::move(h));
+  }
+}
+
 // A turn's spend as the owner's usage view files it (store::recordProviderSpend): one slot of the
 // head's provider and model, in the counts the ledger reads for that provider (ledgerUsage: engine 2
 // reports the uncached input, a provider whose input holds its cache gets it added back; lane
 // E2-R8a), one billed response per head request.
 inline nimbus::orch::TurnSpend turnSpendOf(const TurnOutcome& out, const std::string& provider, const std::string& model) {
   nimbus::orch::TurnSpend s;
+  if (!out.shares.empty()) {   // E2-P-FO: a switched turn, each head's requests booked to it
+    for (size_t i = 0; i < out.shares.size(); ++i) {
+      const HeadShare& h = out.shares[i];
+      nimbus::orch::TokenUsage u;
+      u.promptTokens = h.promptTokens;
+      u.completionTokens = h.outputTokens;
+      u.cacheReadTokens = h.cacheReadTokens;
+      u.cacheWriteTokens = h.cacheWriteTokens;
+      u.cacheWrite1hTokens = h.cacheWrite1hTokens;
+      u.responses = h.requests;
+      if (i + 1 == out.shares.size()) u.maxRequestIn = out.end.lastPromptTokens;
+      s.add(h.provider.c_str(), h.model.c_str(), ledgerUsage(h.provider, h.model, u));
+    }
+    return s;
+  }
   nimbus::orch::TokenUsage u;
   u.promptTokens = out.end.promptTokens;
   u.completionTokens = out.end.outputTokens;
@@ -927,9 +1006,36 @@ class ChatBinding {
       };
     e.noCard = d_.noCard;
     e.holdUnloaded = [this] { return importPending_; };
+    if (d_.fallbacks)
+      e.failover = [this](const FailoverAsk& ask, std::vector<FailoverTarget>& out) { failoverTargets(ask, out); };
     if (d_.replyFilter || d_.replyScreen)
       e.deliver = [this](const DeliverInput& in, DeliverOutcome& out) { return deliverReply(in, out); };
     return e;
+  }
+
+  // Lane E2-P-FO: the binding's fallback slots as heads the engine can move a round to, each with its own
+  // key, effort and rates; a slot nothing prices is left out (money fails closed).
+  void failoverTargets(const FailoverAsk& ask, std::vector<FailoverTarget>& out) {
+    namespace tx = nimbus::orch::tx;
+    std::vector<HeadSlot> slots;
+    d_.fallbacks(ask, slots);
+    for (HeadSlot& h : slots) {
+      tx::HeadBudget b;
+      HeadRates r;
+      if (!tx::budgetFor(tx::HeadKey{h.provider, h.model, h.endpoint.routed}, cfg_.profile, b).ok() ||
+          !slotRatesFor(h.provider, h.model, r))
+        continue;
+      FailoverTarget t;
+      t.provider = h.provider;
+      t.host = h.turnHost();
+      t.model = h.model;
+      t.dialect = h.dialect;
+      t.head = std::move(h.endpoint);
+      t.head.effort = headEffortFor(h.provider, h.model);
+      t.cost = guardCostFor(b, r);
+      t.seesPhotos = d_.visionChosen && d_.visionChosen(h.provider);
+      out.push_back(std::move(t));
+    }
   }
 
   // E2-FIX14: one delivery as engine 1's deliver() makes it: the owner's output rules on the model's
