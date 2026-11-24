@@ -1,0 +1,4 @@
+synthetic: cumulo-nimbus docs/llm-router.md and packages/shared/src/router-refusals.ts (the cloud repo; no public page), read 2026-11-24
+status: 402
+expect: class=park_billing retry=no
+{"error":"credits_or_subscription_required","reason":"credits_or_subscription_required","message":"Add credits or a plan to use the router.","charged":false,"retryable":false}

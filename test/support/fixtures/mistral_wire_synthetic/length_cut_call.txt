@@ -1,0 +1,4 @@
+synthetic: https://github.com/mistralai/client-python/blob/main/docs/models/chatcompletionchoicefinishreason.md, read 2026-11-24
+status: 200
+expect: stop=cut complete=false calls=1
+{"id":"syn04","object":"chat.completion","created":1763980000,"model":"mistral-large-4-0","choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[{"id":"Q7pX2mLa9","function":{"name":"read_file","arguments":"{\"path\":\"notes/bo"},"index":0}],"prefix":false},"finish_reason":"length"}],"usage":{"prompt_tokens":1200,"completion_tokens":40,"total_tokens":1240,"prompt_tokens_details":{"cached_tokens":1024}}}

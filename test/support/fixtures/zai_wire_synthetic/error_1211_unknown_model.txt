@@ -1,0 +1,4 @@
+synthetic: https://docs.z.ai/api-reference/api-code, read 2026-11-24
+status: 400
+expect: class=unknown_model retry=no
+{"error":{"code":"1211","message":"Unknown Model, please check the model code."}}

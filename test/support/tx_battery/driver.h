@@ -23,6 +23,7 @@
 #include "nimbus/orch/tool_registry.h"
 #include "nimbus/orch/tx/log.h"
 #include "props.h"
+#include "rows.h"
 #include "stub_wire.h"
 #include "world.h"
 
@@ -62,6 +63,16 @@ class Battery {
     summarizer.clock = &ms;
     summarizer.respondWith([](const sp::Recorded&, size_t) { return sp::say(kSummaryAnswer); });
     registerTools();
+  }
+  // A battery on one provider table row (lane E2-R3a): its dialect, endpoint, model, route, and the
+  // scripted provider answering in that provider's own chat shape.
+  explicit Battery(const Row& r) : Battery(r.dialect) {
+    hostOverride = r.host;
+    modelOverride = r.model;
+    routed = r.routed;
+    model.chatShape = r.slot == caps::Slot::Mistral ? sp::ChatShape::Mistral
+                      : r.slot == caps::Slot::Zai   ? sp::ChatShape::Zai
+                                                    : sp::ChatShape::OpenAI;
   }
 
   plain::Dialect dialect;

@@ -1,0 +1,4 @@
+synthetic: https://docs.mistral.ai/studio-api/conversations/reasoning, read 2026-11-24
+status: 200
+expect: stop=end complete=true calls=0
+{"id":"syn02","object":"chat.completion","created":1763980000,"model":"mistral-large-4-0","choices":[{"index":0,"message":{"role":"assistant","content":[{"type":"thinking","thinking":[{"type":"text","text":"The owner asks about the boat; notes/boat.md has it."}]},{"type":"text","text":"Your boat is the Nereid II."}],"prefix":false},"finish_reason":"stop"}],"usage":{"prompt_tokens":1200,"completion_tokens":40,"total_tokens":1240,"prompt_tokens_details":{"cached_tokens":1024}}}

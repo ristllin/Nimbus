@@ -1,0 +1,4 @@
+synthetic: cumulo-nimbus docs/llm-router.md and packages/shared/src/router-refusals.ts (the cloud repo; no public page), read 2026-11-24
+status: 500
+expect: class=retry_later retry=yes
+{"error":"router_internal_error","reason":"router_internal_error","message":"The router hit an internal error.","charged":false,"retryable":true,"retryAfterMs":30000}

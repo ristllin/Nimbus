@@ -11,11 +11,16 @@
 // provider sends for that dialect: Anthropic Messages, OpenAI Responses, or chat
 // completions. Usage follows each provider's own meaning: Anthropic's input_tokens
 // excludes the cache, OpenAI's input_tokens and prompt_tokens include it.
-// The chat answer is OpenAI's shape (tool_calls with type "function", null content beside
-// calls, the error nested under "error"); Mistral's own variants (no type, "" content,
-// a top-level error object) are what lane RB-W3's recorded fixtures cover.
+// The chat answer has four shapes (ChatShape, lane E2-R3a; router design section 11): OpenAI's
+// (tool_calls with type "function", null content beside calls, the error nested under "error"),
+// Mistral's (no type on a call, "" content beside calls, thinking as a content chunk list,
+// model_length, a top-level error object), Z.ai's (reasoning_content, arguments as a JSON object,
+// sensitive, the error code a numeric string under "error") and a text-mode server's (no tools:
+// a scripted call comes back as plain text, never as a call).
 namespace harness_test {
 namespace scripted {
+
+enum class ChatShape : uint8_t { OpenAI = 0, Mistral = 1, Zai = 2, Text = 3 };
 
 // A deterministic call id for call `i` of step `step`, shaped like the dialect's own
 // (chat ids are 9 alphanumerics, which Mistral requires).
@@ -38,6 +43,7 @@ inline const char* anthropicStop(Finish f) {
     case Finish::ToolUse: return "tool_use";
     case Finish::MaxTokens: return "max_tokens";
     case Finish::Refusal: return "refusal";
+    case Finish::Context: return "model_context_window_exceeded";
     default: return "end_turn";
   }
 }
@@ -128,7 +134,7 @@ inline std::string responsesAnswer(const Step& s, size_t step) {
   JsonDocument doc;
   doc["id"] = "resp_scripted_" + std::to_string(step);
   doc["object"] = "response";
-  const bool cutAnswer = finishOf(s) == Finish::MaxTokens;
+  const bool cutAnswer = finishOf(s) == Finish::MaxTokens || finishOf(s) == Finish::Context;
   doc["status"] = cutAnswer ? "incomplete" : "completed";
   if (cutAnswer) doc["incomplete_details"]["reason"] = "max_output_tokens";
   else doc["incomplete_details"] = nullptr;
@@ -145,40 +151,81 @@ inline std::string responsesAnswer(const Step& s, size_t step) {
   return out;
 }
 
-inline const char* chatFinish(Finish f) {
+inline const char* chatFinish(Finish f, ChatShape shape = ChatShape::OpenAI) {
   switch (f) {
-    case Finish::ToolUse: return "tool_calls";
+    case Finish::ToolUse: return shape == ChatShape::Text ? "stop" : "tool_calls";
     case Finish::MaxTokens: return "length";
+    case Finish::Context:
+      return shape == ChatShape::Mistral ? "model_length" : shape == ChatShape::Zai ? "model_context_window_exceeded" : "length";
+    case Finish::Refusal: return shape == ChatShape::Zai ? "sensitive" : "stop";
     default: return "stop";
   }
 }
 
-inline std::string chatAnswer(const Step& s, size_t step) {
+// A text-mode server has no tools: what the script calls comes back as text the codec must not run.
+inline std::string textModeContent(const Step& s) {
+  std::string out = s.text;
+  for (const Call& c : s.calls) out += (out.empty() ? "" : "\n") + c.name + "(" + c.argsJson + ")";
+  return out;
+}
+
+inline void chatContent(JsonObject msg, const Step& s, ChatShape shape) {
+  const bool refused = finishOf(s) == Finish::Refusal;
+  if (shape == ChatShape::Text) {
+    msg["content"] = textModeContent(s);
+    return;
+  }
+  if (shape == ChatShape::Mistral && !s.thinking.empty()) {   // thinking rides the content as chunks
+    JsonArray chunks = msg["content"].to<JsonArray>();
+    JsonObject th = chunks.add<JsonObject>();
+    th["type"] = "thinking";
+    JsonObject inner = th["thinking"].to<JsonArray>().add<JsonObject>();
+    inner["type"] = "text";
+    inner["text"] = s.thinking;
+    if (!s.text.empty()) {
+      JsonObject t = chunks.add<JsonObject>();
+      t["type"] = "text";
+      t["text"] = s.text;
+    }
+    return;
+  }
+  if (shape == ChatShape::Mistral) msg["content"] = s.text;   // "" beside calls, never null
+  else if (s.text.empty() || (refused && shape == ChatShape::OpenAI)) msg["content"] = nullptr;
+  else msg["content"] = s.text;
+  if (refused && shape == ChatShape::OpenAI) msg["refusal"] = s.text;   // OpenAI's shape: finish_reason stays "stop"
+  if (!s.thinking.empty() && shape != ChatShape::Mistral) msg["reasoning_content"] = s.thinking;   // Z.ai, DeepSeek
+}
+
+inline void chatCalls(JsonObject msg, const Step& s, size_t step, ChatShape shape) {
+  if (s.calls.empty() || shape == ChatShape::Text) return;
+  JsonArray tcs = msg["tool_calls"].to<JsonArray>();
+  for (size_t i = 0; i < s.calls.size(); ++i) {
+    JsonObject tc = tcs.add<JsonObject>();
+    tc["id"] = idOf(Dialect::Chat, s, step, i);
+    if (shape != ChatShape::Mistral) tc["type"] = "function";
+    if (shape != ChatShape::OpenAI) tc["index"] = i;
+    tc["function"]["name"] = s.calls[i].name;
+    JsonDocument args;   // Z.ai's answer documents arguments as an object; a cut (non-JSON) one stays a string
+    if (shape == ChatShape::Zai && !deserializeJson(args, s.calls[i].argsJson) && args.is<JsonObjectConst>())
+      tc["function"]["arguments"] = serialized(s.calls[i].argsJson);
+    else tc["function"]["arguments"] = s.calls[i].argsJson;
+  }
+}
+
+inline std::string chatAnswer(const Step& s, size_t step, ChatShape shape = ChatShape::OpenAI) {
   JsonDocument doc;
   doc["id"] = "chatcmpl-scripted-" + std::to_string(step);
   doc["object"] = "chat.completion";
   doc["created"] = 1763460000;
   doc["model"] = s.model;
+  if (shape == ChatShape::Zai) doc["request_id"] = "req-scripted-" + std::to_string(step);
   JsonObject choice = doc["choices"].to<JsonArray>().add<JsonObject>();
   choice["index"] = 0;
   JsonObject msg = choice["message"].to<JsonObject>();
   msg["role"] = "assistant";
-  const bool refused = finishOf(s) == Finish::Refusal;
-  if (s.text.empty() || refused) msg["content"] = nullptr;
-  else msg["content"] = s.text;
-  if (refused) msg["refusal"] = s.text;   // OpenAI's shape: finish_reason stays "stop"
-  if (!s.thinking.empty()) msg["reasoning_content"] = s.thinking;   // the Z.ai and DeepSeek field
-  if (!s.calls.empty()) {
-    JsonArray tcs = msg["tool_calls"].to<JsonArray>();
-    for (size_t i = 0; i < s.calls.size(); ++i) {
-      JsonObject tc = tcs.add<JsonObject>();
-      tc["id"] = idOf(Dialect::Chat, s, step, i);
-      tc["type"] = "function";
-      tc["function"]["name"] = s.calls[i].name;
-      tc["function"]["arguments"] = s.calls[i].argsJson;
-    }
-  }
-  choice["finish_reason"] = chatFinish(finishOf(s));
+  chatContent(msg, s, shape);
+  chatCalls(msg, s, step, shape);
+  choice["finish_reason"] = chatFinish(finishOf(s), shape);
   JsonObject u = doc["usage"].to<JsonObject>();
   u["prompt_tokens"] = s.usage.input + s.usage.cacheRead;
   u["completion_tokens"] = s.usage.output;
@@ -190,11 +237,11 @@ inline std::string chatAnswer(const Step& s, size_t step) {
 }
 
 // The answer body of one 2xx step.
-inline std::string renderAnswer(Dialect d, const Step& s, size_t step) {
+inline std::string renderAnswer(Dialect d, const Step& s, size_t step, ChatShape shape = ChatShape::OpenAI) {
   switch (d) {
     case Dialect::Anthropic: return anthropicAnswer(s, step);
     case Dialect::Responses: return responsesAnswer(s, step);
-    case Dialect::Chat: return chatAnswer(s, step);
+    case Dialect::Chat: return chatAnswer(s, step, shape);
   }
   return "";
 }
@@ -220,11 +267,31 @@ inline const char* openaiErrorType(int status) {
   return "invalid_request_error";
 }
 
-// The error body a provider of this dialect sends with `status`.
-inline std::string renderError(Dialect d, int status) {
+// Z.ai's business code for a status (https://docs.z.ai/api-reference/api-code, read 2026-11-24).
+inline const char* zaiCode(int status) {
+  switch (status) {
+    case 401: return "1001";
+    case 403: return "1220";
+    case 429: return "1302";
+    case 400: return "1214";
+    default: return "1234";
+  }
+}
+
+// The error body a provider of this dialect (and chat shape) sends with `status`.
+inline std::string renderError(Dialect d, int status, ChatShape shape = ChatShape::OpenAI) {
   JsonDocument doc;
   const std::string message = "scripted error " + std::to_string(status);
-  if (d == Dialect::Anthropic) {
+  if (d == Dialect::Chat && shape == ChatShape::Mistral) {   // a top-level error object
+    doc["object"] = "error";
+    doc["message"] = message;
+    doc["type"] = status == 429 ? "rate_limited" : "invalid_request_error";
+    doc["param"] = nullptr;
+    doc["code"] = std::to_string(status);
+  } else if (d == Dialect::Chat && shape == ChatShape::Zai) {
+    doc["error"]["code"] = zaiCode(status);
+    doc["error"]["message"] = message;
+  } else if (d == Dialect::Anthropic) {
     doc["type"] = "error";
     doc["error"]["type"] = anthropicErrorType(status);
     doc["error"]["message"] = message;

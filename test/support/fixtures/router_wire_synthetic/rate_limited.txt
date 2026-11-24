@@ -1,0 +1,4 @@
+synthetic: cumulo-nimbus docs/llm-router.md and packages/shared/src/router-refusals.ts (the cloud repo; no public page), read 2026-11-24
+status: 429
+expect: class=retry_later retry=yes
+{"error":"rate_limited","reason":"rate_limited","message":"Too many requests. Try again shortly.","charged":false,"retryable":true,"retryAfterMs":60000}

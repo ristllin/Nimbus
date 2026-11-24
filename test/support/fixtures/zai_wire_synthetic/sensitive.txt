@@ -1,0 +1,4 @@
+synthetic: https://docs.z.ai/api-reference/llm/chat-completion, read 2026-11-24
+status: 200
+expect: stop=refusal complete=false calls=0
+{"id":"syn04","object":"chat.completion","created":1763980000,"model":"glm-5.3","choices":[{"index":0,"message":{"role":"assistant","content":""},"finish_reason":"sensitive"}],"usage":{"prompt_tokens":1200,"completion_tokens":40,"total_tokens":1240,"prompt_tokens_details":{"cached_tokens":1024}},"request_id":"syn-zai-req"}

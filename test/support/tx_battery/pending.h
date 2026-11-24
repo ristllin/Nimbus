@@ -156,6 +156,9 @@ inline bool sentinelFor(const std::string& lane, std::function<tx::Status()>& ou
       {"RB-N3", [] { return tx::Status::pending("RB-N3 view of a long argument or reply"); }},
       {"RB-TG1", probeInbox},
       {"RB-I3", [] { return tx::Status::pending("RB-I3 reopen of the log when storage returns"); }},
+      // Router design lane R8 (bindings and routed): an engine-2 routed request carries the
+      // x-cumulo-deadline-ms header (property 11 of test_router_conformance waits on it).
+      {"RB-R8", [] { return tx::Status::pending("RB-R8 routed deadline header on engine 2"); }},
   };
   for (const Row& r : rows)
     if (lane == r.lane) {

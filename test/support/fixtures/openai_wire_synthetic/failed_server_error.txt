@@ -1,0 +1,4 @@
+synthetic: https://developers.openai.com/api/reference/resources/responses/methods/create, read 2026-11-24
+status: 200
+expect: class=server retry=yes
+{"id":"resp_syn_07","object":"response","created_at":1763980000,"status":"failed","error":{"code":"server_error","message":"The server had an error while processing your request."},"incomplete_details":null,"model":"gpt-5.6","output":[],"usage":{"input_tokens":0,"input_tokens_details":{"cached_tokens":0},"output_tokens":0,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":0}}

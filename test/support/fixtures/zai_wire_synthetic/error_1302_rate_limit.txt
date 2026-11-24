@@ -1,0 +1,4 @@
+synthetic: https://docs.z.ai/api-reference/api-code, read 2026-11-24
+status: 429
+expect: class=rate_limited retry=yes
+{"error":{"code":"1302","message":"High concurrency usage of this API, please reduce concurrency or contact customer service to increase limits."}}

@@ -11,6 +11,7 @@
 #include "nimbus/harness/plain/wire.h"
 #include "nimbus/orch/tx/arena.h"
 #include "props.h"
+#include "rows.h"
 
 // tx_battery/render.h - one request rendered from a stored transcript through a dialect's
 // real WireCodec (lane RB-B0b), read back into a RequestView. The wire-level properties
@@ -54,6 +55,13 @@ struct RenderFixture {
              {"web_search", "Search the web.", R"({"type":"object","properties":{"q":{"type":"string"}}})"}};
     photoBytes["pab12cd34"] = std::string("\xFF\xD8\xFF\xE0", 4) + std::string(996, 'j');
   }
+  // The same inputs for one provider table row (lane E2-R3a): its dialect, endpoint, model and route.
+  explicit RenderFixture(const Row& r) : RenderFixture(r.dialect) {
+    turn.host = r.host;
+    turn.model = r.model;
+    head.host = r.host;
+    head.routed = r.routed;
+  }
 };
 
 struct Rendered {
@@ -64,7 +72,7 @@ struct Rendered {
 
 // Load `items` into a fresh arena (RB-T1) and render one request (the dialect's lane).
 inline tx::Status renderItems(const RenderFixture& fx, const Convo& c, uint64_t pointer, Rendered& out,
-                              uint32_t openTurn = 0) {
+                              uint32_t openTurn = 0, bool toolChoiceNone = false) {
   tx::TxArena arena;
   tx::Status st = arena.init(tx::kActiveChatArenaBytes, [](size_t n) { return std::malloc(n); }, [](void* p) { std::free(p); });
   if (!st.ok()) return st;
@@ -83,6 +91,7 @@ inline tx::Status renderItems(const RenderFixture& fx, const Convo& c, uint64_t 
   in.items = &arena;
   in.stubPointer = pointer;
   in.maxTokens = 4096;
+  in.toolChoiceNone = toolChoiceNone;   // the guard's last round (lane E2-R3a, property 2)
   const auto* bulk = &c.bulk;
   in.bulk = [bulk](const std::string& handle, std::string& o) {
     auto it = bulk->find(handle);

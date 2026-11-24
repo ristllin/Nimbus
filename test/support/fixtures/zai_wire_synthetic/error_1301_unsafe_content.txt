@@ -1,0 +1,4 @@
+synthetic: https://docs.z.ai/api-reference/api-code, read 2026-11-24
+status: 400
+expect: class=refusal retry=no
+{"error":{"code":"1301","message":"System detected potentially unsafe or sensitive content in input or generation."}}

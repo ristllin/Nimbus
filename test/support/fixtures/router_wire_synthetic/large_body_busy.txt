@@ -1,0 +1,4 @@
+synthetic: cumulo-nimbus docs/llm-router.md and packages/shared/src/router-refusals.ts (the cloud repo; no public page), read 2026-11-24
+status: 413
+expect: class=retry_later retry=yes
+{"error":"large_body_busy","reason":"large_body_busy","message":"A large request is already in flight. Try again shortly.","charged":false,"retryable":true,"retryAfterMs":30000}

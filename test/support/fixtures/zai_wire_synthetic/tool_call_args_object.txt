@@ -1,0 +1,4 @@
+synthetic: https://docs.z.ai/api-reference/llm/chat-completion, read 2026-11-24
+status: 200
+expect: stop=tool complete=true calls=1
+{"id":"syn02","object":"chat.completion","created":1763980000,"model":"glm-5.3","choices":[{"index":0,"message":{"role":"assistant","content":"","reasoning_content":"I should read the note.","tool_calls":[{"id":"call_syn_zai_01","type":"function","index":0,"function":{"name":"read_file","arguments":{"path":"notes/boat.md"}}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1200,"completion_tokens":40,"total_tokens":1240,"prompt_tokens_details":{"cached_tokens":1024}},"request_id":"syn-zai-req"}

@@ -1,0 +1,4 @@
+synthetic: cumulo-nimbus docs/llm-router.md and packages/shared/src/router-refusals.ts (the cloud repo; no public page), read 2026-11-24
+status: 401
+expect: class=park_auth retry=no
+{"error":"invalid_router_key","reason":"invalid_router_key","message":"The router key is not valid.","charged":false,"retryable":false}

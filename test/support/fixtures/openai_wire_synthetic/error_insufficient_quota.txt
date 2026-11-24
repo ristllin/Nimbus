@@ -1,0 +1,4 @@
+synthetic: https://developers.openai.com/api/docs/guides/error-codes, read 2026-11-24
+status: 429
+expect: class=billing retry=no
+{"error":{"message":"You exceeded your current quota, please check your plan and billing details.","type":"insufficient_quota","param":null,"code":"insufficient_quota"}}

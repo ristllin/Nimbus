@@ -99,7 +99,7 @@ class ScriptedProvider : public agent::HttpTransport {
     }
     seen_.push_back(std::move(rec));
     if (clock) *clock += s.takesMs;
-    return answer(seen_.back(), structuredOutput && seen_.back().answerSchema ? structured(s) : s, out, err);
+    return answer(seen_.back(), structuredOutput && seen_.back().answerSchema ? structured(s) : s, chatShape, out, err);
   }
 
   const std::vector<Recorded>& requests() const { return seen_; }
@@ -144,6 +144,9 @@ class ScriptedProvider : public agent::HttpTransport {
   // Lane E2-CMP: answer a request that asks for a json_schema form as the provider's structured output
   // does (see structured()); false: a host that ignores the form and answers the step as scripted.
   bool structuredOutput = true;
+  // Lane E2-R3a: the chat-completions provider this stands in for (OpenAI, Mistral, Z.ai, a text-mode
+  // server): the shape of its chat answers and errors. Anthropic and Responses answers ignore it.
+  ChatShape chatShape = ChatShape::OpenAI;
 
  private:
   Recorded record(const agent::HttpRequest& req) const {
@@ -180,7 +183,7 @@ class ScriptedProvider : public agent::HttpTransport {
     return true;
   }
 
-  static bool answer(const Recorded& rec, const Step& s, agent::HttpResponse& out, std::string& err) {
+  static bool answer(const Recorded& rec, const Step& s, ChatShape shape, agent::HttpResponse& out, std::string& err) {
     if (s.transportCut) {
       out.status = 0;
       err = s.transportErr;
@@ -189,8 +192,8 @@ class ScriptedProvider : public agent::HttpTransport {
     out.status = s.status;
     out.headers = s.headers;
     if (!s.rawBody.empty()) out.body = s.rawBody;
-    else if (s.status < 200 || s.status >= 300) out.body = s.errorBody.empty() ? renderError(rec.dialect, s.status) : s.errorBody;
-    else out.body = renderAnswer(rec.dialect, s, rec.step);
+    else if (s.status < 200 || s.status >= 300) out.body = s.errorBody.empty() ? renderError(rec.dialect, s.status, shape) : s.errorBody;
+    else out.body = renderAnswer(rec.dialect, s, rec.step, shape);
     return true;
   }
 

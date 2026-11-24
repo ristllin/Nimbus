@@ -1,0 +1,4 @@
+synthetic: https://docs.mistral.ai/api/endpoint/chat, read 2026-11-24
+status: 400
+expect: class=unknown_model retry=no
+{"object":"error","message":"Invalid model: mistral-no-such-model","type":"invalid_model","param":null,"code":"1500"}
