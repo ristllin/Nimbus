@@ -13,6 +13,11 @@
 //    "system":[core][skills index + pinned notes][digests + recent files],
 //    "tools":[{"name","description","input_schema"}], "tool_choice":{"type":"auto"|"none"},
 //    "messages":[...]}
+// Lane E2-P-CONN2: on the owner's turn with an MCP server enabled for Anthropic (plain_plan.h
+// providerTools), tools[] also holds one {"type":"mcp_toolset","mcp_server_name"} per server and
+// "mcp_servers":[...] follows tool_choice, with the "anthropic-beta: mcp-client-2025-11-20" header
+// (https://platform.claude.com/docs/en/agents-and-tools/mcp-connector, read 24 Nov 2026). With no
+// such server nothing of it is written: the bytes are the ones before.
 //
 // Messages, from the stored items after thru (the digests cover the rest), in q order:
 //   u  a user message of its own: one text block '[Tue 17 Nov 2026 13:02] <text>', then
@@ -80,6 +85,7 @@ using body::Over;
 constexpr const char* kDefaultHost = "api.anthropic.com";
 constexpr const char* kVersion = "2023-06-01";
 constexpr const char* kFilesBeta = "files-api-2025-04-14";
+constexpr const char* kMcpBeta = "mcp-client-2025-11-20";   // lane E2-P-CONN2
 constexpr const char* kCacheMark = ",\"cache_control\":{\"type\":\"ephemeral\"}";
 constexpr const char* kCacheMarkLong = ",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}";
 
@@ -280,7 +286,7 @@ void outputConfig(BodyWriter& w, const RenderInput& in) {
   w.endObject();
 }
 
-Status toolsArray(BodyWriter& w, const RenderInput& in) {
+Status toolsArray(BodyWriter& w, const RenderInput& in, const plan::ProviderTools& pt) {
   if (in.tools->empty()) return Status::success();
   w.key("tools").beginArray();
   for (const ToolSpec& t : *in.tools) {
@@ -289,8 +295,14 @@ Status toolsArray(BodyWriter& w, const RenderInput& in) {
     if (!t.description.empty()) w.key("description").str(t.description);
     w.key("input_schema").raw(t.schemaJson).endObject();
   }
+  for (const std::string& t : pt.tools) w.raw(t);   // the toolsets (lane E2-P-CONN2)
   w.endArray();
   w.key("tool_choice").beginObject().key("type").str(in.toolChoiceNone ? "none" : "auto").endObject();
+  if (!pt.servers.empty()) {
+    w.key("mcp_servers").beginArray();
+    for (const std::string& sv : pt.servers) w.raw(sv);
+    w.endArray();
+  }
   return Status::success();
 }
 
@@ -313,7 +325,7 @@ void placePoints(std::vector<Point> points, bool longCache, HttpRequest& out) {
 
 // Where the request goes and its headers: the route's path, version and auth style (lane E2-R4a);
 // with no route, a direct head's defaults as before.
-void coordinates(const RenderInput& in, bool fileRef, HttpRequest& out) {
+void coordinates(const RenderInput& in, bool fileRef, bool mcp, HttpRequest& out) {
   const Route* r = in.route;
   out.method = "POST";
   out.host = in.head->host.empty() ? kDefaultHost : in.head->host;
@@ -322,7 +334,9 @@ void coordinates(const RenderInput& in, bool fileRef, HttpRequest& out) {
   out.path = r ? r->path : (in.head->basePath.empty() ? std::string("/v1") : in.head->basePath) + "/messages";
   out.headers.emplace_back("content-type", "application/json");
   out.headers.emplace_back("anthropic-version", r && *r->version ? r->version : kVersion);
-  if (fileRef) out.headers.emplace_back("anthropic-beta", kFilesBeta);
+  if (fileRef || mcp)   // one header, the betas comma-separated
+    out.headers.emplace_back("anthropic-beta", fileRef && mcp ? std::string(kFilesBeta) + "," + kMcpBeta
+                                                              : std::string(fileRef ? kFilesBeta : kMcpBeta));
   const std::string key = in.head->key ? in.head->key() : std::string();
   if (key.empty() || !in.head->tls) return;   // a key never rides a cleartext socket
   const bool bearer = r ? r->auth == nimbus::orch::caps::Auth::Bearer : in.head->routed;
@@ -330,8 +344,8 @@ void coordinates(const RenderInput& in, bool fileRef, HttpRequest& out) {
   else if (!r || r->auth == nimbus::orch::caps::Auth::XApiKey) out.headers.emplace_back("x-api-key", key);
 }
 
-size_t reserveFor(const RenderInput& in, const plan::Plan& p) {
-  size_t n = p.estimate + in.system->core.size() + in.system->notes.size() + in.system->digests.size() + 1024;
+size_t reserveFor(const RenderInput& in, const plan::Plan& p, const plan::ProviderTools& pt) {
+  size_t n = p.estimate + in.system->core.size() + in.system->notes.size() + in.system->digests.size() + 1024 + pt.bytes();
   for (const ToolSpec& t : *in.tools) n += t.name.size() + t.description.size() + t.schemaJson.size() + 64;
   return n;
 }
@@ -361,7 +375,9 @@ Status renderBody(const RenderInput& in, HttpRequest& out) {
     for (const plan::Piece& pc : p.pieces)
       if (pc.kind == plan::PieceKind::Call) return Status::fail(Err::InvalidArgument, "plain::anthropic.render.noTools");
 
-  out.body.reserve(reserveFor(in, p));
+  plan::ProviderTools pt;
+  plan::providerTools(in, pt);
+  out.body.reserve(reserveFor(in, p, pt));
 
   BodyWriter w(out.body, &out.splices);
   std::vector<Point> points;
@@ -369,7 +385,7 @@ Status renderBody(const RenderInput& in, HttpRequest& out) {
   w.beginObject().key("model").str(in.route ? in.route->model : in.turn->model).key("max_tokens").unum(in.maxTokens);
   outputConfig(w, in);
   systemBlocks(w, out.body, *in.system, p.system, points);
-  if (!(st = toolsArray(w, in)).ok()) return st;
+  if (!(st = toolsArray(w, in, pt)).ok()) return st;
 
   Messages m(w);
   Render r{in, p, w, out.body, m, points};
@@ -379,7 +395,7 @@ Status renderBody(const RenderInput& in, HttpRequest& out) {
   if (!p.anyBlock) return Status::fail(Err::InvalidArgument, "plain::anthropic.render.noMessages");
 
   placePoints(points, in.longCache, out);
-  coordinates(in, r.fileRef, out);
+  coordinates(in, r.fileRef, !pt.servers.empty(), out);
   return Status::success();
 }
 
@@ -398,6 +414,8 @@ Status renderBody(const RenderInput& in, HttpRequest& out) {
 //                     a stored line cannot hold (tx::kMaxLineBytes) is not kept (wire.h MetaPart:
 //                     the open turn's next request goes without it; the provider accepts that,
 //                     evidence/LIVE-CONFORMANCE.md)
+//   mcp_tool_use      a provider-side connector call and its answer (lane E2-P-CONN2): not stored
+//   mcp_tool_result   (the model's text after them is); a result marks the step outside content
 //   other block types are not ours to act on and are passed over.
 // stop_reason: end_turn and stop_sequence end the turn, tool_use asks for the calls, max_tokens is a
 // cut and model_context_window_exceeded a full window (lane E2-R4a: StopReason::Context; every call
@@ -641,6 +659,8 @@ void stepOf(const std::string& body, const Answer& a, ParsedStep& step) {
     else if (b.type == "tool_use") callOf(body, b, step);
     else if (b.type == "thinking" || b.type == "redacted_thinking") thinkingOf(body, b, r, step);
     else r.replayed = false;   // a block the round does not store
+    // Lane E2-P-CONN2: a tool server the provider called for the owner answered inside this answer.
+    if (b.type == "mcp_tool_result") step.outside = true;
   }
   if (step.stop == StopReason::Refusal) {
     step.calls.clear();   // a refused answer runs nothing

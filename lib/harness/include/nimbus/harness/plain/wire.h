@@ -16,6 +16,7 @@ namespace orch {
 namespace tx {
 class TxArena;
 }  // namespace tx
+struct ConnectorInfo;   // nimbus/orch/connectors_wire.h (lane E2-P-CONN2)
 }  // namespace orch
 }  // namespace nimbus
 
@@ -55,6 +56,11 @@ struct HeadEndpoint {
   // (router design section 3.3, lane E2-R8a): its route offers tools; false, its chat row is text mode.
   bool toolsVerified = false;
   std::function<std::string()> key;
+  // Lane E2-P-CONN2: the owner's connectors as engine 1's attach builders read them
+  // (nimbus/orch/connectors_wire.h, the Code sandbox switch applied) and each one's bearer, read at
+  // render time and never stored. Null: no provider-side connector or sandbox rides the request.
+  std::function<std::vector<nimbus::orch::ConnectorInfo>()> connectors;
+  std::function<std::string(const nimbus::orch::ConnectorInfo&)> bearer;
 };
 
 // The reasoning effort a head request carries for `model` at `provider` (lane E2-FIX14): the output
@@ -156,6 +162,9 @@ struct ParsedStep {
   std::string refusal;              // the provider's refusal text, when it refused
   StopReason stop = StopReason::Other;
   nimbus::orch::TokenUsage usage;
+  // Lane E2-P-CONN2: a provider-side connector ran inside this answer (an Anthropic mcp_tool_result,
+  // an OpenAI mcp_call): its result is outside content, so the turn is tainted.
+  bool outside = false;
 };
 
 // Named WireCodec, not Wire: Arduino's global I2C object is called Wire.

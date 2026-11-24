@@ -204,6 +204,7 @@ class TurnRun {
       if ((st = boundary()).ok()) st = ask();                              // render, post, read
       if (!st.ok() || t_.ex.err != ExchangeErr::None) break;               // failed or cut: ended
       const ParsedStep& step = t_.ex.step;
+      if (step.outside) t_.sawOutside = t_.ctx.tainted = true;            // a provider-side connector answered
       if (step.calls.empty() || t_.lastRound) {                            // no call: the text is the reply
         if (!(st = finalAnswer(step)).ok() || t_.answered) break;
         continue;                                                          // held once: one more round
@@ -2061,6 +2062,7 @@ class TurnRun {
       l->tools = t_.tools;
       l->head = t_.setup.head;
       l->head.key = [] { return std::string(); };   // the key is never copied
+      l->head.bearer = nullptr;   // nor a connector's token (lane E2-P-CONN2)
       l->wire = t_.wire;
       l->end = e.end;
       l->end.promptHash = t_.end.promptHash;

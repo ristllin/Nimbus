@@ -78,6 +78,8 @@
 #include "commands_plain.h"     // the owner's slash commands
 #include "loops_subsystem.h"    // checkDue, routineGrants, quietHoursEndMinute (lane E2-SCHED)
 #include "tools_plain_connectors.h"  // connectorsdev::beforeTurn (E2-P-CONN1)
+#include "connectors.h"               // attachList, attachBearer (E2-P-CONN2)
+#include "nimbus/orch/connectors_wire.h"
 #include "file_tools_device.h"  // tools::takeOutsideCall - the call just dispatched read outside content (E2-FSAFE)
 #include "memory_subsystem.h"   // memory::captureMessage, memory::registry
 #include "migrate_device.h"     // migratedev::fill, importRulesOnce - the earlier engine's history and rules
@@ -668,6 +670,10 @@ plain::ChatBinding* chatFor(const String& chatId, nimbus::orch::Role role) {
   // content (web_search; a file from inbox/, agents/ or another person, as the tool marked it) stores an
   // outside result, so the turn is tainted; the rails then keep its note changes on the pending shelf.
   d.outside = [](const std::string&) { return tools::takeOutsideCall(); };
+  // Lane E2-P-CONN2: the owner's connectors and the Code sandbox ride the head's own requests (the
+  // codec decides per provider and per person, plain_plan.h providerTools).
+  d.connectors = [] { return connectors::attachList(); };
+  d.bearer = [](const nimbus::orch::ConnectorInfo& c) { return connectors::attachBearer(c); };
   d.railPending = railKeep;
   d.railNoted = noteRail;
   d.recentFiles = [](const nimbus::orch::Principal& who) -> nimbus::orch::tx::RecentFilesBlock::Source {

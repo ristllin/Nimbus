@@ -101,6 +101,34 @@ using FragmentOk = bool (*)(const std::string& stored);
 // The plan of one request. InvalidArgument: a RenderInput without turn, system or items.
 Status plan(const RenderInput& in, FragmentOk sendable, Plan& out);
 
+// Lane E2-P-CONN2: what rides a request beside its function tools, on the provider's own side: the
+// owner's connectors and the code sandbox (HeadEndpoint::connectors), decided by engine 1's attach
+// builders (nimbus/orch/connectors_wire.h attachOpenAIWire, attachAnthropicWire) with engine 1's
+// grant: the owner's connectors only on the owner's own turns (connector_grant.h connectorGrantFor
+// the turn's person, never looser than the calling task's grant), the built-ins only for anyone else,
+// nothing over the Cumulo router (engine 1's router route: built-ins only, no sandbox) and nothing on
+// a request that offers no tools (the summarizer). Approval: none asked, as engine 1 (OpenAI
+// require_approval "never"; an Anthropic toolset runs without a prompt). Per dialect:
+//   Responses (an openai head)    tools[]: {"type":"mcp",...} and {"type":"code_interpreter",...}
+//   Messages (an anthropic head)  mcp_servers[] ({"type":"url","url","name","authorization_token"?})
+//                                 and one {"type":"mcp_toolset","mcp_server_name"} tool per server
+//   Chat (Mistral and the rest)   nothing: chat/completions has no provider-side tool (engine 1 sent
+//                                 its connectors only on the Conversations API, which engine 2 does
+//                                 not speak; its chat-completions tool loop sent none either)
+// The one piece of the planner that writes JSON: each entry as one JSON object, which the codec
+// writes as it is. A custom endpoint gets nothing (engine 1 attached by provider).
+struct ProviderTools {
+  std::vector<std::string> tools;     // entries for the request's tools[]
+  std::vector<std::string> servers;   // entries for the Messages mcp_servers[]
+  size_t bytes() const {
+    size_t n = 0;
+    for (const std::string& t : tools) n += t.size() + 1;
+    for (const std::string& t : servers) n += t.size() + 1;
+    return n;
+  }
+};
+void providerTools(const RenderInput& in, ProviderTools& out);
+
 }  // namespace plan
 }  // namespace plain
 }  // namespace agent

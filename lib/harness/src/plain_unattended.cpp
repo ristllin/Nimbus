@@ -13,6 +13,7 @@
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/platform.h"
 #include "nimbus/harness/plain/texts.h"
+#include "nimbus/orch/connector_grant.h"   // a routine's connector grant (lane E2-P-CONN2)
 #include "nimbus/orch/self_wakeup.h"
 #include "nimbus/orch/tool_groups.h"
 #include "nimbus/orch/tool_registry.h"
@@ -637,6 +638,11 @@ Status runRoutine(const RoutineDeps& deps, const RoutineFire& fire, FireReport& 
     in.ctx.turn = turn;
     in.tzMinutes = deps.tzMinutes;
     in.text = routineInputText(f->fire, deps.tzMinutes, deps.head.dayStartMin);
+    // Lane E2-P-CONN2: engine 1's connector grant for a turn nobody is writing (engine.cpp runTurn,
+    // RB-Q2a): the owner's connectors only with his routine switch on, nothing at all otherwise.
+    const orch::ConnectorGrantScope grant(orch::unattendedGranted(routineFacts(fire), orch::ToolUse::Spend)
+                                              ? orch::ConnectorGrant::Owner
+                                              : orch::ConnectorGrant::None);
     st = f->engine->runTurn(in, out.outcome);
     out.output = RoutineOutput{fire.fireAt, f->captured ? f->note.text : std::string()};
     const uint64_t now = deps.platform->nowEpoch ? deps.platform->nowEpoch() : fire.fireAt;

@@ -468,6 +468,10 @@ void attachAnthropic(JsonDocument& agentBody) {
   nimbus::orch::attachAnthropicWire(agentBody, portableList(), bearerClosure());
 }
 
+std::vector<nimbus::orch::ConnectorInfo> attachList() { return portableList(); }
+
+std::string attachBearer(const nimbus::orch::ConnectorInfo& c) { return bearerClosure()(c); }
+
 // ---- catalog ------------------------------------------------------------------
 
 // The keys, what holds each provider off for sub-agents (the Spawn seam: CUM-821, so the

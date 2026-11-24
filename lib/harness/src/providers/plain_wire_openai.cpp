@@ -28,6 +28,11 @@
 //   function_call_output call_id and the result text; a photo a result shows goes inside the
 //                        output where the row allows images in tool results, else in one user
 //                        message right after the round's outputs (engine-1 parity O13)
+// Lane E2-P-CONN2: on an openai head, tools[] also holds what plain_plan.h providerTools gives after the
+// functions: the owner's MCP servers and first-party connectors ({"type":"mcp","require_approval":"never",
+// "server_label",...}) and the Code sandbox ({"type":"code_interpreter","container":{"type":"auto"}}),
+// engine 1's attach entries as they are (https://platform.openai.com/docs/guides/tools-remote-mcp and
+// .../tools-code-interpreter, as engine 1's grid recorded them; checked 24 Nov 2026).
 // Cache breakpoints ({"mode":"explicit"} on an input_text part) only on an openaiBreakpoints row:
 // the notes block, the digests block and the last input_text at or before the previous turn's
 // end (the plan's three stable marks; the core rides `instructions`, which takes none).
@@ -334,7 +339,7 @@ R7_NOINLINE void inputArray(Render& r) {
   r.w.endArray();
 }
 
-R7_NOINLINE Status toolsArray(BodyWriter& w, const RenderInput& in) {
+R7_NOINLINE Status toolsArray(BodyWriter& w, const RenderInput& in, const plan::ProviderTools& pt) {
   if (in.tools->empty()) return Status::success();
   w.key("tools").beginArray();
   for (const ToolSpec& t : *in.tools) {
@@ -345,6 +350,7 @@ R7_NOINLINE Status toolsArray(BodyWriter& w, const RenderInput& in) {
     // defaults strict to true).
     w.key("parameters").raw(t.schemaJson).key("strict").boolean(false).endObject();
   }
+  for (const std::string& t : pt.tools) w.raw(t);   // provider-side connectors and sandbox (E2-P-CONN2)
   w.endArray();
   put(w, "tool_choice", in.toolChoiceNone ? "none" : "auto");
   return Status::success();
@@ -391,8 +397,8 @@ R7_NOINLINE void coordinates(const RenderInput& in, HttpRequest& out) {
   if (bearer.size() > 7) out.headers.emplace_back("authorization", std::move(bearer));
 }
 
-R7_NOINLINE size_t reserveFor(const RenderInput& in, const plan::Plan& p) {
-  size_t n = p.estimate + in.system->core.size() + in.system->notes.size() + in.system->digests.size() + 1024;
+R7_NOINLINE size_t reserveFor(const RenderInput& in, const plan::Plan& p, const plan::ProviderTools& pt) {
+  size_t n = p.estimate + in.system->core.size() + in.system->notes.size() + in.system->digests.size() + 1024 + pt.bytes();
   for (const ToolSpec& t : *in.tools) n += t.name.size() + t.description.size() + t.schemaJson.size() + 96;
   return n;
 }
@@ -405,11 +411,13 @@ R7_NOINLINE Status renderBody(const RenderInput& in, HttpRequest& out) {
     for (const plan::Piece& pc : p.pieces)
       if (pc.kind == plan::PieceKind::Call) return Status::fail(Err::InvalidArgument, "plain::openai.render.noTools");
   if (!p.anyBlock) return Status::fail(Err::InvalidArgument, "plain::openai.render.noMessages");
-  out.body.reserve(reserveFor(in, p));
+  plan::ProviderTools pt;
+  plan::providerTools(in, pt);
+  out.body.reserve(reserveFor(in, p, pt));
   const caps::Caps c = capsOf(in);
   BodyWriter w(out.body, &out.splices);
   envelope(w, in, c, p);
-  if (!(st = toolsArray(w, in)).ok()) return st;
+  if (!(st = toolsArray(w, in, pt)).ok()) return st;
   Render r{in, p, c.row, w, out.body};
   inputArray(r);
   w.endObject();
@@ -429,7 +437,10 @@ R7_NOINLINE Status renderBody(const RenderInput& in, HttpRequest& out) {
 //   reasoning         one MetaPart: {"type","id","summary","encrypted_content"} as served, before
 //                     the call it preceded; one without encrypted content, or one a stored line
 //                     cannot hold, is not kept
-//   other items       not ours to act on, passed over
+//   mcp_call          a provider-side connector ran (lane E2-P-CONN2): the step is outside content
+//   other items       not ours to act on, passed over (mcp_list_tools, code_interpreter_call, ...); a
+//                     reasoning item followed by one is not kept, since it is never sent without the item
+//                     after it
 // The stop table (design section 5 item 9): completed is EndTurn, or ToolUse when it holds calls,
 // or MaxTokens when a call's arguments do not parse; incomplete with max_output_tokens is MaxTokens
 // (also with no visible output, billed reasoning only), with content_filter a Refusal, with any
@@ -589,16 +600,26 @@ R7_NOINLINE StopReason stopOf(const Answer& a, const ParsedStep& step, const std
   return StopReason::ToolUse;
 }
 
+// Whether item i is followed by an item this wire never sends back (a provider-side tool's item).
+bool followedByUnsent(const Answer& a, size_t i) {
+  if (i + 1 >= a.items.size()) return false;
+  const std::string& next = a.items[i + 1].type;
+  return next != "message" && next != "function_call" && next != "reasoning";
+}
+
 R7_NOINLINE void stepOf(const std::string& body, const Answer& a, ParsedStep& step) {
   std::string refusal;
-  for (const Item& it : a.items) {
+  for (size_t i = 0; i < a.items.size(); ++i) {
+    const Item& it = a.items[i];
     if (it.type == "message") {
       step.text += it.text;
       refusal += it.refusal;
     } else if (it.type == "function_call") {
       callOf(it, step);
     } else if (it.type == "reasoning") {
-      reasoningOf(body, it, step);
+      if (!followedByUnsent(a, i)) reasoningOf(body, it, step);
+    } else if (it.type == "mcp_call") {
+      step.outside = true;
     }
   }
   step.stop = stopOf(a, step, refusal);

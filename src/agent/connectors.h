@@ -2,6 +2,9 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 
+#include <string>
+#include <vector>
+
 // Forward declaration so the outbound-MCP sync() can take the registry by
 // reference without this widely-included header pulling the whole registry TU.
 namespace nimbus { namespace orch { class ToolRegistry; struct ConnectorInfo; struct PdfRoute; struct ToolResult; struct Principal; } }
@@ -154,6 +157,10 @@ const char* pdfRouteSlug();
 void attachOpenAI(JsonDocument& d);
 void attachMistral(JsonDocument& d);
 void attachAnthropic(JsonDocument& agentBody);
+// Lane E2-P-CONN2: what those three read, for engine 2's codecs (HeadEndpoint::connectors and
+// ::bearer): the parsed list with the Code sandbox switch applied, and each entry's bearer.
+std::vector<nimbus::orch::ConnectorInfo> attachList();
+std::string attachBearer(const nimbus::orch::ConnectorInfo& c);
 
 // "[PROVIDERS & CONNECTORS]" - the honest, provider-aware capability catalog for
 // the model's context: key present/verified, native tool surface, enabled

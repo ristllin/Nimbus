@@ -1,7 +1,10 @@
 // plain_plan.cpp - the shared planner of engine 2's wires (plain_plan.h). Moved out of
 // plain_wire_anthropic.cpp by lane E2-R2b; the rules are the ones that file's header names
 // (messages after thru, pairing, send order, the stub rule, photos, the ladder, the cache marks).
+// Lane E2-P-CONN2 adds providerTools at the end: the provider-side connectors and sandbox.
 #include "plain_plan.h"
+
+#include <ArduinoJson.h>
 
 #include <algorithm>
 #include <cstring>
@@ -9,9 +12,12 @@
 #include <vector>
 
 #include "nimbus/harness/log.h"
+#include "nimbus/harness/plain/exchange.h"   // providerSlugOf (lane E2-P-CONN2)
 #include "nimbus/harness/plain/history.h"   // viewedPhoto (lane E2-SRCH)
 #include "nimbus/harness/plain/route.h"     // the request's row (lane E2-R4b)
 #include "nimbus/harness/plain/texts.h"
+#include "nimbus/orch/connector_grant.h"    // whose connectors ride (CUM-828, lane E2-P-CONN2)
+#include "nimbus/orch/connectors_wire.h"    // engine 1's attach builders (lane E2-P-CONN2)
 #include "nimbus/orch/tx/arena.h"
 #include "nimbus/orch/tx/item.h"
 #include "nimbus/orch/tx/rules.h"
@@ -773,6 +779,62 @@ Status plan(const RenderInput& in, FragmentOk sendable, Plan& out) {
   fitRealBytes(b);
   messageMarks(out, in.turn->turn);
   return Status::success();
+}
+
+// ---- provider-side connectors and the sandbox (lane E2-P-CONN2) -----------------------------------
+
+namespace {
+
+namespace orch = nimbus::orch;
+
+// One JSON object onto the list.
+void joinOne(JsonVariantConst v, std::vector<std::string>& out) {
+  out.emplace_back();
+  serializeJson(v, out.back());
+}
+
+// The grant of the turn's person, never looser than the calling task's (a scope a routine set). A turn
+// with no person is no owner's: built-ins only.
+orch::ConnectorGrant turnGrant(const TurnCtx& turn) {
+  const orch::ConnectorGrant own = turn.who ? orch::connectorGrantFor(*turn.who) : orch::ConnectorGrant::BuiltinsOnly;
+  return std::max(own, orch::currentConnectorGrant());
+}
+
+void anthropicTools(const std::vector<orch::ConnectorInfo>& cs, const orch::BearerFn& bearer, ProviderTools& out) {
+  JsonDocument d;
+  orch::attachAnthropicWire(d, cs, bearer);
+  JsonDocument t;
+  for (JsonObjectConst s : d["mcp_servers"].as<JsonArrayConst>()) {
+    joinOne(s, out.servers);
+    t.clear();
+    t["type"] = "mcp_toolset";
+    t["mcp_server_name"] = s["name"];
+    joinOne(t.as<JsonVariantConst>(), out.tools);
+  }
+}
+
+void openaiTools(const std::vector<orch::ConnectorInfo>& cs, const orch::BearerFn& bearer, ProviderTools& out) {
+  JsonDocument d;
+  orch::attachOpenAIWire(d, cs, bearer);
+  for (JsonVariantConst t : d["tools"].as<JsonArrayConst>()) joinOne(t, out.tools);
+}
+
+}  // namespace
+
+void providerTools(const RenderInput& in, ProviderTools& out) {
+  out = ProviderTools{};
+  if (!in.turn || !in.head || !in.head->connectors || !in.tools || in.tools->empty()) return;
+  if (in.route ? in.route->routed : in.head->routed) return;   // engine 1's router route: no connector, no sandbox
+  const Dialect d = in.route ? in.route->dialect : in.turn->dialect;
+  const std::string provider = in.route ? in.route->provider : providerSlugOf(*in.turn, *in.head);
+  const bool messages = d == Dialect::AnthropicMessages && provider == "anthropic";
+  const bool responses = d == Dialect::OpenAIResponses && provider == "openai";
+  if (!messages && !responses) return;
+  const orch::ConnectorGrantScope grant(turnGrant(*in.turn));
+  const std::vector<orch::ConnectorInfo> cs = in.head->connectors();
+  const orch::BearerFn bearer = in.head->bearer ? orch::BearerFn(in.head->bearer) : orch::BearerFn();
+  if (messages) anthropicTools(cs, bearer, out);
+  else openaiTools(cs, bearer, out);
 }
 
 }  // namespace plan

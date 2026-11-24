@@ -153,6 +153,10 @@ struct ChatBindingDeps {
   // whole reply, before it is split into parts; the same runs on a routine's note to the chat.
   std::function<std::string(const std::string& chatId, const std::string& text)> replyFilter;
   std::function<bool(const std::string& chatId, const std::string& text)> replyScreen;
+  // Lane E2-P-CONN2: HeadEndpoint::connectors and ::bearer of the turn's head (the owner's connectors
+  // and the Code sandbox, as engine 1's attach reads them). Null: none ride.
+  std::function<std::vector<nimbus::orch::ConnectorInfo>()> connectors;
+  std::function<std::string(const nimbus::orch::ConnectorInfo&)> bearer;
 };
 
 // The owner's line on every turn while the stored conversation could not be loaded (lane
@@ -925,6 +929,8 @@ class ChatBinding {
     out.dayStartMin = cfg_.dayStartMin;
     out.head = endpoint();
     out.head.effort = headEffortFor(cfg_.provider, t.model);   // E2-FIX14: as nimbusd sends for the same model
+    out.head.connectors = d_.connectors;   // lane E2-P-CONN2: the turn's requests only, never the summarizer's
+    out.head.bearer = d_.bearer;
     out.wire = nullptr;   // wireFor(the head's dialect)
     out.storedRounds = cfg_.storedRounds;
     out.cost = cost_;
