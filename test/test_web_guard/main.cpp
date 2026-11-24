@@ -617,6 +617,25 @@ static std::string networkSeamIn(const std::string& text) {
   return std::string();
 }
 
+// A handler that is a named function of the same file (image.generate's imageTool since
+// E2-P-OUT2, so both engines run one copy): its body, appended to the registration's text.
+static std::string withNamedHandlers(const std::string& text, std::string reg) {
+  static const std::string kDef = "nimbus::orch::ToolResult ";
+  for (size_t d = text.find(kDef); d != std::string::npos; d = text.find(kDef, d + 1)) {
+    const size_t n = d + kDef.size();
+    size_t e = n;
+    while (e < text.size() && (isalnum((unsigned char)text[e]) || text[e] == '_')) ++e;
+    if (e == n || e >= text.size() || text[e] != '(') continue;
+    const std::string name = text.substr(n, e - n);
+    const size_t use = reg.find(name);
+    if (use == std::string::npos || use == 0 || isalnum((unsigned char)reg[use - 1]) || reg[use - 1] == '_') continue;
+    const char after = reg[use + name.size()];
+    if (after != ',' && after != ')' && after != '\n') continue;
+    reg += text.substr(d, text.find("\n}\n", d) - d);
+  }
+  return reg;
+}
+
 static void test_every_network_tool_runs_outside_the_dispatch_lock() {
   const char* const kToolFiles[] = {"src/agent/memory_subsystem.cpp", "src/agent/files_subsystem.cpp",
                                     "src/agent/pdf_tool.cpp",         "src/agent/orchestrator_e1.cpp",
@@ -631,7 +650,7 @@ static void test_every_network_tool_runs_outside_the_dispatch_lock() {
     TEST_ASSERT_FALSE_MESSAGE(text.empty(), p);
     for (const auto& reg : registrations(text)) {
       ++tools;
-      const std::string seam = networkSeamIn(reg.second);
+      const std::string seam = networkSeamIn(withNamedHandlers(text, reg.second));
       if (seam.empty()) continue;
       ++network;
       TEST_ASSERT_TRUE_MESSAGE(toolWaitsOnNetwork(reg.first),
