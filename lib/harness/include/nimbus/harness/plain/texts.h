@@ -54,6 +54,10 @@ inline constexpr char kRecall[] =
 inline constexpr char kModel[] = "Model: ";
 inline constexpr char kToolsIndex[] =
     "Tools behind more (more with group lists them; more with name and args calls one):";
+// The owner's tool servers that wait for his approval (E2-REP2; engine 1's "[DEVICE MCP SERVERS]" line): the
+// names follow, then the way to answer. Only the owner's turn carries it.
+inline constexpr char kServersWaiting[] = "Tool servers waiting for the owner's approval, not usable yet:";
+inline constexpr char kServersApprove[] = "The owner answers with /mcp approve or /mcp deny.";
 inline constexpr char kSkills[] = "Skills (read_file to open):";
 inline constexpr char kSkillsMore[] = " more: skill_list through more";
 inline constexpr char kNotes[] = "Pinned notes:";

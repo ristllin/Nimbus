@@ -1196,17 +1196,20 @@ void sync(ToolRegistry& reg) {
   commitDiscovery(reg, pick, o);                   // phase 3 (Lock)
 }
 
+// Names of device-dialed servers that are enabled but NOT approved (pending).
+std::vector<std::string> pendingServers() {
+  std::vector<std::string> pending;
+  std::vector<nimbus::orch::ConnectorInfo> cs;
+  nimbus::orch::parseConnectorsJson(store::connectorsJson().c_str(), cs, kMaxConnectors, nullptr);
+  for (const auto& c : cs)
+    if (c.kind == "mcp" && c.enabled && c.deviceDialed && !c.approved && !c.url.empty())
+      pending.push_back(c.name);
+  return pending;
+}
+
 std::string catalogSection() {
   std::vector<Desired> want = desiredServers();
-  // Names of device-dialed servers that are enabled but NOT approved (pending).
-  std::vector<std::string> pending;
-  {
-    std::vector<nimbus::orch::ConnectorInfo> cs;
-    nimbus::orch::parseConnectorsJson(store::connectorsJson().c_str(), cs, kMaxConnectors, nullptr);
-    for (const auto& c : cs)
-      if (c.kind == "mcp" && c.enabled && c.deviceDialed && !c.approved && !c.url.empty())
-        pending.push_back(c.name);
-  }
+  const std::vector<std::string> pending = pendingServers();
   if (want.empty() && pending.empty()) return "";
 
   std::string out = "\n[DEVICE MCP SERVERS]\n"

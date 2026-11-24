@@ -672,6 +672,7 @@ plain::ChatBinding* chatFor(const String& chatId, nimbus::orch::Role role) {
   d.outside = [](const std::string&) { return tools::takeOutsideCall(); };
   d.connectors = [] { return connectors::attachList(); };   // E2-P-CONN2: plain_plan.h providerTools
   d.bearer = [](const nimbus::orch::ConnectorInfo& c) { return connectors::attachBearer(c); };
+  d.toolServersWaiting = [] { return connectors::mcp::pendingServers(); };   // E2-REP2
   d.railPending = railKeep;
   d.railNoted = noteRail;
   d.recentFiles = [](const nimbus::orch::Principal& who) -> nimbus::orch::tx::RecentFilesBlock::Source {

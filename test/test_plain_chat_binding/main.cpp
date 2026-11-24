@@ -473,7 +473,8 @@ static void test_a_tool_servers_tools_are_behind_more_and_its_answer_taints_the_
   namespace mc = nimbus::orch::mcp;
   const mc::ToolsListResult listed = mc::parseToolsList(200, "text/event-stream", mcpfix::kToolsListBody, "everything");
   TEST_ASSERT_TRUE(listed.ok);
-  for (int server = 0; server < 2; ++server) {
+  // 0: no server call; 1: through `more`; 2 (E2-REP2): the same calls spelled directly (mcp_x_y), the same rule.
+  for (int server = 0; server < 3; ++server) {
     Device dev;
     std::vector<std::string> calls, shelf;
     int noteRuns = 0;
@@ -495,7 +496,10 @@ static void test_a_tool_servers_tools_are_behind_more_and_its_answer_taints_the_
       return plain::Status::success();
     };
     TEST_ASSERT_TRUE(dev.boot().ok());
-    if (server) {
+    if (server == 2) {
+      dev.model.push(sp::calls({{"mcp_everything_echo", R"({"message":"nimbus-mcp-ok"})", ""}}));
+      dev.model.push(sp::calls({{"mcp_everything_echo", R"({"message":"second"})", ""}}));
+    } else if (server) {
       dev.model.push(sp::calls({{"more", R"({"group":"connectors"})", ""}}));
       dev.model.push(sp::calls({{"more", R"({"name":"mcp_everything_echo","args":{"message":"nimbus-mcp-ok"}})", ""}}));
       // The second call follows the server's answer (outside content): engine 1 runs it, so engine 2 does.
@@ -504,9 +508,9 @@ static void test_a_tool_servers_tools_are_behind_more_and_its_answer_taints_the_
     dev.model.push(sp::calls({{"note", R"({"op":"set","key":"pin1","value":"from the server"})", ""}}));
     dev.model.push(sp::say("Done."));
     TEST_ASSERT_TRUE(dev.say("echo through the tool server").ok());
-    TEST_ASSERT_EQUAL(server ? 2 : 0, (int)calls.size());
+    TEST_ASSERT_EQUAL_MESSAGE(server ? 2 : 0, (int)calls.size(), server == 2 ? "a direct call after outside content" : "calls");
     if (server) {
-      TEST_ASSERT_TRUE_MESSAGE(has(dev.model.requests()[1].body, "mcp_everything_echo(message"), "the connectors listing");
+      if (server == 1) TEST_ASSERT_TRUE_MESSAGE(has(dev.model.requests()[1].body, "mcp_everything_echo(message"), "the connectors listing");
       TEST_ASSERT_EQUAL_STRING("everything/echo/nimbus-mcp-ok", calls[0].c_str());
       TEST_ASSERT_EQUAL_STRING("everything/echo/second", calls[1].c_str());
       TEST_ASSERT_TRUE_MESSAGE(has(dev.model.requests()[2].body, "Echo: nimbus-mcp-ok"), "the answer reaches the model");

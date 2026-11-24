@@ -199,6 +199,8 @@ void sync(nimbus::orch::ToolRegistry& reg);
 // are ready (with a tool count), pending owner approval, or cooling down after
 // failures - appended to catalog() so the model plans around real state.
 std::string catalogSection();
+// The enabled, device-dialed servers the owner has not approved yet (engine 2 names them in his tools index).
+std::vector<std::string> pendingServers();
 
 // One call of a discovered tool on its server (registered as mcp.<slug>.<tool>): write access, an
 // enabled, device-dialed, approved server, the per-server breaker, then one tools/call exchange

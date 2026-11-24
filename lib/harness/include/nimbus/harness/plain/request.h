@@ -46,6 +46,7 @@ struct RequestFacts {
   std::string skillsIndex;     // one line per approved skill, newest used first
   std::string digestBlock;     // tx::digestBlock
   std::string recentFiles;     // tx::recentFilesList
+  std::vector<std::string> toolServersWaiting;   // the owner's tool servers not yet approved (owner's turn only)
   std::string timeZone;        // IANA name ("Europe/London"); "" when not set
   bool admin = false;          // the person is the owner
   bool shortHost = false;      // the head host answers within 60 s (write_file 4,096 B)

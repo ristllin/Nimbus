@@ -248,6 +248,23 @@ bool hasWord(const std::string& text, const std::string& word) {
 
 // ---- ceilings ------------------------------------------------------------------------
 
+// E2-REP2: the owner's turn names the tool servers waiting for his approval (engine 1's pending line); a
+// member's turn and an owner with none waiting carry nothing.
+static void test_the_owners_tool_servers_waiting_for_approval_are_named() {
+  Rig rig(false);
+  auto owner = lumiState(rig, Who::Owner);
+  owner->facts.toolServersWaiting = {"Mail Box", "calendar"};
+  const std::string with = compose(owner->facts).sys.core;
+  TEST_ASSERT_TRUE_MESSAGE(with.find("Tool servers waiting for the owner's approval, not usable yet: Mail Box, calendar.") !=
+                               std::string::npos, with.c_str());
+  TEST_ASSERT_TRUE(with.find("/mcp approve") != std::string::npos);
+  owner->facts.toolServersWaiting.clear();
+  TEST_ASSERT_TRUE(compose(owner->facts).sys.core.find("waiting for the owner's approval") == std::string::npos);
+  auto member = lumiState(rig, Who::Member);
+  member->facts.toolServersWaiting = {"Mail Box"};
+  TEST_ASSERT_TRUE(compose(member->facts).sys.core.find("waiting for the owner's approval") == std::string::npos);
+}
+
 static void test_every_role_and_host_fits_the_ceilings() {
   const std::string longModel(plain::kModelNameMax + 30, 'm');
   const std::string longTz(plain::kTimeZoneMax + 30, 'z');
@@ -1055,6 +1072,7 @@ static void test_no_template_names_a_tool_that_is_not_bound() {
 
 int main(int, char**) {
   UNITY_BEGIN();
+  RUN_TEST(test_the_owners_tool_servers_waiting_for_approval_are_named);
   RUN_TEST(test_every_role_and_host_fits_the_ceilings);
   RUN_TEST(test_every_declaration_fits);
   RUN_TEST(test_every_tool_like_name_is_callable);

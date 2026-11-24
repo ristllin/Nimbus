@@ -17,6 +17,7 @@
 #include "nimbus/harness/plain/rails.h"   // the item taint rule (RB-RL)
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/harness/platform.h"
+#include "nimbus/orch/mcp_client.h"   // serverOf (E2-REP2)
 #include "nimbus/orch/path_rules.h"   // storePathFor: an own path as the store lists it (E2-FIX8)
 #include "nimbus/orch/psram_alloc.h"   // WorkingVector: the argument walks keep their list off the stack
 #include "nimbus/orch/tool_groups.h"
@@ -1668,6 +1669,8 @@ class TurnRun {
     const std::string regName = reg->resolveName(name);
     if (regName.empty() || !reg->isRouter(regName)) {
       v.cls = reg->classOf(regName.empty() ? name : regName);
+      // A tool server's tool spelled directly (mcp_x_y) is judged by its registry name, as through `more` (E2-REP2).
+      if (!regName.empty() && !orch::mcp::serverOf(regName).empty()) v.name = regName;
       return v;
     }
     v.unresolved = true;   // until the target is known: the fail-closed class (outside, effect)

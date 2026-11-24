@@ -143,6 +143,11 @@ std::string coreText(const RequestFacts& f, const std::vector<ToolSpec>& tools) 
   if (!f.turn->model.empty()) para({core::kModel + oneLine(f.turn->model, kModelNameMax) + "."});
   const std::string idx = moreOffered(tools) ? nimbus::orch::toolsIndex(*f.reg, *f.turn->who) : "";
   if (!idx.empty()) addPara(out, std::string(core::kToolsIndex) + kLine + idx);
+  if (f.turn->who->owner && !f.toolServersWaiting.empty()) {   // the servers the owner has not approved yet
+    std::string names;
+    for (const std::string& n : f.toolServersWaiting) names += (names.empty() ? " " : ", ") + oneLine(n, 40);
+    addPara(out, std::string(core::kServersWaiting) + names + ". " + core::kServersApprove);
+  }
   return out;
 }
 

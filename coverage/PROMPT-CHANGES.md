@@ -1548,3 +1548,30 @@ PC-0175, PC-0176: not used.
 - lane: E2-P-SUB2
 - prd: PRD section 6 (sub-agents on engine 2); inventory parity row PC-0267; rulings 115, 116 (every failure has a true line); AGENTS.md rule 9
 - why: lib/harness/src/jobs.cpp. With JobEngine::Deps::reportTurns (engine 2 on the device and on nimbusd) a job's failure is parked as its result ("FAILED: " + the engine's existing failure line) and arrives as a report turn, and a result the finished ring marks unreported at a boot is parked again: its saved file read back whole, or, when it failed or the file cannot be read, the existing line "The result of [<job>] was lost when the device restarted, so it will not arrive.". No new sentence: the two "FAILED: " literals fold into one helper (parkFailure) and the lost line into lostAtRestartLine, so the class shrinks by 8 B and the lost line moves within the file (CUM-1006).
+### PC-0270: the line for the owner's tool servers waiting for approval (engine 2)
+- catalog: e2
+- class: core
+- kind: spec
+- bytes: 1595 -> 1706
+- sha8: 6bf20834 -> 51b7732e
+- lane: RB-I2 (lane E2-REP2, parity of engine 1's "[DEVICE MCP SERVERS]" pending line)
+- prd: section 4 (remote tool servers behind more; engine 1's catalogSection told the model a configured server was not approved yet); rulings 115, 116 (every failure has a true line)
+- why: lib/harness/include/nimbus/harness/plain/texts.h core. kServersWaiting and kServersApprove: after the tools index, only in the owner's turn and only while a device-dialed server is enabled and not approved, one paragraph naming the servers and saying the owner answers with /mcp approve or /mcp deny (plain_request.cpp coreText, RequestFacts::toolServersWaiting). Without it the model could not tell the owner why a configured server's tools were missing. Nothing is added to a member's turn or when none waits.
+### PC-0271: the description and schema of media_list (engine 2)
+- catalog: e2
+- class: tool_descriptions
+- kind: spec
+- bytes: 10139 -> 10225
+- sha8: df1e7e66 -> 7967b1d2
+- lane: RB-I2
+- prd: section 4 (media behind more)
+- why: src/agent/tools_plain_files.cpp namespace tool_descriptions kList: the one description and the empty schema of media_list (engine 1's media.list handler, src/sfx/music.cpp listTool), shown only in `more`'s media group listing, never in the always-on array or the cached start.
+### PC-0272: the name literal of media_list (engine 2)
+- catalog: e2
+- class: tool_results
+- kind: spec
+- bytes: 8941 -> 8951
+- sha8: 127b32e3 -> ffa17b15
+- lane: RB-I2
+- prd: section 4 (media behind more)
+- why: src/agent/tools_plain_files.cpp registerTools: the registered name "media_list", counted as model text because the model spells calls with it (as "media_stop"); no result line is new.

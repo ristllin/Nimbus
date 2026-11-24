@@ -84,6 +84,8 @@ struct ChatBindingDeps {
   std::function<bool(const std::string& chatId, const std::string& part)> sendPart;
   std::function<std::string()> key;              // the head's key, read at render time, never stored
   std::function<std::string(const nimbus::orch::Principal&)> pinnedNotes;   // null: none
+  // E2-REP2: the owner's tool servers waiting for his approval, named in his turn's tools index. Null: none.
+  std::function<std::vector<std::string>()> toolServersWaiting;
   TextIO compactCtl;                             // unset: kept in RAM
   nimbus::orch::SeenIndex* seen = nullptr;       // null: no rebuild (not a Telegram chat)
   // One line each; null: silent. A std::string, not a const char*: the tg_poll stack gate resolves
@@ -924,6 +926,7 @@ class ChatBinding {
     out.facts.admin = who_.owner;
     out.facts.timeZone = cfg_.timeZone;
     if (d_.pinnedNotes) out.facts.pinnedNotes = d_.pinnedNotes(who_);
+    if (d_.toolServersWaiting) out.facts.toolServersWaiting = d_.toolServersWaiting();
     skillFacts(t, out.facts);
     out.photo = d_.photo;
     out.dayStartMin = cfg_.dayStartMin;
@@ -945,13 +948,16 @@ class ChatBinding {
     if (d_.turnTool && d_.turnTool(c, turn, own)) return own;   // E2-SRCH: search, view
     JsonDocument args;
     (void)deserializeJson(args, c.argsJson, DeserializationOption::NestingLimit(64));
-    const nimbus::orch::ToolResult r = d_.registry->dispatch(c.name, args.as<JsonObjectConst>(), turn.who ? *turn.who : who_);
+    // A direct call spelled with '_' (mcp_x_y) reaches the registry's dotted name, as one through `more` does (E2-REP2).
+    const std::string regName = d_.registry->resolveName(c.name);
+    const std::string& name = regName.empty() ? c.name : regName;
+    const nimbus::orch::ToolResult r = d_.registry->dispatch(name, args.as<JsonObjectConst>(), turn.who ? *turn.who : who_);
     ToolOutput o;
     o.id = c.id;
     o.name = c.name;
     o.isError = !r.success;
     o.text = r.success ? r.output : r.error;
-    o.outside = d_.outside && d_.outside(c.name);
+    o.outside = d_.outside && d_.outside(name);
     if (r.success) (void)deferredFromCode(r.code, o.deferred, o.deferredArg);   // E2-P-TOOLS: restart, head switch
     return o;
   }
