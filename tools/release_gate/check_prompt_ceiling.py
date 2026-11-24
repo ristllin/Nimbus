@@ -174,7 +174,8 @@ def ceiling_problems(figures: dict, granted: dict) -> "list[str]":
 # not a literal must be on DYNAMIC_NAMES with its reason (a runtime tool the twin cannot hold).
 
 DYNAMIC_NAMES = {
-    ("src/agent/connectors.cpp", "regName"): "a connected MCP server's remote tools, registered at run time "
+    ("lib/core/include/nimbus/orch/mcp_client.h", "namespacedTool(slug, t.name)"): "a connected MCP server's "
+    "remote tools, registered at run time "
     "under mcp.<server>.<tool>; the twin has no connected server (its connectors attach on the provider side)",
     ("lib/harness/include/nimbus/harness/plain/request.h", "d->name"): "engine 2's plain tool pack (not linked into "
     "an engine-1 image; its ceilings are check_plain_ceilings.py's)",
