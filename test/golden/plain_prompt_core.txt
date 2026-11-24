@@ -1,10 +1,10 @@
 # Engine-2 request composition on the synthetic Lumi-state fixture (test/test_plain_request).
 # Generated: GOLDEN_UPDATE=1 pio test -e native -f test_plain_request; do not edit.
 # Gate: tools/release_gate/check_plain_ceilings.py.
-measure role=owner host=120s core=1562 index=373 notes=5075 system=6639 digests=6723 tools=14 tools_bytes=5151 longest_description=237
-measure role=owner host=60s core=1562 index=373 notes=5075 system=6639 digests=6723 tools=14 tools_bytes=5150 longest_description=237
-measure role=member host=120s core=1431 index=215 notes=1038 system=2471 digests=6723 tools=14 tools_bytes=5151 longest_description=237
-measure role=member host=60s core=1431 index=215 notes=1038 system=2471 digests=6723 tools=14 tools_bytes=5150 longest_description=237
+measure role=owner host=120s core=1562 index=373 notes=5075 system=6639 digests=6723 tools=14 tools_bytes=5259 longest_description=237
+measure role=owner host=60s core=1562 index=373 notes=5075 system=6639 digests=6723 tools=14 tools_bytes=5258 longest_description=237
+measure role=member host=120s core=1431 index=215 notes=1038 system=2471 digests=6723 tools=14 tools_bytes=5259 longest_description=237
+measure role=member host=60s core=1431 index=215 notes=1038 system=2471 digests=6723 tools=14 tools_bytes=5258 longest_description=237
 measure role=guest host=120s core=1231 index=65 notes=1038 system=2271 digests=6723 tools=7 tools_bytes=2195 longest_description=237
 measure role=guest host=60s core=1231 index=65 notes=1038 system=2271 digests=6723 tools=7 tools_bytes=2195 longest_description=237
 == core (owner, 120s, claude-sonnet-5-5, Europe/London)
@@ -26,7 +26,7 @@ Tools behind more (more with group lists them; more with name and args calls one
 device: device_status(), device_control(), ota_status(), selftest(), system_health(), device_log()
 agents: agent_list(), agent_stop(id)
 files_admin: delete_file(path), move_file(from, to), fetch_url(url), share_file(path), file_stat(path), read_pdf(path), pdf_write(path)
-media: image_generate(prompt), speak(text)
+media: speak(text), image_generate(prompt)
 skills: skill_list(), skill_save(path), skill_delete(path)
 == notes (first 400 B)
 Skills (read_file to open):
@@ -56,8 +56,8 @@ skills/skill-6.md: when the person p
   {"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}
 165 128 view: Open one stored item in full by id: r... (a message or a result), m... (an earlier engine's message), p... (a photo, shown again). offset and limit page a long text.
   {"type":"object","properties":{"id":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"}},"required":["id"]}
-134 211 send: Send a file, photo or voice note to this chat. kind file|photo|voice; path or ref, or text for voice. Returns the Telegram message id.
-  {"type":"object","properties":{"kind":{"type":"string","enum":["file","photo","voice"]},"path":{"type":"string"},"ref":{"type":"string"},"text":{"type":"string"},"caption":{"type":"string"}},"required":["kind"]}
+210 243 send: Send to this chat, or an allowed chat by id: kind text (another message), file or photo (path; a photo also by ref), voice (text as a voice note). A voice note returns its message id; text and files are queued.
+  {"type":"object","properties":{"kind":{"type":"string","enum":["text","file","photo","voice"]},"path":{"type":"string"},"ref":{"type":"string"},"text":{"type":"string"},"caption":{"type":"string"},"chat":{"type":"string"}},"required":["kind"]}
 237 329 schedule: Create, update, delete or list reminders, routines, wakeups. A reminder sends its fixed text at 'when' (YYYY-MM-DD HH:MM local); a wakeup runs text once at 'when' as your own run, without this chat, able to read files. Returns the entry.
   {"type":"object","properties":{"op":{"type":"string","enum":["create","update","delete","list"]},"kind":{"type":"string","enum":["reminder","routine","wakeup"]},"id":{"type":"string"},"when":{"type":"string"},"text":{"type":"string"},"every":{"type":"string","description":"routine cadence, e.g. daily 07:00"}},"required":["op"]}
 75 105 calc: Exact decimal arithmetic on one expression: + - * / ( ), 15% of 80, 80+15%.

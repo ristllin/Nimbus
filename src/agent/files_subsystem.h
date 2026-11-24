@@ -182,6 +182,12 @@ bool saveBytes(const std::string& project, const std::string& name,
 // Absolute SD path for an indexed file ("" if unknown/absent) - for downloads
 // and Telegram sends. Callers stream it under memory::Lock per chunk.
 std::string absPath(const std::string& project, const std::string& name);
+// files.send's delivery, shared by engine 1's files.send and engine 2's send (lane E2-P-OUT1):
+// the file as `who` may read it, to an allowlisted Telegram chat, queued on the media lane (an
+// image as a photo, else a document). photoOnly: a file that is not an image is NotImage.
+enum class StoredSend : uint8_t { Queued, NotFound, NotImage, NoTarget, Busy };
+StoredSend sendStored(const std::string& project, const std::string& name, const String& chatId,
+                      const nimbus::orch::Principal& who, bool photoOnly, const String& caption);
 
 // ---- v4.0.0 fan-out plumbing ------------------------------------------------
 // Read a TEXT doc's content for attach splicing ("" on miss / non-text /

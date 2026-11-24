@@ -53,6 +53,8 @@ ENGINE2_REGISTRATION_FILES: Tuple[str, ...] = (
     "src/agent/file_tools_device.cpp",
     "src/agent/schedule_device.cpp",
     "src/agent/history_tools_device.cpp",
+    "src/agent/tools_plain_send.h",
+    "src/agent/tools_plain_send.cpp",
 )
 
 # A registry receiver: any identifier with "reg" in it (reg, g_reg, registry, toolReg, ...) or a

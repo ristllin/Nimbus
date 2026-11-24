@@ -19,6 +19,7 @@
 #include "orchestrator.h"                   // turnInFlight, turnCount - the note tool's origin (lane E2-DEV)
 #include "schedule_device.h"                // lane RB-U1b, E2-SCHED: schedule
 #include "store.h"                          // providerOverBudget, recordProviderCall
+#include "tools_plain_send.h"               // lane E2-P-OUT1: send and speak
 #include "transport_tls.h"                  // deviceProviderDeps
 
 namespace agent {
@@ -116,6 +117,7 @@ void registerMemoryFamilies(nimbus::orch::ToolRegistry& reg, const nimbus::orch:
   nimbus::orch::registerCalcTool(reg);
   registerWebSearch(reg);
   historydev::registerHistory(reg, ctx);   // E2-SRCH: answered through the turn; E2-P-MEM: scope memories reads ctx
+  registerSend(reg);                         // E2-P-OUT1: send and speak (tools_plain_send.cpp)
   nimbus::orch::registerMore(reg);
 }
 

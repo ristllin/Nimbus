@@ -1735,6 +1735,29 @@ bool searchText(const std::string& qy, const std::string& proj, const nimbus::or
   return true;
 }
 
+// files.send's delivery (engine 1), shared with engine 2's send (lane E2-P-OUT1). The file is
+// addressed by EXACT project/name and then MAILED: its siblings (files.list, files.stat) filter by
+// readableBy, so a file `who` may not read answers NotFound, as a missing one does (confirming a file
+// exists is itself a disclosure). An Image goes as a Telegram PHOTO (inline preview), everything else
+// as a document; photoOnly refuses a file that is not an image.
+StoredSend sendStored(const std::string& project, const std::string& name, const String& chatId,
+                      const nimbus::orch::Principal& who, bool photoOnly, const String& caption) {
+  bool isImage = false;
+  {
+    memory::Lock g;
+    const auto* e = g_store.find(project, name);
+    if (!e || !g_store.readableBy(*e, who.ns, who.owner, who.perms().readShared)) return StoredSend::NotFound;
+    isImage = (e->kind == nimbus::orch::FileKind::Image);
+  }
+  if (photoOnly && !isImage) return StoredSend::NotImage;
+  const std::string path = absPath(project, name);
+  if (path.empty()) return StoredSend::NotFound;
+  if (chatId.length() == 0 || !agent::orchestrator::isChatAllowed(chatId)) return StoredSend::NoTarget;
+  if (!agent::telegram::sendMediaSd(chatId, isImage ? "photo" : "document", path.c_str(), caption))
+    return StoredSend::Busy;
+  return StoredSend::Queued;
+}
+
 namespace {
 
 #if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: no old-engine tool registers on engine 2 (RB-I0)
@@ -2121,16 +2144,6 @@ void registerTools() {
             // have delivered the whole document to them. The refusal deliberately
             // matches "not found": confirming a file exists is itself a
             // disclosure, and the whole point is that they cannot tell.
-            bool isImage = false;
-            {
-              memory::Lock g;
-              const auto* e = g_store.find(project, name);
-              if (!e || !g_store.readableBy(*e, who.ns, who.owner, who.perms().readShared))
-                return nimbus::orch::ToolResult::fail("file not found");
-              isImage = (e->kind == nimbus::orch::FileKind::Image);
-            }
-            const std::string path = absPath(project, name);
-            if (path.empty()) return nimbus::orch::ToolResult::fail("file not found");
             String cid = String(argStr(a, "chat_id").c_str());
             if (cid.length() == 0) {
               // The turn's own Telegram chat, else the OWNER's chat (the owners list,
@@ -2143,16 +2156,17 @@ void registerTools() {
                                                          std::string(agent::telegram::ownerChat().c_str()))
                                .c_str());
             }
-            if (cid.length() == 0 || !agent::orchestrator::isChatAllowed(cid))
-              return nimbus::orch::ToolResult::fail(
-                  "no allowed Telegram target (omit chat_id for the current chat, or pass an allowlisted id)");
-            // An Image goes as a Telegram PHOTO (inline preview), everything else
-            // as a document. The media lane already supports both kinds; only the
-            // send verb changes.
-            if (!agent::telegram::sendMediaSd(cid, isImage ? "photo" : "document", path.c_str(),
-                                              String((project + "/" + name).c_str())))
-              return nimbus::orch::ToolResult::fail(
-                  "Telegram media queue busy or Telegram not configured - try again shortly");
+            switch (sendStored(project, name, cid, who, /*photoOnly=*/false,
+                               String((project + "/" + name).c_str()))) {
+              case StoredSend::Queued: break;
+              case StoredSend::NoTarget:
+                return nimbus::orch::ToolResult::fail(
+                    "no allowed Telegram target (omit chat_id for the current chat, or pass an allowlisted id)");
+              case StoredSend::Busy:
+                return nimbus::orch::ToolResult::fail(
+                    "Telegram media queue busy or Telegram not configured - try again shortly");
+              default: return nimbus::orch::ToolResult::fail("file not found");
+            }
             agent::orchestrator::noteTurnSpoke();   // CUM-826: queued for an allowlisted owner chat
             return nimbus::orch::ToolResult::ok("queued " + project + "/" + name +
                                                 " for Telegram delivery");

@@ -120,10 +120,11 @@ inline constexpr ToolDecl kTools[] = {
      "(a photo, shown again). offset and limit page a long text.",
      R"({"type":"object","properties":{"id":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"}},"required":["id"]})",
      nullptr},
+    // Lane E2-P-OUT1 binds it (src/agent/tools_plain_send.*; PC-0237): engine 1's files.send and reply.telegram.
     {"send",
-     "Send a file, photo or voice note to this chat. kind file|photo|voice; path or ref, or text for voice. "
-     "Returns the Telegram message id.",
-     R"({"type":"object","properties":{"kind":{"type":"string","enum":["file","photo","voice"]},"path":{"type":"string"},"ref":{"type":"string"},"text":{"type":"string"},"caption":{"type":"string"}},"required":["kind"]})",
+     "Send to this chat, or an allowed chat by id: kind text (another message), file or photo (path; a photo "
+     "also by ref), voice (text as a voice note). A voice note returns its message id; text and files are queued.",
+     R"({"type":"object","properties":{"kind":{"type":"string","enum":["text","file","photo","voice"]},"path":{"type":"string"},"ref":{"type":"string"},"text":{"type":"string"},"caption":{"type":"string"},"chat":{"type":"string"}},"required":["kind"]})",
      nullptr},
     {"schedule",
      "Create, update, delete or list reminders, routines, wakeups. A reminder sends its fixed text at 'when' "
@@ -157,6 +158,9 @@ inline constexpr ToolDecl kBehindMore[] = {
      R"({"type":"object","properties":{}})", nullptr},
     {"agent_stop", "Stop a running sub-agent job by id.",
      R"({"type":"object","properties":{"id":{"type":"string"}},"required":["id"]})", nullptr},
+    // The media group (lane E2-P-OUT1, src/agent/tools_plain_send.*; PC-0238): engine 1's reply.speak.
+    {"speak", "Say text aloud on the device speaker.",
+     R"({"type":"object","properties":{"text":{"type":"string"}},"required":["text"]})", nullptr},
 };
 }  // namespace tool_descriptions
 
@@ -325,6 +329,24 @@ inline constexpr char kAgentNone[] = "no jobs";
 inline constexpr char kAgentOpen[] = ": open\n";
 inline constexpr char kAgentStopping[] = "stopping id=";
 inline constexpr char kAgentNoJob[] = "no such job: ";
+// send and speak (lane E2-P-OUT1, src/agent/tools_plain_send.h; PC-0238): what was sent where, or why
+// not. Facts only.
+inline constexpr char kSendNotInTurn[] = "not sent: no conversation turn is running";
+inline constexpr char kSendArgs[] = "not sent: text needs text, file a path, photo a path or ref, voice text";
+inline constexpr char kSendNoChat[] = "not sent: no allowed Telegram chat";
+inline constexpr char kSendNotFound[] = "not sent: no such file";
+inline constexpr char kSendNotImage[] = "not sent: not an image";
+inline constexpr char kSendBusy[] = "not sent: Telegram is busy or not set up";
+inline constexpr char kSendBlocked[] = "not sent: blocked by the outbound screen";
+inline constexpr char kSendQueued[] = "queued for chat ";
+inline constexpr char kSendVoiceOff[] = "voice replies are off: sent as text, ";
+inline constexpr char kSendVoiceDone[] = "voice note delivered, message_id ";
+inline constexpr char kSendVoiceFailed[] = "voice note not delivered: ";
+inline constexpr char kSendVoiceParts[] = "; parts delivered first: ";
+inline constexpr char kSpeakOff[] = "not spoken: voice replies are off";
+inline constexpr char kSpeakMuted[] = "not spoken: the speaker volume is 0";
+inline constexpr char kSpeakDone[] = "spoken on the speaker";
+inline constexpr char kSpeakFailed[] = "not spoken: ";
 }  // namespace tool_results
 namespace probe {}
 // The summarizer (lane RB-C2, plain_compact.cpp; PRD section 3; lane RB-C3: one cumulative summary,

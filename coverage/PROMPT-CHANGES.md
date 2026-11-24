@@ -1415,3 +1415,32 @@ PC-0175, PC-0176: not used.
 - lane: RB-I1
 - prd: section 4 (web_search), inventory parity-daemon-hosted-release part (a) row A10
 - why: nimbusd/src/hosted_web_search.h is the hosted twin of src/agent/tools_plain.cpp's registration: the names "web_search" and "web.search" and the argument "query", the same words the device file already has, over the old engine's handler; its no-key refusal is texts.h kWebSearchNoKey, unchanged. No new sentence a model reads: the class grows only by the second file's copies of those names. Written by lane E2-P-HOST1 (RB-I1's hosts on engine 2). Planned work, not a fix (CUM-1010).
+### PC-0237: send takes a second message and an allowed chat; speak behind more (engine 2)
+- catalog: e2
+- class: tool_descriptions
+- kind: spec
+- bytes: 4866 -> 5093
+- sha8: 8e3dd670 -> c26a048f
+- lane: RB-SND
+- prd: section 4 (send replaces files.send and reply.telegram; speak in the media group), section 6 (voice out: send kind voice returns the message id), inventory parity-modalities-media rows 11 and 12
+- why: lib/harness/include/nimbus/harness/plain/texts.h: send's description and schema gain kind text (a second message, engine 1's reply.telegram text) and a chat argument (the current chat or an allowlisted one, as reply.telegram and files.send took chat_id), and say truthfully that only a voice note returns a message id while text and files are queued (engine 1's media lane is asynchronous); speak (37 B description, its text schema) is declared behind more, the media group orch_tool_groups.cpp already lists, as engine 1's reply.speak. Written by lane E2-P-OUT1, which binds RB-SND on the device. Planned work, not a fix (CUM-1002).
+
+### PC-0238: send's and speak's result lines (engine 2)
+- catalog: e2
+- class: tool_results
+- kind: spec
+- bytes: 7228 -> 7807
+- sha8: 56f1887e -> 024fb7f0
+- lane: RB-SND
+- prd: section 4 (send, speak), section 6 (voice out), inventory parity-modalities-media rows 11 and 12; ruling 124 (the parity tools' result lines)
+- why: texts.h tool_results kSend* and kSpeak*: what was sent to which chat ("queued for chat <id>", "voice note delivered, message_id <id>"), the Voice replies setting off ("voice replies are off: sent as text, queued for chat <id>"; "not spoken: voice replies are off"), and why not (no turn, arguments, no allowed chat, no such file, not an image, Telegram busy, blocked by the outbound screen, the speaker muted or failing, a voice note not delivered with engine 1's own short reason). Facts only. src/agent/tools_plain_send.h adds the argument and kind words it reads (path, ref, chat, caption, text, kind, file, photo, voice, send, speak). 579 B inside the class ceiling (no ceiling raised). Written by lane E2-P-OUT1, which binds RB-SND on the device. Planned work, not a fix (CUM-1002).
+
+### PC-0239: files.send's lookup is shared, one duplicate literal fewer (engine 1)
+- catalog: e1
+- class: tool_results
+- kind: spec
+- bytes: 34932 -> 34918
+- sha8: 0e2aff74 -> 702310bb
+- lane: RB-SND
+- prd: section 4 (files.send becomes send), inventory parity-modalities-media row 12
+- why: src/agent/files_subsystem.cpp: files.send's lookup, access check, allowlist check and media-lane send move into files::sendStored, which engine 2's send calls too; the handler maps its answer to the same words as before, so its two "file not found" literals (missing entry, missing path) become one. What engine 1's model reads is unchanged. Written by lane E2-P-OUT1, which binds RB-SND on the device. Planned work, not a fix (CUM-1002).

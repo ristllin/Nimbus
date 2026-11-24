@@ -198,6 +198,9 @@ NON_MODEL_FILES: dict = {
     "in the instance's words (sent to the owner's chat, never stored or shown to a model) and the JobEngine's "
     "persist outcome markers '[saved: ...]' and '[persist FAILED: ...]', byte for byte the device's "
     "(src/agent/orchestrator_plain.cpp jobFileDeps), parsed by jobs.cpp savedPathOf",
+    "src/agent/tools_plain_send.cpp": "E2-P-OUT1: the device binding of send and speak; its literals are the local "
+    "chat ids, the stored photo folder and extensions and the media kind, never sent to a model (the tool's text is "
+    "texts.h and tools_plain_send.h)",
     "lib/core/src/orch_wire_errors.cpp": "E2-R5: the engine-2 error classifier; its literals are field names and "
     "refusal words matched against provider error bodies, never sent to a model or a person",
 }
@@ -268,6 +271,8 @@ E2_EXTRA_SOURCES: tuple = (
     ("src/agent/tools_plain.cpp", "tool_results"),
     # E2-P-HOST1: the hosted engine-2 registration of the same web_search over the old web.search (names, argument).
     ("nimbusd/src/hosted_web_search.h", "tool_results"),
+    # E2-P-OUT1: send and speak (their argument and kind words; the result lines are texts.h).
+    ("src/agent/tools_plain_send.h", "tool_results"),
 )
 # The engine-2 files that may hold no model text of their own once texts.h exists.
 E2_ENGINE_GLOBS = (r"lib/harness/src/plain_[^/]*\.(cpp|h)$", r"lib/harness/src/providers/plain_wire_[^/]*\.(cpp|h)$")

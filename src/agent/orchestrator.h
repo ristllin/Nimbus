@@ -39,6 +39,9 @@
 // engine). A caller includes this header only and never names an engine.
 
 namespace agent {
+namespace voicereply {
+struct Outcome;   // voice_reply.h
+}
 namespace orchestrator {
 
 // ---- caller-supplied sinks (installed by main.cpp) --------------------------
@@ -184,8 +187,9 @@ bool   speakOnDevice(const String& text, bool capture = true, String* why = null
 // messages (voice_reply.h), never the speaker; `result` gets the tool's words (the
 // receipt with Telegram's message ids, or why nothing arrived) and the return is true
 // only when every note arrived. False with `result` untouched: the chat is not allowed.
+// `voiceOut` (engine 2's send, lane E2-P-OUT1): the voice delivery's whole outcome.
 bool   sendToChat(const String& chatId, const String& text, bool asVoice,
-                  std::string* result = nullptr);
+                  std::string* result = nullptr, voicereply::Outcome* voiceOut = nullptr);
 
 }  // namespace orchestrator
 }  // namespace agent

@@ -416,7 +416,10 @@ static void test_one_fixed_pack_in_a_fixed_order() {
     // leaves the array and the core above the index as they were.
     Rig bare(shortHost);
     for (const GroupTool& g : kGroupTools) TEST_ASSERT_TRUE(bare.reg.remove(g.name));
-    for (const td::ToolDecl& d : td::kBehindMore) TEST_ASSERT_TRUE(bare.reg.remove(d.name));
+    for (const td::ToolDecl& d : td::kBehindMore) {   // a declared group tool is in kGroupTools too (agent_list, speak)
+      (void)bare.reg.remove(d.name);
+      TEST_ASSERT_FALSE(bare.reg.remove(d.name));
+    }
     auto b = lumiState(bare, Who::Owner);
     const Composed cb = compose(b->facts);
     TEST_ASSERT_EQUAL((int)c.tools.size(), (int)cb.tools.size());

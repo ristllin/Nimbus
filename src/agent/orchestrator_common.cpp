@@ -613,18 +613,14 @@ void stageTerminate(const std::string& id) {
 // message queued nothing. The engine asks it right after a delivery returned
 // (deliveryNeedsRow): the fire then spoke only once that row is written. Turn task.
 bool s_lastDeliveryNeedsRow = false;
-// `queuedOut` (optional): whether the reply sink took the message (candidate 5, G4: the daily
-// fold alert is spent only then).
-bool deliver(const String& chatId, const String& text, bool system, bool* queuedOut) {
-  if (queuedOut) *queuedOut = false;
-  s_lastDeliveryNeedsRow = true;   // until the sink took the content
+bool screenReply(const String& chatId, const String& text, bool system, String& body) {
   // Lane J (D-3): the owner's standing rules can switch on device-enforced
   // output filters. "Never use em dashes" is exactly the kind of rule a model
   // slips on in long formatted replies, so the rule ALSO strips them here, at
   // the one seam every outbound reply crosses (Telegram, web chat, voice) -
   // after the model, before the owner. Owner-facing turns only; device copy is
   // exempt (it never carries one anyway).
-  String body = text;
+  body = text;
   const uint32_t filterMask = prefs::filtersForRole(roleOfChat(chatId) == nimbus::orch::Role::Admin);
   if (!system && filterMask)
     body = String(nimbus::orch::applyOutputFilters(std::string(text.c_str()), filterMask).c_str());
@@ -640,6 +636,16 @@ bool deliver(const String& chatId, const String& text, bool system, bool* queued
     alogf("moderation: outbound reply to %s suppressed (flagged)", chatId.c_str());
     return false;
   }
+  return true;
+}
+
+// `queuedOut` (optional): whether the reply sink took the message (candidate 5, G4: the daily
+// fold alert is spent only then).
+bool deliver(const String& chatId, const String& text, bool system, bool* queuedOut) {
+  if (queuedOut) *queuedOut = false;
+  s_lastDeliveryNeedsRow = true;   // until the sink took the content
+  String body;
+  if (!screenReply(chatId, text, system, body)) return false;
   // The send sink enqueues onto a bounded reply queue and returns false if it was
   // still full after its short block. The queue is now sized for a full turn's burst
   // (see REPLY_QUEUE_DEPTH), but if it ever overflows anyway, log it rather than drop
@@ -713,7 +719,8 @@ bool speakOnDevice(const String& text, bool capture, String* why) {
   return true;
 }
 
-bool sendToChat(const String& chatId, const String& text, bool asVoice, std::string* result) {
+bool sendToChat(const String& chatId, const String& text, bool asVoice, std::string* result,
+                voicereply::Outcome* voiceOut) {
   String cur = currentChat();
   String cid = chatId.length() ? chatId : cur;
   // serial/voice/web aren't Telegram-deliverable channels.
@@ -728,6 +735,7 @@ bool sendToChat(const String& chatId, const String& text, bool asVoice, std::str
     // and the tool still said "sent"). The result is the receipt or why nothing arrived.
     const voicereply::Outcome o = voicereply::deliver(cid, text);
     if (result) *result = o.toolText;
+    if (voiceOut) *voiceOut = o;
     if (o.notesSent > 0) {
       // Noted before the history row (which can fail): a voice note reached the owner
       // (the current chat or an allowlisted one), so the fire spoke (CUM-826).
