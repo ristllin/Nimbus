@@ -462,7 +462,7 @@ static void test_the_exchange_state_is_allocated_and_given_back() {
   const plain::Status st = rig.run();
   nimbus::orch::setWorkingAllocators(nullptr, nullptr);
   TEST_ASSERT_TRUE(st.err == plain::Err::TooLarge);
-  TEST_ASSERT_EQUAL_STRING("plain::runExchange: no memory for the exchange state", st.where);
+  TEST_ASSERT_EQUAL_STRING("plain::runExchange.noMemory", st.where);
   TEST_ASSERT_EQUAL(0, (int)rig.model.requests().size());
   Rig ok;
   ok.model.push(sp::say("It is sunny."));

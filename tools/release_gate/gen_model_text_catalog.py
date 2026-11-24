@@ -219,6 +219,8 @@ NON_MODEL_FILES: dict = {
     "texts.h and tools_plain_send.h)",
     "lib/core/src/orch_wire_errors.cpp": "E2-R5: the engine-2 error classifier; its literals are field names and "
     "refusal words matched against provider error bodies, never sent to a model or a person",
+    "src/sys/log_console.cpp": "E2-STACK2: the ESP-IDF log's console writer; its one literal is the marker on a log "
+    "line cut for want of memory, written to the serial console, never sent to a model",
 }
 
 # The engine-1 baseline: each class's bytes and sha8 when the gate was introduced. It is the

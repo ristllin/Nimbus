@@ -498,7 +498,7 @@ Status runExchange(const ExchangeDeps& deps, const ExchangeRequest& req, Exchang
   void* mem = orch::workingAlloc(sizeof(Exchange));
   if (!mem) {
     out = ExchangeResult{};
-    return Status::fail(Err::TooLarge, "plain::runExchange: no memory for the exchange state");
+    return Status::fail(Err::TooLarge, "plain::runExchange.noMemory");
   }
   struct Owned {
     Exchange* ex;

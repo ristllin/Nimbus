@@ -780,7 +780,7 @@ Status plan(const RenderInput& in, FragmentOk sendable, Plan& out) {
   out = Plan{};
   if (!in.turn || !in.system || !in.items || !sendable) return Status::fail(Err::InvalidArgument, "plain::plan");
   void* mem = nimbus::orch::workingAlloc(sizeof(PlanState));
-  if (!mem) return Status::fail(Err::TooLarge, "plain::plan: no memory for the plan state");
+  if (!mem) return Status::fail(Err::TooLarge, "plain::plan.noMemory");
   const OwnedPlanState owned{new (mem) PlanState()};
   Facts& f = owned.p->f;
   f.sendable = sendable;

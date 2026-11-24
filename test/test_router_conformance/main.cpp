@@ -383,7 +383,7 @@ static void test_the_plan_state_refusal_is_a_true_line() {
   const tx::Status st = plain::plan::plan(in, [](const std::string&) { return true; }, p);
   nimbus::orch::setWorkingAllocators(nullptr, nullptr);
   TEST_ASSERT_TRUE(st.err == tx::Err::TooLarge);
-  TEST_ASSERT_EQUAL_STRING("plain::plan: no memory for the plan state", st.where);
+  TEST_ASSERT_EQUAL_STRING("plain::plan.noMemory", st.where);
   TEST_ASSERT_TRUE(p.pieces.empty());
 }
 
