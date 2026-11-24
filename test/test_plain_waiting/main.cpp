@@ -107,6 +107,20 @@ class DeadRows : public tx::RowSource {
   plain::Status newest(uint64_t&) override { return plain::Status::fail(tx::Err::Io, "test.rows"); }
 };
 
+// The unit restarts at the request of a given index (-1: none): the scripted head, cut (E2-FIX12's way).
+struct Cut {};
+class CutModel : public sp::ScriptedProvider {
+ public:
+  long cutAt = -1;
+  bool exec(const agent::HttpRequest& req, agent::HttpResponse& out, std::string& err) override {
+    if ((long)n_++ == cutAt) throw Cut{};
+    return sp::ScriptedProvider::exec(req, out, err);
+  }
+
+ private:
+  size_t n_ = 0;
+};
+
 struct Device {
   Device() : files(card) {
     platform.nowMs = [this] { return ms; };
@@ -165,7 +179,7 @@ struct Device {
 
   agent::Platform platform;
   uint32_t ms = 1000;
-  sp::ScriptedProvider model;
+  CutModel model;
   Card card;
   tx::CardTxFiles files;
   nimbus::orch::ToolRegistry reg;
@@ -437,6 +451,44 @@ static void test_the_list_is_bounded_and_runs_in_ram_with_no_card() {
   TEST_ASSERT_TRUE(ram.empty());
 }
 
+// The coordinator's case (E2-FIX12 landed the boot resume): a kept message's turn that a restart cuts
+// after its message was stored is resumed once by the engine at the next boot, and the kept list does
+// not answer it a second time; the next kept message is answered once after it.
+static void test_a_cut_kept_turn_is_resumed_once_and_not_answered_again() {
+  Device dev;
+  plain::WaitingInbox in(&dev.files, kChat);
+  TEST_ASSERT_TRUE(in.load().ok());
+  (void)in.hold(tgMessage("what is 6 times 7?", 1101, 0x80));
+  (void)in.hold(tgMessage("name one colour", 1102, 0x81));
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  dev.model.cutAt = 0;   // the first kept message's request: the unit restarts there
+  bool cut = false;
+  try {
+    (void)plain::answerWaiting(in, dev.drain());
+  } catch (const Cut&) {
+    cut = true;
+  }
+  TEST_ASSERT_TRUE(cut);
+  TEST_ASSERT_TRUE(dev.sent.empty());
+  dev.binding.release();   // the restart: no destructor runs at a cut
+  dev.ms += 30000;
+  dev.model.push(sp::say("42."));
+  TEST_ASSERT_TRUE(dev.boot().ok());   // the boot resumes the cut turn once
+  TEST_ASSERT_EQUAL_INT((int)nimbus::orch::intents::BootAction::Resume, (int)dev.binding->lastResume().action);
+  TEST_ASSERT_EQUAL(1, (int)dev.sent.size());
+  TEST_ASSERT_EQUAL_STRING("1001|42.", dev.sent[0].c_str());
+  plain::WaitingInbox again(&dev.files, kChat);
+  TEST_ASSERT_TRUE(again.load().ok());
+  TEST_ASSERT_EQUAL(2, (int)again.messages().size());   // the list did not know the turn ran
+  dev.model.push(sp::say("Red."));
+  TEST_ASSERT_EQUAL(1, (int)plain::answerWaiting(again, dev.drain()));   // only the second one
+  TEST_ASSERT_EQUAL(2, (int)dev.sent.size());
+  TEST_ASSERT_EQUAL_STRING("1001|Red.", dev.sent[1].c_str());
+  TEST_ASSERT_EQUAL(2, (int)dev.model.requests().size());   // the resume and the second message
+  TEST_ASSERT_EQUAL(1, (int)count(transcript(dev.card), "what is 6 times 7?"));
+  TEST_ASSERT_TRUE(again.empty());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_two_messages_kept_during_a_read_in_are_answered_in_order_after_it);
@@ -446,5 +498,6 @@ int main(int, char**) {
   RUN_TEST(test_a_kept_photo_reaches_its_turn_from_the_card);
   RUN_TEST(test_an_unread_list_is_never_empty_and_a_refused_removal_is_not_lost);
   RUN_TEST(test_the_list_is_bounded_and_runs_in_ram_with_no_card);
+  RUN_TEST(test_a_cut_kept_turn_is_resumed_once_and_not_answered_again);
   return UNITY_END();
 }
