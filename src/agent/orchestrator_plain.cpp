@@ -53,6 +53,8 @@
 #include <freertos/task.h>
 
 #include "../sys/agent_log.h"
+#include "../sys/config_nvs.h"      // deviceName - the resume's plain crash notice (E2-FIX12)
+#include "../sys/crash_report.h"    // the crash journal of a person's turn, the kept notice (E2-FIX12)
 #include "../sys/heap_watch.h"     // heapwatch::psramFirst - the turn's PSRAM-first switch
 #include "../sys/psram_static.h"   // the notice slot in PSRAM, as on engine 1
 #include "files_subsystem.h"    // files::recentFiles - the file tools' recent-files list (E2-TOOLS)
@@ -69,6 +71,7 @@
 #include "nimbus/harness/plain/chat_commands.h"   // readGeneration, writeGeneration - /clear (P7)
 #include "nimbus/harness/plain/chat_photos.h"
 #include "nimbus/harness/plain/schedule_binding.h"   // reminder and routine fires (lane E2-SCHED)
+#include "nimbus/orch/turn_journal.h"              // kTurnSourceOwner - the crash journal (E2-FIX12)
 #include "nimbus/orch/spend_ceiling.h"               // kSpendFrozenError - a routine waits while frozen
 #include "nimbus/harness/turn_memory.h"   // PsramFirstScope
 #include "nimbus/harness/log.h"           // hlog::setSink - the harness lines into alog
@@ -431,6 +434,8 @@ plain::ChatBinding* residentFor(const String& chatId, const std::string& model, 
   return nullptr;
 }
 
+void onResumed(const std::string& chat, const plain::ResumeReport& r);   // E2-FIX12, below
+
 // The chat's binding for this model and role, booted (null when it could not start).
 plain::ChatBinding* chatFor(const String& chatId, const std::string& model, nimbus::orch::Role role) {
   s_noStartWhy = nullptr;
@@ -510,6 +515,10 @@ plain::ChatBinding* chatFor(const String& chatId, const std::string& model, nimb
   // No card fitted at all (none mounted at begin()): the chat runs from RAM by design. A card
   // that is lost, faulted or not answering is an outage: the binding reloads it (E2-STORE).
   d.noCard = noCardFitted;
+  // Lane E2-FIX12: the boot's crash resume (plain/resume.h) names the device in its plain notice and
+  // hands back what it sent, for the chat's history rows.
+  d.deviceName = nimbus::sys::deviceName().c_str();
+  d.resumed = [chat = std::string(chatId.c_str())](const plain::ResumeReport& r) { onResumed(chat, r); };
   const uint32_t spiFree0 = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
   const uint32_t spiBig0 = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
   const uint32_t t0 = millis();
@@ -656,10 +665,15 @@ bool runOne(const String& text, const String& fromName, const String& chatId) {
   plain::TurnOutcome out;
   plain::Status st;
   const uint32_t t0 = millis();
+  // The crash journal (E2-FIX12): a restart inside this turn names its chat at the next boot, where
+  // the engine resumes it once (bootLostChat).
+  nimbus::crash::turnStarted(chatId == "serial" ? nimbus::orch::kTurnSourceSerial : nimbus::orch::kTurnSourceOwner,
+                             chatId.c_str(), !msg.parts.empty() ? "[image]" : !msg.stored.empty() ? "[file]" : "");
   {
     PsramFirstScope psramFirst;
     st = b->turn(msg, out);
   }
+  nimbus::crash::turnEnded();
   logTurn(*b, out, st, millis() - t0);
   if (!msg.parts.empty())
     alogf("e2: photos=%u bytes=%u psramFree=%u psramLargest=%u", (unsigned)msg.parts.size(),
@@ -815,6 +829,60 @@ void bootOwnerChat() {
   const String host = store::resolvedOrchHost();
   if (owner.length() == 0 || refusalFor(host)) return;
   (void)chatFor(owner, std::string(store::orchModel(host).c_str()), roleOfChat(owner));
+}
+
+// Lane E2-FIX12: what the boot's crash resume sent goes where a turn's reply goes in the chat's
+// history (runOne's rows), and a resumed turn's deferred effects run as after any turn.
+void onResumed(const std::string& chat, const plain::ResumeReport& r) {
+  using BootAction = nimbus::orch::intents::BootAction;
+  const plain::TurnOutcome& out = r.outcome;
+  std::string assistant, system;
+  if (r.action == BootAction::Resume) {
+    if (out.delivered && !out.text.empty()) assistant = out.text;
+    else system = out.statusStored;
+  } else if (r.action == BootAction::SendStored) {
+    assistant = r.text;
+  } else if (r.action == BootAction::Notice) {
+    system = r.text;
+  }
+  if (!assistant.empty())
+    memory::captureMessage(chat.c_str(), "assistant", nimbus::orch::MsgKind::Message, String(assistant.c_str()), "", "e2");
+  else if (!system.empty())
+    memory::captureMessage(chat.c_str(), "system", nimbus::orch::MsgKind::Message, String(system.c_str()), "", "e2");
+  if (r.action == BootAction::Resume) runDeferred(out.deferred);
+}
+
+// Lane E2-FIX12: a person's message a restart cut (the crash journal names its chat) is taken up
+// at boot by that chat's engine (plain/resume.h: one resume, else the plain crash notice), before
+// the owner chat boots. The boot is journaled like a turn, so a cut inside the resume is named at
+// the next boot. A chat that cannot boot gets the crash notice the device kept (a crash only).
+// tg_poll, once (tried again while the chat waits for its history import).
+bool s_lostTried = false;
+void bootLostChat() {
+  if (s_lostTried) return;
+  std::string chat, kind;
+  if (!nimbus::crash::lostOwnerTurn(chat, kind)) {
+    s_lostTried = true;
+    return;
+  }
+  const String chatId(chat.c_str());
+  if (waitsForHistory(chatId)) return;
+  s_lostTried = true;
+  const String host = store::resolvedOrchHost();
+  if (refusalFor(host)) {
+    alogf("e2: the restart cut a message to %s; its engine cannot start", chatId.c_str());
+    nimbus::crash::releaseOwnerNotice();
+    return;
+  }
+  alogf("e2: the restart cut a message to %s: its chat boots now", chatId.c_str());
+  nimbus::crash::turnStarted(kind == "console" ? nimbus::orch::kTurnSourceSerial : nimbus::orch::kTurnSourceOwner,
+                             chat, kind == "photo" ? "[image]" : kind == "file" ? "[file]" : "");
+  s_inTurn.store(true, std::memory_order_relaxed);
+  plain::ChatBinding* b = chatFor(chatId, std::string(store::orchModel(host).c_str()), roleOfChat(chatId));
+  s_inTurn.store(false, std::memory_order_relaxed);
+  nimbus::crash::turnEnded();
+  if (b) nimbus::crash::dropOwnerNotice();
+  else nimbus::crash::releaseOwnerNotice();
 }
 
 // ---- reminders and routines (lane E2-SCHED) ------------------------------------------
@@ -1006,6 +1074,7 @@ void begin(HeavyFabric* fabric, const Sinks& sinks) {
   // The harness library's log seam (compaction, the wire, the summarizer) into the device log, as engine 1
   // installs it: without a sink every such line is dropped (lane E2-BENCH: a failed /compact left no cause).
   hlog::setSink([](const char* line) { alog(line); });
+  nimbus::crash::ownerTurnsResumed();   // E2-FIX12: a person's cut turn is this engine's to answer
   s_begun = true;
   alog("orchestrator: engine 2 ready (Claude heads)");
 }
@@ -1050,6 +1119,7 @@ nimbus::orch::FireOutcome injectScheduledTurn(const String& chatId, const String
 int pollJobs() {
   if (!s_begun) return 0;
   migratedev::importRulesOnce();   // once: the earlier engine's standing rules as pinned notes
+  bootLostChat();         // once: a person's message a restart cut is resumed (E2-FIX12)
   bootOwnerChat();        // once: the owner chat's transcript and seen index before its next message
   drainTerminates();      // the journal's staged terminates (none can exist without jobs)
   drainUpdateNotice();    // the fixed post-update notice - tg_poll only

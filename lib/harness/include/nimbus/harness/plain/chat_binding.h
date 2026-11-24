@@ -18,6 +18,7 @@
 #include "nimbus/harness/plain/guards.h"
 #include "nimbus/harness/plain/hooks.h"
 #include "nimbus/harness/plain/request.h"
+#include "nimbus/harness/plain/resume.h"   // installResume - the crash resume (lane E2-FIX12)
 #include "nimbus/harness/plain/unattended.h"   // OwnerSink, RoutineDeps (lane E2-SCHED)
 #include "nimbus/harness/plain/rails.h"   // installRails - the safety rails (lane E2-FSAFE)
 #include "nimbus/harness/platform.h"
@@ -55,6 +56,9 @@
 //   - the turn's usage handed to `usage` once per turn; the progress line (installProgress).
 //   - lane E2-MIG: the earlier engine's conversation imported before the engine opens its log
 //     (tx::migrate), when the device gives an oldEngine hook.
+// Lane E2-FIX12: the crash resume (plain::installResume, PRD section 7) at every boot: a person's
+// turn a restart cut is resumed once from what is stored (no tool run again), a second cut gives
+// the plain crash notice; the seam's report is lastResume() and goes to `resumed` once boot is done.
 // Lane E2-SCHED: ownerSink and routineDeps, the parts a reminder or routine fire takes from the chat
 // (nimbus/harness/plain/schedule_binding.h).
 // Only lib headers are included, so a host test drives the same class with a fake platform, a
@@ -109,6 +113,12 @@ struct ChatBindingDeps {
   // Lane E2-FSAFE: RailsDeps::pending, the approval shelf for a tainted turn's pending calls (the
   // device: the notes' pending shelf). Null: a pending call is refused, nothing kept, nothing run.
   RailPendingFn railPending;
+  // Lane E2-FIX12: the plain crash notice's device name ("": Nimbus), and what the boot's crash
+  // resume did when it acted (lastResume(); null: not told). Called once boot returned, never from
+  // inside the seam: the device files the resumed answer or the notice where the chat's history
+  // rows go and runs the resumed turn's deferred effects.
+  std::string deviceName;
+  std::function<void(const ResumeReport&)> resumed;
   // Lane E2-SRCH: a call the turn itself answers (search and view read the turn's own conversation,
   // plain/history.h HistoryTools::answer); true when it answered. Null: every call goes to the registry.
   std::function<bool(const ToolCall&, const TurnCtx&, ToolOutput&)> turnTool;
@@ -275,17 +285,28 @@ class ChatBinding {
         st = installProgress(*hooks_, *reporter_, clock->nowMs);   // a copy: no lambda of the same signature wrapping it
         if (!st.ok()) return fail(st);
       }
+      if (st.ok()) st = installResume(*hooks_, resumeDeps());   // E2-FIX12: the device binding never installed it
+      if (!st.ok()) return fail(st);
       migrateOld();
       engine_.reset(new PlainEngine(deps()));
+      resume_ = ResumeReport{};
+      resumeRan_ = false;
       st = engine_->boot(BootCtx{p->nowEpoch(), afterCrash});
     } catch (const std::bad_alloc&) {
       st = Status::fail(tx::Err::TooLarge, "plain::ChatBinding::boot.memory");
     }
+    // The seam runs after the chat is loaded: its failure (a send the channel refused, a resumed
+    // run that failed) leaves the turn open for a later boot and never keeps the chat from starting.
+    if (!st.ok() && resumeRan_ && engine_) st = Status::success();
     if (!st.ok()) return fail(st);
+    if (resumeRan_) afterResume();
     if (engine_->unloaded()) say("e2: the stored conversation could not be loaded: held in RAM, retried before each turn");
     rebuildSeen();
     return st;
   }
+
+  // What the last boot's crash resume did (action None when it found nothing to do or did not run).
+  const ResumeReport& lastResume() const { return resume_; }
 
   // The stored conversation could not be loaded and is not yet (the owner's line is due).
   bool unloaded() const { return engine_ && engine_->unloaded(); }
@@ -546,6 +567,49 @@ class ChatBinding {
     if (!nimbus::orch::rebuildSeen(*d_.seen, cfg_.chatId, *engine_->head(), *arena_).ok())
       say("e2: seen-index rebuild refused");
   }
+  // Lane E2-FIX12: the seam's deps, read when it runs (the engine exists by then: boot runs it).
+  ResumeDeps resumeDeps() {
+    ResumeDeps r;
+    r.log = log_.get();
+    r.arena = arena_.get();
+    r.head = [this] { return engine_ ? engine_->head() : nullptr; };
+    r.runTurn = [this](const TurnInput& in, TurnOutcome& out) {
+      return engine_ ? engine_->runTurn(in, out)
+                     : Status::fail(nimbus::orch::tx::Err::InvalidArgument, "plain::ChatBinding::resume");
+    };
+    r.deliver = [this](const DeliverInput& in, DeliverOutcome& out) {
+      return deliverTurn(DeliverDeps{&channel_, nullptr, nullptr}, in, out);
+    };
+    r.context = [this](TurnCtx& out) {
+      out = turnCtx();
+      return Status::success();
+    };
+    const Platform* p = d_.platform;
+    r.now = [p] { return p->nowEpoch(); };
+    r.deviceName = d_.deviceName;
+    r.done = [this](const ResumeReport& rep) {
+      resume_ = rep;
+      resumeRan_ = true;
+    };
+    return r;
+  }
+  // After boot: one log line when the seam acted; a resumed turn's spend as any turn's; the device told.
+  void afterResume() {
+    namespace tx = nimbus::orch::tx;
+    namespace intents = nimbus::orch::intents;
+    if (resume_.action == intents::BootAction::None && resume_.status.ok()) return;
+    const std::string line = "e2: boot resume: action=" + std::string(intents::bootActionSlug(resume_.action)) +
+                             " turn=" + std::to_string(resume_.turn) + " answered=" + std::to_string(resume_.answered) +
+                             " counted=" + std::to_string(resume_.counted ? 1 : 0) +
+                             " status=" + tx::errSlug(resume_.status.err) +
+                             (resume_.status.where ? std::string("@") + resume_.status.where : std::string());
+    say(line.c_str());
+    if (resume_.action == intents::BootAction::Resume) {
+      breaker_.spent(/*person=*/true, resume_.outcome.end.microUsd, d_.platform->nowMs());
+      if (d_.usage) d_.usage(resume_.outcome);
+    }
+    if (d_.resumed) d_.resumed(resume_);
+  }
   Status fail(const Status& st) {
     engine_.reset();   // a failed boot leaves the binding unbooted, never half-booted
     return st;
@@ -738,6 +802,8 @@ class ChatBinding {
   std::unique_ptr<CompactDriver> driver_;        // the hooks call it: it outlives no hook
   std::unique_ptr<ProgressReporter> reporter_;
   std::unique_ptr<PlainEngine> engine_;
+  ResumeReport resume_;      // the last boot's crash resume (E2-FIX12)
+  bool resumeRan_ = false;   // the seam ran in the last boot (the chat was loaded first)
 };
 
 }  // namespace plain

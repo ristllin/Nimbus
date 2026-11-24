@@ -28,6 +28,7 @@
 #include "poll_watch.h"             // the guard's streak at this boot
 #include "nimbus/orch/turn_journal.h"
 #include "nimbus/sys/boot_record.h"
+#include "nimbus/sys/image_boot.h"
 #include "nimbus/sys/panic_arm.h"
 #include "nimbus/sys/reset_reason.h"
 #include "ota_update.h"   // lastResult() - the boot line's ota= field
@@ -79,6 +80,8 @@ bool     g_reported = false;
 // Allocated only when a dump exists (PSRAM: it is far over the 128 B spill threshold),
 // so a device that never crashed carries no static cost for it.
 Report*  g_report = nullptr;
+// Has this image booted before (nimbus/sys/image_boot.h)? Read once storage attaches.
+nimbus::sys::ImageBoot g_image = nimbus::sys::ImageBoot::Unknown;
 
 // RTC breadcrumb (F4): survives software, panic, watchdog and USB resets and deep
 // sleep; power-on garbage fails its magic/CRC. Updated from the boot task, the loop
@@ -104,6 +107,11 @@ bool        g_lostTurnFound = false;
 // it, so each call runs under a spinlock; the calls only move strings, never allocate.
 nimbus::orch::RestartNoticeQueue g_notices;
 portMUX_TYPE g_noticeMux = portMUX_INITIALIZER_UNLOCKED;
+// Engine 2 (lane E2-FIX12): the engine answers a person's cut turn itself (plain/resume.h), so
+// the crash notice planned for it is kept here and sent only if the engine could not take the
+// turn (releaseOwnerNotice). Loop task at boot, tg_poll after: moved under g_noticeMux.
+bool        g_ownerTurnsResumed = false;
+std::string g_keptOwnerNotice;
 
 void sendRestartNotice(std::string text, const char* when) {
   if (text.empty()) return;
@@ -285,9 +293,24 @@ void bootRecord(bool orch) {
   agent::alogc(errlog::cat::kBoot, nimbus::sys::bootLine(f).c_str());
 }
 
+// The first boot of a newly written image (lane E2-FIX12): the marker beside crash.seen names
+// the image that last booted; it is written only when the image changed. No storage, no id of
+// its own or a write the store refused: Unknown (a crash-type reset is still told).
+void noteImageBoot() {
+  if (!errlog::storageAttached()) return;
+  char elf[sizeof(RawSummary::app_elf_sha256)] = {};
+  esp_app_get_elf_sha256(elf, sizeof elf);
+  const std::string stored = errlog::readState(nimbus::sys::kImageSeenName, nimbus::sys::kImageSeenMaxBytes);
+  const bool wrote = nimbus::sys::imageSeenWriteDue(stored, elf) &&
+                     errlog::writeState(nimbus::sys::kImageSeenName,
+                                        nimbus::sys::renderImageSeen(elf, errlog::bootNumber()));
+  g_image = nimbus::sys::imageBootOf(stored, elf, wrote);
+}
+
 void reportOnce() {
   if (g_reported) return;
   g_reported = true;
+  noteImageBoot();
   Report r;
   readDump(r);
   if (r.state == ImageState::None) return;   // fresh or erased: crash=none, silent
@@ -404,9 +427,17 @@ void collectTurnJournal() {
 
 void queueCrashNotice() {
   if (!crashBoot()) return;
-  const nimbus::orch::TurnJournal* j = g_lostTurnFound ? &g_lostTurn : nullptr;
   // A crash's own dump names its cause; an older dump (this crash wrote none) does not.
   const Report* dump = (g_report && describesThisCrash(*g_report)) ? g_report : nullptr;
+  // The first boot of a newly written image is not a crash when the reset reason is the only
+  // sign (a cable flash ends in a reset the chip reports as watchdog): no notice. A crash record
+  // of this firmware for this reset is still told (nimbus/sys/image_boot.h).
+  if (!nimbus::sys::crashNoticeDue(g_reason, g_image, dump && dump->fwMatch)) {
+    agent::alogcf(errlog::cat::kBoot, "crash: no owner notice: the first boot of this image (reset %s, no crash record of it)",
+                  nimbus::sys::resetSlug(g_reason, nimbus::sys::ResetVocab::BootRow).c_str());
+    return;
+  }
+  const nimbus::orch::TurnJournal* j = g_lostTurnFound ? &g_lostTurn : nullptr;
   const char* cause = plainCause(crashKind(dump, g_reason));
   const std::string name(sys::deviceName().c_str());
   const std::string hhmm = j ? localHhmm(j->at) : std::string();
@@ -427,15 +458,49 @@ void queueCrashNotice() {
             : nimbus::orch::planRestartNotice(name, g_reason, j, hhmm, cause);
   const nimbus::orch::NoticeTiming timing = plan.timing;
   std::string now;
+  // Engine 2: a person's cut request is the engine's to answer (one resume, else its own plain
+  // notice); this notice is kept and sent only if the engine cannot take the turn.
+  const bool kept = timing == nimbus::orch::NoticeTiming::Now && j && nimbus::orch::isOwnerRequestKind(j->kind);
   portENTER_CRITICAL(&g_noticeMux);
+  const bool toEngine = kept && g_ownerTurnsResumed;
+  if (toEngine) g_keptOwnerNotice.swap(plan.text);
   now = g_notices.atBoot(std::move(plan));
   portEXIT_CRITICAL(&g_noticeMux);
   agent::alogcf(errlog::cat::kBoot, "crash: owner notice %s (turn=%s)",
-                timing == nimbus::orch::NoticeTiming::Now    ? "at boot"
+                toEngine                                     ? "kept for the engine's resume"
+                : timing == nimbus::orch::NoticeTiming::Now  ? "at boot"
                 : timing == nimbus::orch::NoticeTiming::Held ? "held for the owner's next turn"
                                                              : "none",
                 j ? j->kind.c_str() : "none");
   sendRestartNotice(std::move(now), "at boot");
+}
+
+void ownerTurnsResumed() {
+  portENTER_CRITICAL(&g_noticeMux);
+  g_ownerTurnsResumed = true;
+  portEXIT_CRITICAL(&g_noticeMux);
+}
+
+bool lostOwnerTurn(std::string& chat, std::string& kind) {
+  if (!g_lostTurnFound || g_lostTurn.chat.empty() || !nimbus::orch::isOwnerRequestKind(g_lostTurn.kind)) return false;
+  chat = g_lostTurn.chat;
+  kind = g_lostTurn.kind;
+  return true;
+}
+
+void releaseOwnerNotice() {
+  std::string text;
+  portENTER_CRITICAL(&g_noticeMux);
+  text.swap(g_keptOwnerNotice);
+  portEXIT_CRITICAL(&g_noticeMux);
+  sendRestartNotice(std::move(text), "the engine could not resume the turn");
+}
+
+void dropOwnerNotice() {
+  std::string text;
+  portENTER_CRITICAL(&g_noticeMux);
+  text.swap(g_keptOwnerNotice);
+  portEXIT_CRITICAL(&g_noticeMux);
 }
 
 #ifdef NIMBUS_TEST

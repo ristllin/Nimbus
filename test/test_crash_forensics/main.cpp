@@ -14,6 +14,7 @@
 #include "nimbus/orch/turn_journal.h"
 #include "nimbus/sys/boot_record.h"
 #include "nimbus/sys/breadcrumb.h"
+#include "nimbus/sys/image_boot.h"
 #include "nimbus/sys/log_window.h"
 #include "nimbus/sys/panic_arm.h"
 #include "nimbus/sys/reset_reason.h"
@@ -932,6 +933,87 @@ static void test_panic_fire_every_kind_never_returns_quietly() {
   }
 }
 
+// ---- the first boot of a newly written image (lane E2-FIX12) ----------------------
+
+// The bench case, boot by boot: a cable flash writes image B over image A and ends in a reset
+// the chip reports as a watchdog reset. The reset reason alone said crash (the old rule, still
+// planRestartNotice's first check); the first boot of B sends no notice. The next watchdog reset
+// of the same image B is a crash and is told; so is a panic whose own record belongs to B, even
+// on its first boot. A software restart is never a crash.
+static void test_first_boot_of_a_new_image_is_not_a_crash() {
+  const std::string a = "a1b2c3d4e5f60718", b = "0f1e2d3c4b5a6978";
+  const int wdt[] = {(int)ResetReason::IntWdt, (int)ResetReason::TaskWdt, (int)ResetReason::Wdt};
+  // Boot 1 of image B: the card names image A; the device writes B's marker.
+  std::string card = renderImageSeen(a, 41);
+  TEST_ASSERT_TRUE(imageSeenWriteDue(card, b));
+  const ImageBoot first = imageBootOf(card, b, /*wrote=*/true);
+  TEST_ASSERT_EQUAL_INT((int)ImageBoot::First, (int)first);
+  card = renderImageSeen(b, 42);
+  for (int r : wdt) {
+    // The old rule: the reset reason alone plans a notice for this very boot.
+    TEST_ASSERT_EQUAL_INT((int)nimbus::orch::NoticeTiming::Now,
+                          (int)nimbus::orch::planRestartNotice("Lumi", r, nullptr, "", "").timing);
+    TEST_ASSERT_FALSE_MESSAGE(crashNoticeDue(r, first, /*ownDump=*/false), resetSlug(r, ResetVocab::BootRow).c_str());
+  }
+  // Boot 2 of image B after a real watchdog reset: the card names B; nothing is written.
+  TEST_ASSERT_FALSE(imageSeenWriteDue(card, b));
+  const ImageBoot again = imageBootOf(card, b, /*wrote=*/false);
+  TEST_ASSERT_EQUAL_INT((int)ImageBoot::Again, (int)again);
+  for (int r : wdt) TEST_ASSERT_TRUE(crashNoticeDue(r, again, false));
+  TEST_ASSERT_TRUE(crashNoticeDue((int)ResetReason::Panic, again, false));
+  // A panic whose crash record belongs to this firmware: told on any boot, the first included.
+  for (ImageBoot img : {ImageBoot::First, ImageBoot::Again, ImageBoot::Unknown})
+    TEST_ASSERT_TRUE(crashNoticeDue((int)ResetReason::Panic, img, /*ownDump=*/true));
+  // A software restart (and every other reason that is not a crash) is never told as one.
+  for (ImageBoot img : {ImageBoot::First, ImageBoot::Again, ImageBoot::Unknown})
+    for (bool own : {false, true}) TEST_ASSERT_FALSE(crashNoticeDue((int)ResetReason::Sw, img, own));
+}
+
+// What the device cannot know is not taken as a new image (ruling 116: "cannot read" is never
+// "absent"): a marker that could not be written, no storage, or no id of its own keeps the notice.
+// A fresh card (no marker) whose marker is then written is a first boot.
+static void test_an_unknown_image_keeps_the_notice() {
+  const std::string b = "0f1e2d3c4b5a6978";
+  TEST_ASSERT_EQUAL_INT((int)ImageBoot::Unknown, (int)imageBootOf(renderImageSeen("a1b2c3d4e5f60718", 7), b, false));
+  TEST_ASSERT_EQUAL_INT((int)ImageBoot::Unknown, (int)imageBootOf("", b, false));
+  TEST_ASSERT_EQUAL_INT((int)ImageBoot::Unknown, (int)imageBootOf(renderImageSeen(b, 7), "", false));
+  TEST_ASSERT_FALSE(imageSeenWriteDue("", ""));
+  TEST_ASSERT_TRUE(imageSeenWriteDue("", b));
+  TEST_ASSERT_EQUAL_INT((int)ImageBoot::First, (int)imageBootOf("", b, true));
+  TEST_ASSERT_EQUAL_INT((int)ImageBoot::First, (int)imageBootOf("garbage\n", b, true));
+  for (int r = -1; r <= kLastResetReason + 1; ++r)
+    TEST_ASSERT_EQUAL(isCrashReset(r), crashNoticeDue(r, ImageBoot::Unknown, false));
+  TEST_ASSERT_EQUAL_STRING("first", imageBootSlug(ImageBoot::First));
+  TEST_ASSERT_EQUAL_STRING("again", imageBootSlug(ImageBoot::Again));
+  TEST_ASSERT_EQUAL_STRING("unknown", imageBootSlug(ImageBoot::Unknown));
+}
+
+// The class (D5: engine 1 changes only in the false notice): over every reset reason, image state
+// and record, the new decision equals the reset reason alone except exactly the first boot of a
+// new image with no crash record of its own after a crash-type reset.
+static void test_crash_notice_differs_from_the_reset_reason_only_on_a_first_boot() {
+  int differ = 0;
+  for (int r = -2; r <= kLastResetReason + 2; ++r)
+    for (ImageBoot img : {ImageBoot::Unknown, ImageBoot::First, ImageBoot::Again})
+      for (bool own : {false, true}) {
+        const bool only = isCrashReset(r) && img == ImageBoot::First && !own;
+        TEST_ASSERT_EQUAL_MESSAGE(isCrashReset(r) && !only, crashNoticeDue(r, img, own), std::to_string(r).c_str());
+        differ += only;
+      }
+  TEST_ASSERT_EQUAL_INT(5, differ);   // panic, the three watchdogs, cpu-lockup
+}
+
+// The marker: one line, the image id and the boot number; a damaged or foreign file names no image.
+static void test_image_seen_marker_round_trip() {
+  TEST_ASSERT_EQUAL_STRING("0f1e2d3c4b5a6978 42\n", renderImageSeen("0f1e2d3c4b5a6978", 42).c_str());
+  TEST_ASSERT_EQUAL_STRING("0f1e2d3c4b5a6978", imageSeenId(renderImageSeen("0f1e2d3c4b5a6978", 42)).c_str());
+  TEST_ASSERT_EQUAL_STRING("", imageSeenId("").c_str());
+  TEST_ASSERT_EQUAL_STRING("", imageSeenId("   \n").c_str());
+  TEST_ASSERT_EQUAL_STRING("", imageSeenId("0f1e2d3c-4b5a 42\n").c_str());   // not an id
+  // A long id is kept to the field's bound, so a write never grows the file without end.
+  TEST_ASSERT_TRUE(renderImageSeen(std::string(200, 'a'), 1).size() <= 48);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_reset_table_rows_are_positional);
@@ -968,5 +1050,9 @@ int main(int, char**) {
   RUN_TEST(test_panic_arm_fires_only_in_the_armed_round);
   RUN_TEST(test_panic_fire_every_kind_never_returns_quietly);
   RUN_TEST(test_a_crash_without_its_own_dump_never_borrows_an_older_cause);
+  RUN_TEST(test_first_boot_of_a_new_image_is_not_a_crash);
+  RUN_TEST(test_an_unknown_image_keeps_the_notice);
+  RUN_TEST(test_crash_notice_differs_from_the_reset_reason_only_on_a_first_boot);
+  RUN_TEST(test_image_seen_marker_round_trip);
   return UNITY_END();
 }

@@ -64,6 +64,9 @@ struct ResumeReport {
   size_t answered = 0;        // open calls it answered (step 1)
   bool counted = false;       // the attempt was written to head.json before it acted
   Status status = Status::success();
+  // SendStored: the stored answer it sent; Notice: the notice line it sent ("" when nothing went
+  // out). The binding files it where the chat's history rows go (lane E2-FIX12).
+  std::string text;
   // Resume only: the resumed turn's outcome. The binding runs outcome.deferred as it does
   // after any runTurn (they are the resumed run's own effects, from results it stored), once
   // boot returns.

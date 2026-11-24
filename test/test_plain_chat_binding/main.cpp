@@ -111,6 +111,23 @@ class Card : public tx::CardOps {
   }
 };
 
+// A power cut inside the model's request (lane E2-FIX12): not an exception the engine knows, so
+// nothing after it runs, as on the board when the unit restarts mid-turn; the card stays.
+struct Cut {};
+
+// The scripted head, with a cut at the request of a given index (-1: none).
+class CutModel : public sp::ScriptedProvider {
+ public:
+  long cutAt = -1;
+  bool exec(const agent::HttpRequest& req, agent::HttpResponse& out, std::string& err) override {
+    if ((long)n_++ == cutAt) throw Cut{};
+    return sp::ScriptedProvider::exec(req, out, err);
+  }
+
+ private:
+  size_t n_ = 0;
+};
+
 struct Device {
   Device() : files(card) {
     platform.nowMs = [this] { return ms; };
@@ -182,7 +199,7 @@ struct Device {
   bool noCardFitted = false;   // the device has no card at all (EngineDeps::noCard)
   plain::RailPendingFn railPending;   // lane E2-FSAFE
   uint32_t ms = 1000;
-  sp::ScriptedProvider model;
+  CutModel model;
   Card card;
   tx::CardTxFiles files;
   nimbus::orch::ToolRegistry reg;
@@ -739,6 +756,102 @@ static void test_a_compaction_files_its_summarizer_spend_like_a_turn() {
   TEST_ASSERT_TRUE(dev.model.last().body.find("\"output_config\"") != std::string::npos);   // the structured form went out
 }
 
+// Lane E2-FIX12 (the bench's lost answer): a person's message that appended a row, cut after the
+// append's intent and result were stored and before the final answer. The next boot of the chat
+// resumes the turn once through the engine (the request carries the stored result; the append is
+// never run again) and the person gets the answer once; the turn is closed on the card. A second
+// cut inside that resume gives the plain crash notice at the boot after it, with no model request.
+static int appendRuns = 0;
+static void addAppend(nimbus::orch::ToolRegistry& reg) {
+  reg.add("append_file", "Append to a file.", [](ArduinoJson::JsonObjectConst, const nimbus::orch::Principal&) {
+    ++appendRuns;
+    return nimbus::orch::ToolResult::ok("appended 23 B to budget/week47.csv");
+  }, R"({"type":"object","properties":{"path":{"type":"string"},"text":{"type":"string"}},"required":["path","text"]})");
+}
+
+static void cutAfterTheAppend(Device& dev) {
+  appendRuns = 0;
+  addAppend(dev.reg);
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  dev.model.push(sp::call("append_file", R"({"path":"budget/week47.csv","text":"2026-11-24,market,5.55\n"})"));
+  dev.model.cutAt = 1;   // the request after the append's result: the unit restarts there
+  bool cut = false;
+  try {
+    (void)dev.say("Append to budget/week47.csv: 2026-11-24,market,5.55");
+  } catch (const Cut&) {
+    cut = true;
+  }
+  TEST_ASSERT_TRUE(cut);
+  TEST_ASSERT_EQUAL(1, appendRuns);
+  TEST_ASSERT_TRUE(dev.sent.empty());   // nothing reached the person before the cut
+  dev.binding.release();   // the restart: the RAM state is gone as it was (no destructor runs at a cut)
+  dev.ms += 30000;
+}
+
+static std::string cardText(const Card& card) {
+  std::string all;
+  for (const auto& kv : card.files) all += kv.second;
+  return all;
+}
+
+static void test_a_cut_after_an_effect_is_resumed_once_and_answered() {
+  Device dev;
+  cutAfterTheAppend(dev);
+  const size_t asked = dev.model.requests().size();
+  dev.model.push(sp::say("Added 2026-11-24, market, 5.55 to budget/week47.csv."));
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  TEST_ASSERT_EQUAL_MESSAGE(asked + 1, dev.model.requests().size(), "one resumed request at boot");
+  TEST_ASSERT_EQUAL_MESSAGE(1, appendRuns, "the append is never run again");
+  const std::string& body = dev.model.last().body;
+  TEST_ASSERT_TRUE_MESSAGE(has(body, "appended 23 B to budget/week47.csv"), "the stored result rides the resume");
+  TEST_ASSERT_EQUAL(1, (int)dev.sent.size());
+  TEST_ASSERT_EQUAL_STRING("1001|Added 2026-11-24, market, 5.55 to budget/week47.csv.", dev.sent[0].c_str());
+  TEST_ASSERT_EQUAL_INT((int)nimbus::orch::intents::BootAction::Resume, (int)dev.binding->lastResume().action);
+  TEST_ASSERT_TRUE(dev.binding->lastResume().outcome.delivered);
+  // The turn is closed on the card: the boot after the next one does nothing more.
+  dev.binding.reset();
+  dev.sent.clear();
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  TEST_ASSERT_EQUAL(asked + 1, dev.model.requests().size());
+  TEST_ASSERT_TRUE(dev.sent.empty());
+  TEST_ASSERT_EQUAL_INT((int)nimbus::orch::intents::BootAction::None, (int)dev.binding->lastResume().action);
+  // And the chat goes on: the next message sees the answered turn once.
+  dev.model.push(sp::say("Yes, it is there once."));
+  TEST_ASSERT_TRUE(dev.say("Did the row land?").ok());
+  TEST_ASSERT_EQUAL(1, (int)count(dev.model.last().body, "Added 2026-11-24, market, 5.55"));
+  std::string why;
+  TEST_ASSERT_TRUE_MESSAGE(dev.model.verify(why), why.c_str());
+}
+
+static void test_a_second_cut_inside_the_resume_gives_the_plain_notice() {
+  Device dev;
+  cutAfterTheAppend(dev);
+  const size_t asked = dev.model.requests().size();
+  dev.model.cutAt = (long)asked + 1;   // the resumed request (CutModel counts the cut one too)
+  bool cut = false;
+  try {
+    (void)dev.boot();
+  } catch (const Cut&) {
+    cut = true;
+  }
+  TEST_ASSERT_TRUE_MESSAGE(cut, "the boot resumed the turn and was cut inside it");
+  dev.binding.release();
+  dev.ms += 30000;
+  dev.model.cutAt = -1;
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  TEST_ASSERT_EQUAL_MESSAGE(asked, dev.model.requests().size(), "no model request for the notice");
+  TEST_ASSERT_EQUAL(1, appendRuns);
+  TEST_ASSERT_EQUAL(1, (int)dev.sent.size());
+  TEST_ASSERT_TRUE_MESSAGE(has(dev.sent[0], "restarted after a crash while answering your message"), dev.sent[0].c_str());
+  TEST_ASSERT_EQUAL_INT((int)nimbus::orch::intents::BootAction::Notice, (int)dev.binding->lastResume().action);
+  // Closed: no third attempt and no second notice.
+  dev.binding.reset();
+  dev.sent.clear();
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  TEST_ASSERT_TRUE(dev.sent.empty());
+  TEST_ASSERT_EQUAL(asked, dev.model.requests().size());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_a_message_reaches_the_turn_and_the_reply_the_channel_once);
@@ -761,5 +874,7 @@ int main(int, char**) {
   RUN_TEST(test_a_new_chat_opens_empty_and_an_outage_keeps_ram);
   RUN_TEST(test_a_merge_cut_part_way_resumes_without_a_second_copy);
   RUN_TEST(test_after_a_reload_earlier_results_are_shown_whole);
+  RUN_TEST(test_a_cut_after_an_effect_is_resumed_once_and_answered);
+  RUN_TEST(test_a_second_cut_inside_the_resume_gives_the_plain_notice);
   return UNITY_END();
 }

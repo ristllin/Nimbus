@@ -72,6 +72,21 @@ void collectTurnJournal();
 // a background turn is held and sent once at the owner's next turn; anything else
 // sends at boot (nimbus/orch/restart_notice.h).
 void queueCrashNotice();
+// The first boot of a newly written image (lane E2-FIX12): reportOnce() also reads and, when the
+// image changed, rewrites /log/image.seen (nimbus/sys/image_boot.h); queueCrashNotice() sends no
+// notice when that first boot's crash-type reset reason is the only sign of a crash.
+
+// Engine 2 (lane E2-FIX12). The engine resumes a person's cut turn once itself and sends that
+// turn's one line (the answer, or the plain crash notice: plain/resume.h). ownerTurnsResumed(),
+// called by the engine-2 seam's begin() (before queueCrashNotice), keeps the crash notice planned
+// for a cut owner request instead of sending it at boot. lostOwnerTurn() names that request's chat
+// and kind (the journal collectTurnJournal() found). The seam then either sends the kept notice
+// (releaseOwnerNotice: the chat could not boot, so nothing else answers the person) or drops it
+// (dropOwnerNotice: the engine's boot took the turn).
+void ownerTurnsResumed();
+bool lostOwnerTurn(std::string& chat, std::string& kind);
+void releaseOwnerNotice();
+void dropOwnerNotice();
 
 #ifdef NIMBUS_TEST
 // Test builds only: the test console's `PANIC <kind> arm=turn [round=N]` hook

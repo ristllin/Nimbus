@@ -74,8 +74,8 @@ class BootResume {
   Status act(ResumeReport& rep, const intents::OpenTurn& open) {
     switch (rep.action) {
       case BootAction::Close: return close(kCauseClosed, false);
-      case BootAction::SendStored: return sendStored(open);
-      case BootAction::Notice: return notice(open);
+      case BootAction::SendStored: return sendStored(open, rep.text);
+      case BootAction::Notice: return notice(open, rep.text);
       case BootAction::Resume: return resume(open, rep.outcome);
       case BootAction::None: break;
     }
@@ -199,7 +199,7 @@ class BootResume {
     return Status::success();
   }
 
-  Status sendStored(const intents::OpenTurn& open) {
+  Status sendStored(const intents::OpenTurn& open, std::string& sentText) {
     if (!readAt(open.answerQ)) return Status::fail(Err::NotFound, "plain::resume.answer");
     std::string text = item_.x;   // a long reply: its whole text from the bulk file (RB-H81)
     if (!item_.handle.empty() && !d_.log->readBulk(item_.handle, 0, tx::kBulkMaxBytes, text).ok())
@@ -213,6 +213,7 @@ class BootResume {
       (void)count(open.turn, made_);
       return sent.ok() ? Status::fail(Err::Io, "plain::resume.send") : sent;
     }
+    sentText = text;
     item_ = tx::Item{};
     item_.kind = tx::ItemKind::Delivery;
     item_.turn = ctx_.turn;
@@ -224,7 +225,7 @@ class BootResume {
 
   // The plain crash notice (the released engine's own words), as the one status line. A notice
   // the channel refused leaves the turn open: a later boot sends it.
-  Status notice(const intents::OpenTurn& open) {
+  Status notice(const intents::OpenTurn& open, std::string& sentText) {
     nimbus::orch::TurnJournal j;
     j.chat = ctx_.chatId;
     j.kind = "message";
@@ -243,6 +244,7 @@ class BootResume {
     DeliverOutcome out;
     const Status sent = d_.deliver(in, out);
     if (!out.statusSent) return sent.ok() ? Status::fail(Err::Io, "plain::resume.notice") : sent;
+    sentText = line;
     return close(kCauseNotice, false);
   }
 
