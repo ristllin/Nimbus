@@ -275,22 +275,41 @@ inline long omittedTurnsNamed(const sp::RequestView& v) {
 }  // namespace detail
 
 namespace detail {
+// E2-REP5: in text mode the call and its result are one line, whole or as its stored stub.
+inline bool coverResultText(const sp::RequestView& v, const tx::Item& r, const CoverInput& in,
+                            const std::set<uint64_t>& sup, const std::string& tag, std::string& why) {
+  const bool stub = expectedShow(r, in, sup) == Shown::Stub;
+  const std::string want = stub ? r.st : resultWhole(r, in);
+  // The overflow ladder sends bulk as its stored stub on the rung before it omits turns: a request that
+  // names an omission may carry a bulk result as its stub.
+  const bool rungStub = !stub && r.cls == tx::ResultClass::Bulk && !r.st.empty() && omittedTurnsNamed(v) > 0 &&
+                        textBlocksEqual(v, ranLine(r.n, r.st)) > 0;
+  if (!rungStub && textBlocksEqual(v, ranLine(r.n, want)) == 0) {
+    why = "result " + tag + " should render in text mode as '" + ranLine(r.n, want).substr(0, 80) + "'";
+    return false;
+  }
+  return true;
+}
+// A stub's way back (E2-VERB): the view pointer, or for a file read the read_file call that reads it again.
+// E2-FIX5: the view pointer only while view is bound; unbound, a stub never names it.
+inline bool stubWayBack(const tx::Item& r, const CoverInput& in, const std::string& want, const std::string& tag,
+                        std::string& why) {
+  const bool viewNamed = want.find("view id=") != std::string::npos;
+  if (viewNamed && !in.bound.view) {
+    why = "stub of " + tag + " names view, which is not bound";
+    return false;
+  }
+  if (in.bound.view && want.find("view id=r" + std::to_string(r.q)) == std::string::npos &&
+      want.find("read_file path=") == std::string::npos) {
+    why = "stub of " + tag + " has no way back";
+    return false;
+  }
+  return true;
+}
 inline bool coverResult(const sp::RequestView& v, const tx::Item& r, const CoverInput& in, const std::set<uint64_t>& sup,
                         std::string& why) {
   const std::string tag = "r" + std::to_string(r.q) + " (" + r.n + ")";
-  if (textMode(v)) {   // E2-REP5: the call and its result as one line, whole or as its stored stub
-    const bool stub = expectedShow(r, in, sup) == Shown::Stub;
-    const std::string want = stub ? r.st : resultWhole(r, in);
-    // The overflow ladder sends bulk as its stored stub on the rung before it omits turns: a request that
-    // names an omission may carry a bulk result as its stub.
-    const bool rungStub = !stub && r.cls == tx::ResultClass::Bulk && !r.st.empty() && omittedTurnsNamed(v) > 0 &&
-                          textBlocksEqual(v, ranLine(r.n, r.st)) > 0;
-    if (!rungStub && textBlocksEqual(v, ranLine(r.n, want)) == 0) {
-      why = "result " + tag + " should render in text mode as '" + ranLine(r.n, want).substr(0, 80) + "'";
-      return false;
-    }
-    return true;
-  }
+  if (textMode(v)) return coverResultText(v, r, in, sup, tag, why);
   auto blocks = blocksOf(v, sp::BlockKind::ToolResult, r.id);
   if (blocks.size() != 1) {
     why = "result " + tag + " is rendered " + std::to_string(blocks.size()) + " times";
@@ -303,19 +322,7 @@ inline bool coverResult(const sp::RequestView& v, const tx::Item& r, const Cover
           std::to_string(blocks[0]->text.size()) + " B starting '" + blocks[0]->text.substr(0, 60) + "'";
     return false;
   }
-  // Its way back (E2-VERB): the view pointer, or for a file read the read_file call that reads it again.
-  // E2-FIX5: the view pointer only while view is bound; unbound, a stub never names it.
-  const bool viewNamed = want.find("view id=") != std::string::npos;
-  if (stub && viewNamed && !in.bound.view) {
-    why = "stub of " + tag + " names view, which is not bound";
-    return false;
-  }
-  if (stub && in.bound.view && want.find("view id=r" + std::to_string(r.q)) == std::string::npos &&
-      want.find("read_file path=") == std::string::npos) {
-    why = "stub of " + tag + " has no way back";
-    return false;
-  }
-  return true;
+  return !stub || stubWayBack(r, in, want, tag, why);
 }
 inline bool coverItem(const sp::RequestView& v, const tx::Item& it, const CoverInput& in,
                       const std::set<uint64_t>& sup, std::string& why) {
@@ -529,30 +536,48 @@ inline void takeOutOmission(std::string& from) {
 }
 }  // namespace detail
 
+namespace detail {
+// What a request's text may hold: the owner's messages (text, stamp; longest first), the other stored texts
+// (longest first), and in text mode the line openings of stored results (E2-REP5).
+struct StoredTexts {
+  std::vector<std::pair<std::string, std::string>> owner;
+  std::vector<std::string> other;
+  std::set<std::string> ran;   // in text mode, a stored result's line opens "[device] earlier I ran <tool>: "
+};
+inline StoredTexts storedTexts(const sp::RequestView& v, const std::vector<tx::Item>& items, uint16_t dayStartMin) {
+  StoredTexts s;
+  for (const tx::Item& it : items) {
+    if (it.kind == tx::ItemKind::User) s.owner.emplace_back(it.x, stampOf(it, dayStartMin));
+    if (it.kind == tx::ItemKind::Assistant || it.kind == tx::ItemKind::DeviceNote || it.kind == tx::ItemKind::RoundMeta)
+      s.other.push_back(it.x);
+    if (it.kind == tx::ItemKind::Result && textMode(v)) s.ran.insert(ranLine(it.n, ""));
+  }
+  std::sort(s.owner.begin(), s.owner.end(), [](const auto& a, const auto& b) { return a.first.size() > b.first.size(); });
+  std::sort(s.other.begin(), s.other.end(), [](const std::string& a, const std::string& b) { return a.size() > b.size(); });
+  return s;
+}
+// A text block less everything a stored item holds.
+inline std::string unstoredRest(const std::string& text, const StoredTexts& s) {
+  std::string rest = text;
+  for (const auto& t : s.owner)
+    if (takeOut(rest, t.first)) takeOut(rest, t.second);
+  for (const std::string& t : s.other) takeOut(rest, t);
+  takeOutPattern(rest, "[photo p", "]");
+  takeOutOmission(rest);
+  return rest;
+}
+}  // namespace detail
+
 inline bool noUnstoredText(const sp::RequestView& v, const std::vector<tx::Item>& items, std::string& why,
                            uint16_t dayStartMin = 240) {
-  std::vector<std::pair<std::string, std::string>> owner;   // text, its stamp
-  std::vector<std::string> other;
-  std::set<std::string> ran;   // E2-REP5: in text mode, a stored result's line opens "[device] earlier I ran <tool>: "
-  for (const tx::Item& it : items) {
-    if (it.kind == tx::ItemKind::User) owner.emplace_back(it.x, stampOf(it, dayStartMin));
-    if (it.kind == tx::ItemKind::Assistant || it.kind == tx::ItemKind::DeviceNote || it.kind == tx::ItemKind::RoundMeta)
-      other.push_back(it.x);
-    if (it.kind == tx::ItemKind::Result && detail::textMode(v)) ran.insert(detail::ranLine(it.n, ""));
-  }
-  std::sort(owner.begin(), owner.end(), [](const auto& a, const auto& b) { return a.first.size() > b.first.size(); });
-  std::sort(other.begin(), other.end(), [](const std::string& a, const std::string& b) { return a.size() > b.size(); });
+  const detail::StoredTexts stored = detail::storedTexts(v, items, dayStartMin);
   for (const sp::Message& m : v.messages)
     for (const sp::Block& b : m.blocks) {
       if (b.kind != sp::BlockKind::Text) continue;
       // A call and its result as one line: the result's text, which this checker reads in no result block either.
-      if (std::any_of(ran.begin(), ran.end(), [&b](const std::string& p) { return b.text.rfind(p, 0) == 0; })) continue;
-      std::string rest = b.text;
-      for (const auto& t : owner)
-        if (detail::takeOut(rest, t.first)) detail::takeOut(rest, t.second);
-      for (const std::string& t : other) detail::takeOut(rest, t);
-      detail::takeOutPattern(rest, "[photo p", "]");
-      detail::takeOutOmission(rest);
+      if (std::any_of(stored.ran.begin(), stored.ran.end(), [&b](const std::string& p) { return b.text.rfind(p, 0) == 0; }))
+        continue;
+      const std::string rest = detail::unstoredRest(b.text, stored);
       if (detail::visibleBytes(rest) > 0) {
         why = "a " + m.role + " text block carries " + std::to_string(detail::visibleBytes(rest)) +
               " B that no stored item holds: '" + rest.substr(0, 80) + "'";

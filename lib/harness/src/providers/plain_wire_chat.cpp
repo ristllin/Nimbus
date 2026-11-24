@@ -455,27 +455,37 @@ Status groupPieces(const plan::Plan& p, bool text, bool mergeUsers, std::vector<
   return Status::success();
 }
 
-Status renderBody(const RenderInput& in, HttpRequest& out) {
-  // Text mode offers no tools, so the planner renders stored calls and results as text (lane E2-R4b).
-  const bool text = textMode(in);
+// Text mode offers no tools, so the planner renders stored calls and results as text (lane E2-R4b).
+Status planFor(const RenderInput& in, bool text, plan::Plan& p) {
   static const std::vector<ToolSpec> kNoTools;
-  plan::Plan p;
-  Status st;
-  {   // the planner reads the tools pointer only; it is put back before anything else reads the input
-    RenderInput& planned = const_cast<RenderInput&>(in);
-    const std::vector<ToolSpec>* tools = planned.tools;
-    if (text) planned.tools = &kNoTools;
-    st = plan::plan(planned, oneObject, p);
-    planned.tools = tools;
-  }
-  if (!st.ok()) return st;
+  // the planner reads the tools pointer only; it is put back before anything else reads the input
+  RenderInput& planned = const_cast<RenderInput&>(in);
+  const std::vector<ToolSpec>* tools = planned.tools;
+  if (text) planned.tools = &kNoTools;
+  const Status st = plan::plan(planned, oneObject, p);
+  planned.tools = tools;
+  return st;
+}
+
+// The plan's messages, grouped; a tool message with no tools offered is refused.
+Status messagesFor(const RenderInput& in, const plan::Plan& p, bool text, std::vector<Msg>& msgs) {
   if (!p.anyBlock) return Status::fail(Err::InvalidArgument, "plain::chat.render.noMessages");
-  std::vector<Msg> msgs;
   const bool merge = !in.route || !in.route->caps.provider || (in.route->caps.row.orderRules & caps::order::kMergeUsers);
-  if (!(st = groupPieces(p, text, merge, msgs)).ok()) return st;
+  Status st = groupPieces(p, text, merge, msgs);
+  if (!st.ok()) return st;
   if (!text && in.tools->empty())
     for (const Msg& m : msgs)
       if (m.role == Role::Tool) return Status::fail(Err::InvalidArgument, "plain::chat.render.noTools");
+  return st;
+}
+
+Status renderBody(const RenderInput& in, HttpRequest& out) {
+  const bool text = textMode(in);
+  plan::Plan p;
+  Status st = planFor(in, text, p);
+  if (!st.ok()) return st;
+  std::vector<Msg> msgs;
+  if (!(st = messagesFor(in, p, text, msgs)).ok()) return st;
 
   out.body.reserve(reserveFor(in, p));
   BodyWriter w(out.body, &out.splices);
