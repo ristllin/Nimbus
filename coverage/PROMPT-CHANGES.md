@@ -1612,3 +1612,12 @@ PC-0175, PC-0176: not used.
 - lane: E2-REP6
 - prd: review 2026-11-24 storage-history F7; rulings 115, 116 (every failure has a true line); AGENTS.md rule 9
 - why: lib/harness/src/jobs.cpp. restoreUnreported parked the lost-result line ("The result of [<job>] was lost when the device restarted, so it will not arrive.") for a job that had failed, so the model told the person a result was lost when the job had failed. A failed entry now gets the existing failure line, "Job [<job>] failed: unknown error" (its reason is not kept across a restart). No new sentence: the failure line folds into one helper (failedLine) and its two "unknown error" literals into one constant, so the class shrinks by 13 B (CUM-1006).
+### PC-0280: engine 2's tool descriptions trimmed under their ceiling, wording only (engine 2 catalog)
+- catalog: e2
+- class: tool_descriptions
+- kind: spec
+- bytes: 10255 -> 10112
+- sha8: 3e8cdb20 -> de644435
+- lane: RB-R4 (lane E2-REP7; the router leftovers file their entries under RB-R4 as PC-0275 did)
+- prd: PRD section 4 (the always-on tools and the groups behind more, each description at most 240 B under the class ceiling); AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h. PC-0275 left the class at 10,255 B against its 10,240 B ceiling, so test_plain_ceilings failed on the tip. Wording only, meaning kept, longest first: read_file ("if more remains"), edit_file ("No match ... is an error listing the match lines", "the count replaced"), append_file (drops "It only appends.", which "Add text to the end" already says), search ("this chat", "text files"), view (articles dropped), schedule ("its text"), skill_list, skill_save ("a how-to in"), device.status, device.log, ota.status, device.selftest ("skipped while silent"), device.control ("run after this reply"), tenant.list, tenant.set_quota, models.list ("A provider's models", "refresh fetches after this turn") and the three docs tools ("the device's documentation"). 143 B removed, 128 B of room left under the unchanged ceiling for the next addition. No text added; kind spec because each shortened string is a new text to the gate.

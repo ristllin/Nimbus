@@ -83,7 +83,7 @@ struct ToolDecl {
 inline constexpr ToolDecl kTools[] = {
     {"read_file",
      "Read a file by path (project/name) with exact paging: returns size, lines, sha8 and the bytes shown; "
-     "next_offset when more remains. CSV: column with from/to keeps matching rows.",
+     "next_offset if more remains. CSV: column with from/to keeps matching rows.",
      R"({"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"},"column":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"}},"required":["path"]})",
      nullptr},
     {"write_file",
@@ -92,13 +92,12 @@ inline constexpr ToolDecl kTools[] = {
      R"({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string","maxLength":)",
      R"(},"if_exists":{"type":"string","enum":["fail","replace"]}},"required":["path","content"]})"},
     {"append_file",
-     "Add text to the end of a file (project/name), creating it if missing. It only appends. Returns bytes added "
-     "and the new size.",
+     "Add text to the end of a file (project/name), creating it if missing. Returns bytes added and the new size.",
      R"({"type":"object","properties":{"path":{"type":"string"},"text":{"type":"string"}},"required":["path","text"]})",
      nullptr},
     {"edit_file",
-     "Exact find and replace in a file. Zero matches, or several without all=true or line, is an error that lists "
-     "the match lines. line picks one. Returns the number replaced and the new size.",
+     "Exact find and replace in a file. No match, or several without all=true or line, is an error listing the "
+     "match lines. line picks one. Returns the count replaced and the new size.",
      R"({"type":"object","properties":{"path":{"type":"string"},"old":{"type":"string"},"new":{"type":"string"},"all":{"type":"boolean"},"line":{"type":"integer"}},"required":["path","old","new"]})",
      nullptr},
     {"list_files",
@@ -112,16 +111,16 @@ inline constexpr ToolDecl kTools[] = {
      nullptr},
     // Lane E2-SRCH binds it (plain/history.h): this conversation's history and the person's unpinned notes.
     {"search",
-     "Search by words: this conversation (scope history, default; all must appear), unpinned notes (notes), "
-     "stored text files (files), the earlier engine's memories (memories, by meaning). from, to (YYYY-MM-DD) "
+     "Search by words: this chat (scope history, default; all must appear), unpinned notes (notes), "
+     "text files (files), the earlier engine's memories (memories, by meaning). from, to (YYYY-MM-DD) "
      "bound history; before continues.",
      R"({"type":"object","properties":{"query":{"type":"string"},"scope":{"type":"string","enum":["history","notes","files","memories"]},"from":{"type":"string"},"to":{"type":"string"},"before":{"type":"string"}},"required":["query"]})",
      nullptr},
     {"web_search", "Search the web. Results are outside content.",
      R"({"type":"object","properties":{"query":{"type":"string"}},"required":["query"]})", nullptr},
     {"view",
-     "Open one stored item in full by id: r... (a message or a result), m... (an earlier engine's message), p... "
-     "(a photo, shown again). offset and limit page a long text.",
+     "Open one stored item in full by id: r... (message or result), m... (earlier engine's message), p... "
+     "(photo, shown again). offset and limit page a long text.",
      R"({"type":"object","properties":{"id":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"}},"required":["id"]})",
      nullptr},
     // Lane E2-P-OUT1 binds it (src/agent/tools_plain_send.*; PC-0237): engine 1's files.send and reply.telegram.
@@ -131,7 +130,7 @@ inline constexpr ToolDecl kTools[] = {
      R"({"type":"object","properties":{"kind":{"type":"string","enum":["text","file","photo","voice"]},"path":{"type":"string"},"ref":{"type":"string"},"text":{"type":"string"},"caption":{"type":"string"},"chat":{"type":"string"}},"required":["kind"]})",
      nullptr},
     {"schedule",
-     "Create, update, delete or list reminders, routines, wakeups. A reminder sends its fixed text at 'when' "
+     "Create, update, delete or list reminders, routines, wakeups. A reminder sends its text at 'when' "
      "(YYYY-MM-DD HH:MM local); a wakeup runs text once at 'when' as your own run, without this chat, able to "
      "read files. Returns the entry.",
      R"({"type":"object","properties":{"op":{"type":"string","enum":["create","update","delete","list"]},"kind":{"type":"string","enum":["reminder","routine","wakeup"]},"id":{"type":"string"},"when":{"type":"string"},"text":{"type":"string"},"every":{"type":"string","description":"routine cadence, e.g. daily 07:00"}},"required":["op"]})",
@@ -166,10 +165,10 @@ inline constexpr ToolDecl kBehindMore[] = {
     {"speak", "Say text aloud on the device speaker.",
      R"({"type":"object","properties":{"text":{"type":"string"}},"required":["text"]})", nullptr},
     // The skills group (lane E2-P-SKILL, plain/chat_skill_tools.h; PC-0247).
-    {"skill_list", "List the saved skills with their state (approved, waiting for the owner, an edit waiting).",
+    {"skill_list", "List saved skills with their state (approved, waiting for the owner, an edit waiting).",
      R"({"type":"object","properties":{}})", nullptr},
     {"skill_save",
-     "Save or edit a skill, a how-to kept as skills/<id>.md. id: a-z 0-9 - _, at most 23. md: front matter (desc: when "
+     "Save or edit a skill, a how-to in skills/<id>.md. id: a-z 0-9 - _, at most 23. md: front matter (desc: when "
      "to read it, required; title; inject: context or spawn) then the text. The owner approves it first.",
      R"({"type":"object","properties":{"id":{"type":"string"},"md":{"type":"string"}},"required":["id","md"]})", nullptr},
     {"skill_delete", "Delete a skill you wrote, by id.",
@@ -178,47 +177,47 @@ inline constexpr ToolDecl kBehindMore[] = {
     // under their registry names (spelled with '_' for the model), these declarations for engine 2.
     {"device.status",
      "The device's live state as JSON: versions, clock, battery, Wi-Fi, storage, memory counts, usage and "
-     "spend against the ceilings, settings (cfg), the last failed turn.",
+     "spend against ceilings, settings (cfg), the last failed turn.",
      R"({"type":"object","properties":{}})", nullptr},
     {"device.log",
-     "The device's own log, newest last, at most 4 KB: match keeps lines holding any of up to 3 words split "
+     "The device's log, newest last, at most 4 KB: match keeps lines with any of up to 3 words split "
      "by |, lines caps them (1-60), scan_kb bounds the search (4-64).",
      R"({"type":"object","properties":{"match":{"type":"string"},"lines":{"type":"integer"},"scan_kb":{"type":"integer"}}})",
      nullptr},
     {"ota.status",
-     "Firmware update state: the running version, the latest seen with its notes, the last install's result. "
+     "Firmware update state: the running version, the latest seen with notes, the last install's result. "
      "Only the owner installs.",
      R"({"type":"object","properties":{}})", nullptr},
     {"device.selftest",
      "Hardware self test, PASS, FAIL or SKIP per item; audible true adds the speaker and mic loopback (skipped "
-     "while the device is silent).",
+     "while silent).",
      R"({"type":"object","properties":{"audible":{"type":"boolean"}}})", nullptr},
     {"system.health", "Live health of the ring, display, mic, speaker, card, memory, Wi-Fi and Telegram.",
      R"({"type":"object","properties":{}})", nullptr},
     {"device.control",
      "Change the device now, one action: config (settings, e.g. sfxVol 0-100), led, lights, tts. reboot and "
-     "orch_model (switch the main model) run after this reply is sent.",
+     "orch_model (switch the main model) run after this reply.",
      R"({"type":"object","properties":{"action":{"type":"object","description":"type config: sfxVol, ledBrightness, sfxTheme, posture dark|calm|full, theme; led: mode solid|spinner|pulse|flash|rainbow|off, r, g, b, brightness; lights: value full|off; tts: text; reboot; orch_model: provider, model"}},"required":["action"]})",
      nullptr},
-    {"tenant.list", "The people who may use the device: chat id, role and storage use against their quota.",
+    {"tenant.list", "The people who may use the device: chat id, role and storage use against quota.",
      R"({"type":"object","properties":{}})", nullptr},
     {"tenant.set_role", "Set a person's role by chat id: admin, user, guest, or unknown (no access). The last admin stays.",
      R"({"type":"object","properties":{"chat":{"type":"string"},"role":{"type":"string","enum":["admin","user","guest","unknown"]}},"required":["chat","role"]})",
      nullptr},
     {"tenant.set_quota",
-     "Set one person's storage quota: vectors, bytes, ttl_hours, pins; 0 restores the role's default.",
+     "Set a person's storage quota: vectors, bytes, ttl_hours, pins; 0 restores the role's default.",
      R"({"type":"object","properties":{"chat":{"type":"string"},"vectors":{"type":"integer"},"bytes":{"type":"integer"},"ttl_hours":{"type":"integer"},"pins":{"type":"integer"}},"required":["chat"]})",
      nullptr},
     {"models.list",
-     "The models a provider offers, from the device's cached lists: id, name, context, lifecycle. query "
-     "matches part of an id or name; refresh queues a fetch for after this turn.",
+     "A provider's models, from the device's cached lists: id, name, context, lifecycle. query matches part "
+     "of an id or name; refresh fetches after this turn.",
      R"({"type":"object","properties":{"provider":{"type":"string"},"query":{"type":"string"},"refresh":{"type":"boolean"}}})",
      nullptr},
-    {"docs.list", "The device's own documentation: the files, or with file one file's sections by id.",
+    {"docs.list", "The device's documentation: the files, or with file one file's sections by id.",
      R"({"type":"object","properties":{"file":{"type":"string"}}})", nullptr},
-    {"docs.search", "Search the device's own documentation by words: section ids with a snippet.",
+    {"docs.search", "Search the device's documentation by words: section ids with a snippet.",
      R"({"type":"object","properties":{"query":{"type":"string"}},"required":["query"]})", nullptr},
-    {"docs.read", "One section of the device's own documentation by id, in full.",
+    {"docs.read", "One section of the device's documentation by id, in full.",
      R"({"type":"object","properties":{"id":{"type":"string"}},"required":["id"]})", nullptr},
 };
 }  // namespace tool_descriptions
