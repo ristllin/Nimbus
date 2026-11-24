@@ -1306,6 +1306,7 @@ void loadOutboxes() {
 
 // ---- sub-agents (lane E2-P-SUB) ----------------------------------------------------------
 constexpr const char* kStopListPath = "/data/jobs_stopping.txt";   // the stop list, as on engine 1
+std::string s_reportsFor;   // the chat whose parked reports the last pump named (tg_poll only)
 
 // One report turn in `chat` (plain::deliverReports, from the job pump between turns). Busy, with
 // nothing stored, when no turn can run for that chat now: the report waits in the JobEngine.
@@ -1410,12 +1411,10 @@ JobEngine::Deps buildJobDeps() {
     return t > 1600000000 ? (uint32_t)t : 0u;
   };
   d.turnInFlight = [] { return s_inTurn.load(std::memory_order_relaxed); };
-  d.synthesize = [](const std::string& chatId) {
-    if (s_inTurn.load(std::memory_order_relaxed)) return;   // never a chat boot inside a turn
-    int ran = 0;
-    const plain::Status st = plain::deliverReports(*g_jobs, chatId, reportTurnIn, ran);
-    if (ran || !st.ok()) alogf("e2: agent reports for %s: %d ran, %s", chatId.c_str(), ran, nimbus::orch::tx::errSlug(st.err));
-  };
+  // The pump only names the chat whose reports are parked; pumpJobs runs them after the pump returns
+  // (a direct call: the report turn's frames never sit under the pump's, nor under a std::function a
+  // turn also calls, which the tg_poll stack gate would read as a turn inside a turn).
+  d.synthesize = [](const std::string& chatId) { s_reportsFor = chatId; };
   return d;
 }
 
@@ -1430,9 +1429,23 @@ void beginAgents() {
   plain::AgentsDeps a;
   a.jobs = g_jobs;
   a.chat = [] { return turnInFlight() ? std::string(s_turnChat.c_str()) : std::string(); };
-  a.dispatchNow = [] { (void)g_jobs->pump(); };   // one request on this task, between the turn's rounds
+  a.dispatchNow = [] { (void)g_jobs->dispatchQueued(); };   // one request on this task, between the turn's rounds
   const plain::Status st = plain::registerAgentTools(memory::registry(), a);
   alogf("e2: agents %s (%d open job%s)", nimbus::orch::tx::errSlug(st.err), g_journal.count(), g_journal.count() == 1 ? "" : "s");
+}
+
+// Lane E2-P-SUB: the jobs (dispatch, poll, the stop list) and a finished one's report turn; the active
+// count keeps the Telegram loop pumping. noinline: its frame stays off pollJobs' (the tg_poll stack gate).
+__attribute__((noinline)) int pumpJobs() {
+  if (!g_jobs) return 0;
+  const int n = g_jobs->pump() + g_jobs->stoppingCount();
+  if (s_reportsFor.empty() || s_inTurn.load(std::memory_order_relaxed)) return n;   // never inside a turn
+  const std::string chatId = std::move(s_reportsFor);
+  s_reportsFor.clear();
+  int ran = 0;
+  const plain::Status st = plain::deliverReports(*g_jobs, chatId, reportTurnIn, ran);
+  if (ran || !st.ok()) alogf("e2: agent reports for %s: %d ran, %s", chatId.c_str(), ran, nimbus::orch::tx::errSlug(st.err));
+  return n;
 }
 
 }  // namespace
@@ -1506,10 +1519,9 @@ int pollJobs() {
   loadOutboxes();
   loops::checkDue((uint64_t)time(nullptr), s_inTurn.load(std::memory_order_relaxed), ESP.getFreeHeap());
   drainOutboxes();
-  // Lane E2-P-SUB: the jobs (dispatch, poll, the stop list) and a finished one's report turn.
-  const int n = g_jobs ? g_jobs->pump() : 0;
+  const int n = pumpJobs();
   refreshSessionSnapshot();
-  return n + (g_jobs ? g_jobs->stoppingCount() : 0);   // active jobs: the Telegram loop keeps the pump coming
+  return n;
 }
 
 void setOtaInstallHook(String (*fn)()) { s_otaInstallHook = fn; }

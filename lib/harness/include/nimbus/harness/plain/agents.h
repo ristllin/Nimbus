@@ -41,8 +41,8 @@ struct AgentsDeps {
   JobEngine* jobs = nullptr;
   std::string backend = "anthropic";            // the provider every job runs on
   std::function<std::string()> chat;            // the running turn's chat ("" outside a turn)
-  // One pump of the job engine, so a queued job is dispatched inside the turn (one request on
-  // the same task, never concurrent). Null: jobs start at the next pump after the reply.
+  // JobEngine::dispatchQueued, so a queued job is dispatched inside the turn (one request on the
+  // same task, never concurrent; no poll and no report turn inside it). Null: the next pump.
   std::function<void()> dispatchNow;
 };
 

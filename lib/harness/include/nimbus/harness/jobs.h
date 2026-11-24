@@ -324,6 +324,9 @@ class JobEngine {
   // clock, one dispatch, loop-closure synthesis, round-robin poll. Returns the
   // active job count (journal count).
   int pump();
+  // The pump's dispatch step alone: at most one queued spawn, under the same gates. True when one
+  // was taken from the queue (started or refused). No poll, no synthesis (engine 2, inside a turn).
+  bool dispatchQueued();
 
   bool cancel(const char* tagOrJobId);
   // Lane QW4 (CUM-774): true while a job's stop is asked but not yet confirmed by its

@@ -1703,6 +1703,33 @@ std::string JobEngine::finishedBeforeRestartText() const {
   return out;
 }
 
+// At most ONE queued spawn, while in-flight sessions stay under the inflight cap and heap is
+// above the dispatch floor. Engine 2's agent_start calls it inside the turn (no poll, no synthesis).
+bool JobEngine::dispatchQueued() {
+  if (!d_.fabric || !d_.journal || pending_.empty() || nowMs() < nextDispatchAt_ ||
+      d_.journal->count() >= t_.maxActiveInflight || freeHeap() < t_.dispatchMinHeap)
+    return false;
+  PendingSpawn p = pending_.front();
+  pending_.erase(pending_.begin());
+  // A deep wave grew the queue's internal-SRAM backing past the baseline;
+  // release it once the inbox drains so the larger allocation is transient, not
+  // a permanent steady-state cost (nimbus-internal-heap-map).
+  if (pending_.empty() && pending_.capacity() > (size_t)orch::kAgentMaxJobs) {
+    std::vector<PendingSpawn>().swap(pending_);
+    pending_.reserve(orch::kAgentMaxJobs);
+  }
+  // Bridge the dispatch window for activeCount(): the entry left pending_ and
+  // the journal record lands only after dispatch returns (a synchronous
+  // Mistral sub blocks HERE for its whole run) - without this flag the head
+  // arc read zero children mid-run and the reconciler cleared it.
+  dispatching_ = true;
+  dispatchSpawn(p);
+  dispatching_ = false;
+  nextDispatchAt_ = nowMs() + 2500;
+  nextPollAt_     = nowMs() + 1500;
+  return true;
+}
+
 // ---- the pump (the JOB parts of the device's pollJobs) ----------------------
 
 int JobEngine::pump() {
@@ -1741,31 +1768,8 @@ int JobEngine::pump() {
     }
   }
 
-  // Dispatch at most ONE queued spawn per cycle, while in-flight sessions stay
-  // under the inflight cap and heap is above the dispatch floor.
-  if (!pending_.empty() && nowMs() >= nextDispatchAt_ &&
-      d_.journal->count() < t_.maxActiveInflight &&
-      freeHeap() >= t_.dispatchMinHeap) {
-    PendingSpawn p = pending_.front();
-    pending_.erase(pending_.begin());
-    // A deep wave grew the queue's internal-SRAM backing past the baseline;
-    // release it once the inbox drains so the larger allocation is transient, not
-    // a permanent steady-state cost (nimbus-internal-heap-map).
-    if (pending_.empty() && pending_.capacity() > (size_t)orch::kAgentMaxJobs) {
-      std::vector<PendingSpawn>().swap(pending_);
-      pending_.reserve(orch::kAgentMaxJobs);
-    }
-    // Bridge the dispatch window for activeCount(): the entry left pending_ and
-    // the journal record lands only after dispatch returns (a synchronous
-    // Mistral sub blocks HERE for its whole run) - without this flag the head
-    // arc read zero children mid-run and the reconciler cleared it.
-    dispatching_ = true;
-    dispatchSpawn(p);
-    dispatching_ = false;
-    nextDispatchAt_ = nowMs() + 2500;
-    nextPollAt_     = nowMs() + 1500;
-    return d_.journal->count();
-  }
+  // Dispatch at most ONE queued spawn per cycle (dispatchQueued).
+  if (dispatchQueued()) return d_.journal->count();
 
   // Loop-closure: once every sub-agent has finished and nothing is queued, feed
   // the parked results back for ONE synthesis turn.

@@ -180,7 +180,7 @@ struct Device {
     plain::AgentsDeps a;
     a.jobs = jobs.get();
     a.chat = [this] { return inTurn ? std::string(kChat) : std::string(); };
-    a.dispatchNow = [this] { (void)jobs->pump(); };
+    a.dispatchNow = [this] { (void)jobs->dispatchQueued(); };
     TEST_ASSERT_TRUE(plain::registerAgentTools(reg, a).ok());
   }
 
