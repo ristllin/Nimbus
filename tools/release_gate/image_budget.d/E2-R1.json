@@ -1,0 +1,6 @@
+{
+  "lane": "E2-R1",
+  "allowance_bytes": 0,
+  "envs": {"esp32s3-cyd-e2": 256, "test-cyd-e2": 256},
+  "why": "ROUTER-DESIGN.md section 14 budgets 6 KB for lane R1 on engine 2 and 0 B on engine 1. Nothing calls the table yet, so the linker drops its code and data; only the unused object's .eh_frame (64 B, firmware.map) stays. Same tree, base rb-main 5600ae44a against the lane tip, pio Flash used: esp32s3-cyd-e2 5,703,326 -> 5,703,390 B (+64), test-cyd-e2 5,873,034 -> 5,873,098 B (+64), esp32s3-cyd 6,339,550 -> 6,339,550 B (0; orch_model_caps.cpp is engine-2 only), rounded up to 256 B. The first consumer (lane E2-R4a) carries the table's own bytes in its budget."
+}
