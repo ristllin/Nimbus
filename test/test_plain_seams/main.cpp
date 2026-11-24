@@ -79,7 +79,6 @@ std::vector<StubRow> stubs() {
   static tx::Item item;
   static bool flag;
   return {
-      {"plain::wireFor responses", [] { const plain::WireCodec* w; return plain::wireFor(plain::Dialect::OpenAIResponses, w); }},
       {"plain::photoAllowed", [] { return plain::photoAllowed(gTurn, {}, flag); }},
       {"plain::installMedia", [] { return plain::installMedia(gHooks, {}); }},
       {"plain::documentRoute", [] { plain::DocRoute r; return plain::documentRoute(gTurn, "inbox/1-a.pdf", "application/pdf", r); }},
@@ -103,9 +102,11 @@ static void test_every_stub_answers_not_implemented() {
   tx::StoreState state = tx::StoreState::Stored;
   (void)gLog.append(tx::Item{}, state);
   TEST_ASSERT_TRUE(state == tx::StoreState::NotStored);
-  const plain::WireCodec* w = reinterpret_cast<const plain::WireCodec*>(&state);
-  (void)plain::wireFor(plain::Dialect::OpenAIResponses, w);   // a wire not yet built (Chat and Flat: lane E2-R6)
-  TEST_ASSERT_NULL(w);
+  // Every dialect has its codec since E2-R6 (Chat, Flat) and E2-R7 (Responses): wireFor is no stub.
+  for (plain::Dialect d : plain::kAllDialects) {
+    const plain::WireCodec* w = nullptr;
+    TEST_ASSERT_TRUE_MESSAGE(plain::wireFor(d, w).ok() && w != nullptr, plain::dialectSlug(d));
+  }
 }
 
 // The engine wired with a scripted model behind the transport but never booted (and with
