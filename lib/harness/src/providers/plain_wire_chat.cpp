@@ -179,12 +179,14 @@ struct Render {
   BodyWriter& w;
   caps::Replay replay = caps::Replay::None;
   std::string emptyText;   // the route's placeholder for an empty text ("" = none)
+  tx::Item it;             // the item of the piece being written (one, read again where needed)
 };
 
-// The item of a piece (Line and Photo pieces name none of their own).
-bool itemOf(const Render& r, const plan::Piece& pc, tx::Item& it) {
+// The item of a piece into r.it (Line and Photo pieces name none of their own); an arena read gives
+// the same item every time.
+bool itemOf(Render& r, const plan::Piece& pc) {
   if (pc.kind == plan::PieceKind::Line || pc.kind == plan::PieceKind::Photo) return true;
-  return r.in.items->get(pc.item, it).ok();
+  return r.in.items->get(pc.item, r.it).ok();
 }
 
 const std::string& textOf(const Render& r, const plan::Piece& pc, const tx::Item& it) {
@@ -223,11 +225,11 @@ void textPart(Render& r, const plan::Piece& pc, const tx::Item& it) {
 // A user message: a single text as a string, else its parts in order.
 Status userMessage(Render& r, const Msg& m) {
   r.w.beginObject().key("role").str("user").key("content");
-  tx::Item it;
+  const tx::Item& it = r.it;
   const bool single = m.viewed.empty() && m.pieces.size() == 1 && r.p.pieces[m.pieces[0]].kind != plan::PieceKind::Photo;
   if (single) {
     const plan::Piece& pc = r.p.pieces[m.pieces[0]];
-    if (!itemOf(r, pc, it)) return Status::fail(Err::NotFound, "plain::chat.render.item");
+    if (!itemOf(r, pc)) return Status::fail(Err::NotFound, "plain::chat.render.item");
     textValue(r, pc, it);
     r.w.endObject();
     return Status::success();
@@ -240,7 +242,7 @@ Status userMessage(Render& r, const Msg& m) {
       imagePart(r, r.p.photos[pc.photo]);
       continue;
     }
-    if (!itemOf(r, pc, it)) return Status::fail(Err::NotFound, "plain::chat.render.item");
+    if (!itemOf(r, pc)) return Status::fail(Err::NotFound, "plain::chat.render.item");
     textPart(r, pc, it);
   }
   for (uint16_t ph : m.viewed) {
@@ -251,32 +253,31 @@ Status userMessage(Render& r, const Msg& m) {
   return Status::success();
 }
 
-// An assistant message read into its parts: texts, the replayable reasoning, calls.
+// An assistant message read into its parts: texts and calls (piece indices; each item is read again
+// where it is written), the replayable reasoning.
 struct AssistantParts {
-  std::vector<std::pair<uint32_t, tx::Item>> texts, calls;
+  std::vector<uint32_t> texts, calls;
   std::vector<std::string> chunks;   // Mistral thinking chunks, as stored
   std::string reasoning;             // Z.ai reasoning_content, the stored texts joined
   bool anyReasoning = false;
 };
 
-void noteMeta(const Render& r, const tx::Item& it, AssistantParts& a) {
+void noteMeta(const Render& r, AssistantParts& a) {
   std::string text;
-  const MetaKind k = metaKind(it.x, &text);
-  if (k == MetaKind::Chunk && r.replay == caps::Replay::ThinkChunks) a.chunks.push_back(it.x);
+  const MetaKind k = metaKind(r.it.x, &text);
+  if (k == MetaKind::Chunk && r.replay == caps::Replay::ThinkChunks) a.chunks.push_back(r.it.x);
   if (k == MetaKind::Reasoning && r.replay == caps::Replay::ReasoningContent) {
     a.reasoning += text;
     a.anyReasoning = true;
   }
 }
 
-Status readAssistant(const Render& r, const Msg& m, AssistantParts& a) {
+Status readAssistant(Render& r, const Msg& m, AssistantParts& a) {
   for (uint32_t at : m.pieces) {
     const plan::Piece& pc = r.p.pieces[at];
-    tx::Item it;
-    if (!itemOf(r, pc, it)) return Status::fail(Err::NotFound, "plain::chat.render.item");
-    if (pc.kind == plan::PieceKind::Meta) noteMeta(r, it, a);
-    else if (pc.kind == plan::PieceKind::Call) a.calls.emplace_back(at, std::move(it));
-    else a.texts.emplace_back(at, std::move(it));
+    if (!itemOf(r, pc)) return Status::fail(Err::NotFound, "plain::chat.render.item");
+    if (pc.kind == plan::PieceKind::Meta) noteMeta(r, a);
+    else (pc.kind == plan::PieceKind::Call ? a.calls : a.texts).push_back(at);
   }
   return Status::success();
 }
@@ -284,24 +285,27 @@ Status readAssistant(const Render& r, const Msg& m, AssistantParts& a) {
 void assistantContent(Render& r, const AssistantParts& a) {
   if (a.texts.empty()) return;   // a call-only message carries no content
   r.w.key("content");
-  if (a.chunks.empty() && a.texts.size() == 1) {
-    textValue(r, r.p.pieces[a.texts[0].first], a.texts[0].second);
-    return;
-  }
-  r.w.beginArray();
+  const bool one = a.chunks.empty() && a.texts.size() == 1;
+  if (!one) r.w.beginArray();
   for (const std::string& c : a.chunks) r.w.raw(c);
-  for (const auto& t : a.texts) textPart(r, r.p.pieces[t.first], t.second);
-  r.w.endArray();
+  for (uint32_t at : a.texts) {
+    const plan::Piece& pc = r.p.pieces[at];
+    (void)itemOf(r, pc);   // read once already by readAssistant
+    if (one) textValue(r, pc, r.it);
+    else textPart(r, pc, r.it);
+  }
+  if (!one) r.w.endArray();
 }
 
 void toolCalls(Render& r, const AssistantParts& a) {
   if (a.calls.empty()) return;
   r.w.key("tool_calls").beginArray();
-  for (const auto& c : a.calls) {
-    const plan::Piece& pc = r.p.pieces[c.first];
+  for (uint32_t at : a.calls) {
+    const plan::Piece& pc = r.p.pieces[at];
+    (void)itemOf(r, pc);   // read once already by readAssistant
     r.w.beginObject().key("id").str(r.p.ids[pc.id]).key("type").str("function").key("function").beginObject();
-    r.w.key("name").str(wireName(c.second.n)).key("arguments");
-    if (pc.src != plan::Src::None) r.w.str(textOf(r, pc, c.second), Over::Clip);
+    r.w.key("name").str(wireName(r.it.n)).key("arguments");
+    if (pc.src != plan::Src::None) r.w.str(textOf(r, pc, r.it), Over::Clip);
     else r.w.str("{}");
     r.w.endObject().endObject();
   }
@@ -323,10 +327,9 @@ Status assistantMessage(Render& r, const Msg& m) {
 
 Status toolMessage(Render& r, const Msg& m) {
   const plan::Piece& pc = r.p.pieces[m.pieces[0]];
-  tx::Item it;
-  if (!itemOf(r, pc, it)) return Status::fail(Err::NotFound, "plain::chat.render.item");
+  if (!itemOf(r, pc)) return Status::fail(Err::NotFound, "plain::chat.render.item");
   r.w.beginObject().key("role").str("tool").key("tool_call_id").str(r.p.ids[pc.id]).key("content");
-  if (pc.src != plan::Src::None) r.w.str(textOf(r, pc, it), Over::Clip);
+  if (pc.src != plan::Src::None) r.w.str(textOf(r, pc, r.it), Over::Clip);
   else r.w.str(r.emptyText);   // a result with no content: the route's placeholder
   r.w.endObject();
   return Status::success();
