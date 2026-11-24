@@ -518,6 +518,8 @@ class ChatBinding {
     sent_ = refused_ = 0;
     shown_.clear();
     withheld_ = false;
+    probeTurn_ = msg.probe && d_.parkHead;   // E2-REP1: the re-check's own line waits for its answer
+    heldStatus_.clear();
     if (reporter_) reporter_->open(turnCtx(), now);
     TurnInput in;
     in.ctx = turnCtx();
@@ -839,9 +841,25 @@ class ChatBinding {
     return r;
   }
   // Lane E2-FIX14: after a turn, the shared park learns what the head answered (parkHead only).
+  // E2-REP1: a re-check the head refused again gets engine 1's words by the park's latches (the short
+  // answer once, then nothing), never the exchange's line a second time; any other re-check's line goes
+  // out as it was.
   void noteHead(const ChatMessage& msg, const TurnOutcome& out) {
-    if (d_.parkHead)
-      noteHeadOutcome(cfg_.provider, d_.key ? d_.key() : std::string(), out, msg.probe, /*told=*/true, d_.platform->nowMs());
+    if (!d_.parkHead) return;
+    namespace orch = nimbus::orch;
+    const std::string key = d_.key ? d_.key() : std::string();
+    const uint32_t now = d_.platform->nowMs();
+    const bool refusedAgain = probeTurn_ && out.parkHost && !out.switches;
+    noteHeadOutcome(cfg_.provider, key, out, msg.probe, /*told=*/!refusedAgain, now);
+    if (heldStatus_.empty()) return;
+    std::string line;
+    line.swap(heldStatus_);
+    if (refusedAgain) {
+      const orch::ParkVerdict v =
+          orch::providerPark().peek(cfg_.provider.c_str(), orch::PaidSeam::Chat, orch::parkKeyFingerprint(key), now);
+      if (!v.open) line = parkedLine(cfg_.provider, v, msg.trigger != Trigger::AgentResult);
+    }
+    if (!line.empty() && d_.sendPart) (void)d_.sendPart(cfg_.chatId, line);
   }
   // Lane E2-FIX14: the resume's one request passes engine 1's money gates first. Over the limit, parked or
   // paused, nothing is sent: the resume fails as a refused run does, the turn stays open for a later boot and
@@ -1076,7 +1094,7 @@ class ChatBinding {
     e.holdUnloaded = [this] { return importPending_; };
     if (d_.fallbacks)
       e.failover = [this](const FailoverAsk& ask, std::vector<FailoverTarget>& out) { failoverTargets(ask, out); };
-    if (d_.replyFilter || d_.replyScreen)
+    if (d_.replyFilter || d_.replyScreen || d_.parkHead)
       e.deliver = [this](const DeliverInput& in, DeliverOutcome& out) { return deliverReply(in, out); };
     return e;
   }
@@ -1111,8 +1129,13 @@ class ChatBinding {
   // a later part, keeps the first verdict), then the portable deliver function over the channel. A
   // withheld reply sends nothing of itself; the status line, the harness's own words, still goes.
   Status deliverReply(const DeliverInput& in, DeliverOutcome& out) {
-    if (!d_.replyFilter && !d_.replyScreen) return deliverTurn(DeliverDeps{&channel_, nullptr, nullptr}, in, out);
     DeliverInput go = in;
+    if (probeTurn_ && in.statusText && !out.statusSent) {   // E2-REP1: sent after the turn, by noteHead
+      heldStatus_ = *in.statusText;
+      go.statusText = nullptr;
+      out.statusSent = true;
+    }
+    if (!d_.replyFilter && !d_.replyScreen) return deliverTurn(DeliverDeps{&channel_, nullptr, nullptr}, go, out);
     if (in.text && !in.text->empty() && !out.replyDone && in.turn) {
       if (in.fromPart == 0) {
         shown_ = d_.replyFilter ? d_.replyFilter(in.turn->chatId, *in.text) : *in.text;
@@ -1136,6 +1159,8 @@ class ChatBinding {
   uint32_t sent_ = 0, refused_ = 0;
   std::string shown_;           // the reply as it left (E2-FIX14)
   bool withheld_ = false;       // the outbound screen withheld it
+  bool probeTurn_ = false;      // this turn is the park's re-check (E2-REP1)
+  std::string heldStatus_;      // its status line, sent once its answer is known (E2-REP1)
   bool busy_ = false;
   bool migrationRan_ = false;
   bool importPending_ = false;

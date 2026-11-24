@@ -1337,6 +1337,36 @@ static void test_an_empty_credit_parks_the_head_until_the_recheck_answers() {
   TEST_ASSERT_EQUAL(3, (int)dev.model.requests().size());
 }
 
+// E2-REP1 (E2-FIX14's known gap): the 30-minute re-check refused again reads as on the released engine.
+// The first refusal's line was the episode's notice; a re-check refused again gets the short answer once
+// (here: no message took it in between), and the next refused re-check gets nothing; the exchange's own
+// refusal line is never sent a second time. One request each, the provider stays parked.
+static void test_a_recheck_refused_again_gets_the_short_answer_then_nothing() {
+  Device dev;
+  dev.parkHead = true;
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  dev.model.push(sp::httpError(401, kKeyBody));
+  (void)message(dev, "first");
+  TEST_ASSERT_EQUAL(1, sentWith(dev.sent, "refused the key"));
+  for (int round = 0; round < 2; ++round) {
+    dev.sent.clear();
+    dev.ms += nimbus::orch::ProviderPark::kRecheckMs + 1000;   // the re-check is due
+    dev.model.push(sp::httpError(401, kKeyBody));
+    const plain::MessageGate g = message(dev, "again");
+    TEST_ASSERT_EQUAL((int)plain::GateVerdict::Run, (int)g.verdict);
+    TEST_ASSERT_TRUE(g.probe);
+    TEST_ASSERT_EQUAL(2 + round, (int)dev.model.requests().size());
+    TEST_ASSERT_TRUE(nimbus::orch::providerPark().isParked("anthropic"));
+    TEST_ASSERT_EQUAL_MESSAGE(0, sentWith(dev.sent, "refused the key"), round ? "second re-check" : "first re-check");
+    if (round == 0) {
+      TEST_ASSERT_EQUAL(1, (int)dev.sent.size());
+      TEST_ASSERT_EQUAL_STRING(("1001|" + nimbus::orch::keyShortAnswer("Anthropic")).c_str(), dev.sent[0].c_str());
+    } else {
+      TEST_ASSERT_EQUAL(0, (int)dev.sent.size());   // engine 1: nothing more this episode
+    }
+  }
+}
+
 // D1: the provider's own monthly limit stops turns with engine 1's line, every message, with no
 // request; raised, turns resume. The overall ceiling's pause (every provider) still stops them.
 static void test_a_provider_limit_stops_turns_until_it_is_raised_and_the_ceiling_still_holds() {
@@ -2277,6 +2307,7 @@ int main(int, char**) {
   RUN_TEST(test_a_second_cut_inside_the_resume_gives_the_plain_notice);
   RUN_TEST(test_a_refused_key_parks_the_head_and_the_next_message_sends_no_request);
   RUN_TEST(test_an_empty_credit_parks_the_head_until_the_recheck_answers);
+  RUN_TEST(test_a_recheck_refused_again_gets_the_short_answer_then_nothing);
   RUN_TEST(test_a_provider_limit_stops_turns_until_it_is_raised_and_the_ceiling_still_holds);
   RUN_TEST(test_a_reply_under_the_no_dash_rule_leaves_without_a_dash);
   RUN_TEST(test_a_reply_the_outbound_screen_blocks_sends_nothing);
