@@ -25,7 +25,7 @@ namespace {
 // ---- the words the model reads and writes ---------------------------------------------------
 constexpr char kOp[] = "op", kKind[] = "kind", kId[] = "id", kWhen[] = "when", kText[] = "text", kEvery[] = "every";
 constexpr char kCreate[] = "create", kUpdate[] = "update", kDelete[] = "delete", kList[] = "list";
-constexpr char kReminder[] = "reminder", kRoutine[] = "routine";
+constexpr char kReminder[] = "reminder", kRoutine[] = "routine", kWakeup[] = "wakeup";
 constexpr char kDays[] = "sunmontuewedthufrisat";   // three letters a day, bit 0 = Sunday
 constexpr char kDaily[] = "daily", kWeekly[] = "weekly", kMin[] = "min", kHour[] = "h", kSec[] = "s";
 using namespace store;   // the sidecar keys and file names (schedule_tool.h; no model reads them)
@@ -36,14 +36,14 @@ constexpr char kStored[] = "stored ", kUpdated[] = "updated ", kDeleted[] = "del
 constexpr char kWaiting[] = " (needs approval)", kPaused[] = " (paused)";
 // errors
 constexpr char kBadOp[] = "op: create|update|delete|list";
-constexpr char kBadKind[] = "kind: reminder|routine";
+constexpr char kBadKind[] = "kind: reminder|routine|wakeup";
 constexpr char kNoText[] = "text empty";
 constexpr char kOverA[] = "text over ", kOverB[] = " B limit";
 constexpr char kBadWhen[] = "when: YYYY-MM-DD HH:MM";
 constexpr char kWhenRange[] = "when: 2 min to 7 days ahead";
 constexpr char kBadEveryA[] = "every: daily HH:MM|weekly mon,thu HH:MM|every N min|h (",
                kBadEveryB[] = " min+)";
-constexpr char kWrongKey[] = "reminder: when; routine: every";
+constexpr char kWrongKey[] = "reminder, wakeup: when; routine: every";
 constexpr char kFull[] = "max ", kFullB[] = " entries";
 constexpr char kNoClock[] = "clock not set";
 constexpr char kNotHere[] = "unattended: list/reminder only";
@@ -53,7 +53,15 @@ constexpr char kNothing[] = "no change";
 constexpr char kKindDiffers[] = "kind differs";
 constexpr char kNoMemory[] = "out of memory";
 
-const char* kindSlug(Kind k) { return k == Kind::Reminder ? kReminder : kRoutine; }
+const char* kindSlug(Kind k) { return k == Kind::Reminder ? kReminder : k == Kind::Wakeup ? kWakeup : kRoutine; }
+
+// A kind's slug back; false on any other word.
+bool kindOfSlug(const std::string& w, Kind& out) {
+  for (Kind k : {Kind::Reminder, Kind::Routine, Kind::Wakeup})
+    if (w == kindSlug(k)) return out = k, true;
+  return false;
+}
+bool atWhen(Kind k) { return k != Kind::Routine; }   // a reminder and a wakeup run once, at `when`
 
 std::string str(JsonObjectConst a, const char* key) {
   const char* v = a[key] | "";
@@ -158,7 +166,7 @@ std::vector<std::string> getStrings(JsonObjectConst o, const char* key) {
 bool readExtra(JsonObjectConst o, Extra& e) {
   e.id = str(o, kId);
   if (e.id.empty()) return false;
-  e.kind = str(o, kKind) == kReminder ? Kind::Reminder : Kind::Routine;
+  if (!kindOfSlug(str(o, kKind), e.kind)) e.kind = Kind::Routine;
   e.tools = getStrings(o, kTools);
   e.paths = getStrings(o, kPaths);
   e.holdS = o[kHoldS] | 0u;
@@ -179,11 +187,11 @@ Op opOf(JsonObjectConst a) {
   return Op::Bad;
 }
 
-// The kind the call names: 0 none, 1 reminder, 2 routine, -1 a word that is neither.
+// The kind the call names: 0 none, 1 reminder, 2 routine, 3 wakeup, -1 a word that is none of them.
 int kindArg(JsonObjectConst a) {
   if (a[kKind].isNull()) return 0;
-  const std::string k = str(a, kKind);
-  return k == kReminder ? 1 : k == kRoutine ? 2 : -1;
+  Kind k = Kind::Routine;
+  return kindOfSlug(str(a, kKind), k) ? (int)k + 1 : -1;
 }
 
 std::string overLimit() { return std::string(kOverA) + std::to_string(kLoopPromptMax) + kOverB; }
@@ -216,10 +224,20 @@ struct Call {
 
   std::string line(const LoopRecord& l) {
     const Kind k = kindOf(l, findExtra(extras, l.id));
-    std::string s = l.id + ' ' + kindSlug(k) + ' ' + (k == Kind::Reminder ? whenText(l) : everyText(l.sched));
+    std::string s = l.id + ' ' + kindSlug(k) + ' ' + (atWhen(k) ? whenText(l) : everyText(l.sched));
     if (!l.approved) s += kWaiting;
     if (!l.enabled) s += kPaused;
     return s + ':' + ' ' + l.prompt;
+  }
+
+  // The live wakeups (their sidecar entries).
+  int wakeups() {
+    int n = 0;
+    for (const LoopRecord& l : *live) {
+      const Extra* e = findExtra(extras, l.id);
+      n += e && e->kind == Kind::Wakeup;
+    }
+    return n;
   }
 
   // The reminder's moment, as a record's schedule; "" when it is set.
@@ -269,24 +287,27 @@ struct Call {
   void create() {
     const int k = kindArg(a);
     if (k <= 0) return void(out = ToolResult::fail(kBadKind));
-    const bool reminder = k == 1;
+    const Kind kind = (Kind)(k - 1);
+    const bool once = atWhen(kind);
     const std::string text = str(a, kText), refusal = textRefusal(text);
     if (!refusal.empty()) return void(out = ToolResult::fail(refusal));
-    if (!a[reminder ? kEvery : kWhen].isNull()) return void(out = ToolResult::fail(kWrongKey));
+    if (!a[once ? kEvery : kWhen].isNull()) return void(out = ToolResult::fail(kWrongKey));
     if ((int)live->size() >= host.maxCount())
       return void(out = ToolResult::fail(kFull + std::to_string(host.maxCount()) + kFullB));
+    if (kind == Kind::Wakeup && wakeups() >= kWakeupMaxPending)   // engine 1's wakeup.set cap
+      return void(out = ToolResult::fail(kFull + std::to_string(kWakeupMaxPending) + ' ' + kWakeup + 's'));
     LoopRecord l;
     l.id = host.newId(*live);
     setText(l, text);
     l.chatId = ctx.chatId;
     const bool byOwner = ctx.owner && ctx.origin == notes::Origin::Attended;
     l.createdBy = byOwner ? CreatedBy::Owner : CreatedBy::Agent;
-    const std::string bad = reminder ? setWhen(l, str(a, kWhen)) : setEvery(l, str(a, kEvery));
+    const std::string bad = once ? setWhen(l, str(a, kWhen)) : setEvery(l, str(a, kEvery));
     if (!bad.empty()) return void(out = ToolResult::fail(bad));
     l.approved = autoApproved(l.sched.kind, !byOwner, host.askFirst());
     Extra e;
     e.id = l.id;
-    e.kind = reminder ? Kind::Reminder : Kind::Routine;
+    e.kind = kind;
     extras.erase(std::remove_if(extras.begin(), extras.end(), [&](const Extra& x) { return x.id == e.id; }), extras.end());
     extras.push_back(e);
     std::vector<LoopRecord> next = *live;
@@ -298,7 +319,7 @@ struct Call {
   std::string applyUpdate(LoopRecord& l, Kind k) {
     const bool when = !a[kWhen].isNull(), every = !a[kEvery].isNull(), text = !a[kText].isNull();
     if (!when && !every && !text) return kNothing;
-    if ((k == Kind::Reminder && every) || (k == Kind::Routine && when)) return kWrongKey;
+    if ((atWhen(k) && every) || (k == Kind::Routine && when)) return kWrongKey;
     if (text) {
       const std::string refusal = textRefusal(str(a, kText));
       if (!refusal.empty()) return refusal;
@@ -320,7 +341,7 @@ struct Call {
     const Kind k = kindOf(*l, findExtra(extras, id));
     const int named = kindArg(a);
     if (named < 0) return void(out = ToolResult::fail(kBadKind));
-    if (named > 0 && (named == 1) != (k == Kind::Reminder)) return void(out = ToolResult::fail(kKindDiffers));
+    if (named > 0 && (Kind)(named - 1) != k) return void(out = ToolResult::fail(kKindDiffers));
     const std::string bad = applyUpdate(*l, k);
     if (!bad.empty()) return void(out = ToolResult::fail(bad));
     const LoopRecord done = *l;

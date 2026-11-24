@@ -250,4 +250,19 @@ bool recentFiles(const nimbus::orch::Principal& who, std::vector<nimbus::orch::t
 bool readsOthersFile(const nimbus::orch::Principal& who, const std::string& path);
 #endif
 
+// files.search's scan (engine 1's tool, and engine 2's search scope files, lane E2-P-MEM): the newest
+// 512 text docs `who` may read (under `project` when not empty), the ones holding a word of `query`,
+// best first, each with a one-line snippet around its first matching word. False: no store.
+struct TextHit {
+  std::string project, name, snippet;
+  int score = 0;
+};
+struct TextSearch {
+  std::vector<TextHit> hits;
+  size_t scanned = 0, candidates = 0;
+  uint32_t oldestAt = 0;   // the oldest doc scanned, epoch seconds (0: unknown)
+};
+bool searchText(const std::string& query, const std::string& project, const nimbus::orch::Principal& who,
+                TextSearch& out);
+
 }  // namespace agent::files

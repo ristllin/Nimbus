@@ -189,6 +189,7 @@ plain::RoutineFire routineFire(const LoopRecord& l, const Extra* e, const std::v
     f.def.tools = e->tools;
     f.def.paths = e->paths;
     f.def.holdS = e->holdS;
+    f.def.wakeup = e->kind == Kind::Wakeup;
   }
   f.fireAt = fireAt;
   f.last = last;

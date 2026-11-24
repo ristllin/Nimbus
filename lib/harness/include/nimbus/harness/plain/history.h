@@ -13,14 +13,18 @@
 // the subset that makes the device's own texts true: "search finds them" on the omission line, the
 // import's notes and the summary; "view id=r<q>" on stubs; "view id=p<ref>" on photos).
 //
-//   search {query, scope?: history|notes, from?, to?, before?}
+//   search {query, scope?: history|notes|files|memories, from?, to?, before?}
 //     history (default): this conversation's stored transcript and, for a chat's first conversation,
 //     the earlier engine's rows the import did not bring over verbatim (tx/search.h), all words,
 //     the whole range in one window when it fits (lane E2-SRCH2), ranked (the phrase, then one line,
 //     then two lines; newest first among equals), at most twelve hits, each "id when who: excerpt",
 //     then how many more matches and their dates, or how far the reading went, with the cursor
 //     (before=...), or that it read to the start;
-//     notes: the person's unpinned notes, all words, five at a time (before=n<index>).
+//     notes: the person's unpinned notes, all words, five at a time (before=n<index>);
+//     files (lane E2-P-MEM): words inside the person's stored text files, engine 1's files.search scan
+//     and rank, eight at a time (before=f<index>), then how far the scan read;
+//     memories (lane E2-P-MEM): the earlier engine's long-term memories, read only, engine 1's
+//     memory.search answer whole (by meaning, or its keyword match with the one line saying why).
 //   view {id, offset?, limit?}
 //     r<q>: any stored message, note, summary, call or result of this conversation, its whole text
 //     paged like read_file (next_offset and the bytes left); m<row>: one earlier-engine row of this
@@ -44,6 +48,20 @@ namespace plain {
 inline constexpr size_t kViewPageMax = 32768;    // read_file's cap
 inline constexpr size_t kViewPageFloor = 2048;   // read_file's floor (ruling 95)
 inline constexpr size_t kNotesPerPage = 5;
+inline constexpr size_t kFilesPerPage = 8;   // engine 1's files.search showed its best 8
+
+// Lane E2-P-MEM: one stored text file that holds the words (engine 1's files.search scan).
+struct FileHit {
+  std::string path;      // project/name
+  std::string excerpt;   // the window around the first matching word, on one line
+  bool outside = false;  // inbox/, agents/ or another person's file: outside content
+};
+struct FileSearch {
+  std::vector<FileHit> hits;   // best first
+  size_t scanned = 0;          // text files read (the newest first)
+  size_t candidates = 0;       // readable text files in all
+  uint64_t oldestT = 0;        // the oldest file read, epoch seconds (0: not known)
+};
 
 struct HistoryDeps {
   nimbus::orch::tx::TxFiles* files = nullptr;   // the transcripts (/mem/tx)
@@ -56,6 +74,12 @@ struct HistoryDeps {
   std::function<uint32_t()> nowMs;   // card time; null: bytes only
   // Whether a photo's stored copy can be shown again (the binding's photo hook); null: never.
   std::function<bool(const std::string& ref)> photoReadable;
+  // Lane E2-P-MEM, scope files: the words inside the person's stored text files (the device binds engine
+  // 1's files.search scan, files::searchText); false: the store could not be read. Null: scope not valid.
+  std::function<bool(const nimbus::orch::Principal& who, const std::string& query, FileSearch& out)> fileSearch;
+  // Lane E2-P-MEM, scope memories: the earlier engine's long-term memories, read only, answered by its
+  // memory.search (orch::searchMemories): its text, or false and its error line. Null: scope not valid.
+  std::function<bool(const nimbus::orch::Principal& who, const std::string& query, std::string& out)> memories;
   // Lane E2-SRCH: a test or a host may lower the card budget of one search call.
   nimbus::orch::tx::SearchLimits limits;
 };
@@ -78,6 +102,8 @@ class HistoryTools {
   bool askOf(const TurnCtx& turn, ArduinoJson::JsonObjectConst a, nimbus::orch::tx::SearchAsk& ask) const;
   std::string answerText(const nimbus::orch::tx::SearchOutcome& o, const nimbus::orch::tx::Status& st) const;
   ToolOutput searchNotes(const TurnCtx& turn, ArduinoJson::JsonObjectConst a, const std::string& query);
+  ToolOutput searchFiles(const TurnCtx& turn, ArduinoJson::JsonObjectConst a, const std::string& query);
+  ToolOutput searchMemories(const TurnCtx& turn, const std::string& query);
   ToolOutput view(const ToolCall& call, const TurnCtx& turn, ArduinoJson::JsonObjectConst a);
   ToolOutput viewItem(const TurnCtx& turn, uint64_t q, size_t offset, size_t limit);
   ToolOutput viewOld(const TurnCtx& turn, uint64_t row, size_t offset, size_t limit);

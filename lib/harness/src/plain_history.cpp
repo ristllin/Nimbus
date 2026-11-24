@@ -31,6 +31,8 @@ constexpr char kSearch[] = "search";
 constexpr char kView[] = "view";
 constexpr char kNotes[] = "notes";
 constexpr char kHistory[] = "history";
+constexpr char kFiles[] = "files";
+constexpr char kMemories[] = "memories";
 
 ToolOutput fail(const std::string& why) {
   ToolOutput o;
@@ -284,6 +286,8 @@ ToolOutput HistoryTools::search(const ToolCall&, const TurnCtx& turn, JsonObject
   if (tx::queryWords(query).empty()) return fail(R::kSearchNoWords);
   const std::string scope = str(a, "scope");
   if (scope == kNotes) return searchNotes(turn, a, query);
+  if (scope == kFiles && d_.fileSearch) return searchFiles(turn, a, query);
+  if (scope == kMemories && d_.memories) return searchMemories(turn, query);
   tx::SearchAsk ask;
   if ((!scope.empty() && scope != kHistory) || !askOf(turn, a, ask)) return fail(R::kSearchBadArgs);
   tx::SearchDeps sd;
@@ -333,6 +337,49 @@ ToolOutput HistoryTools::searchNotes(const TurnCtx& turn, JsonObjectConst a, con
                : std::string(R::kSearchEnd);
   logCall(turn, card_, text.size(), CallLog{kSearch, kNotes, shown, more, "ok"});
   return ok(std::move(text));
+}
+
+// Scope files (lane E2-P-MEM): engine 1's files.search scan and rank (FileSearch), eight files a page in
+// the form of the other scopes, a file of outside content framed; then the cursor, or how far the scan
+// read (the newest files first), or that it read them all.
+ToolOutput HistoryTools::searchFiles(const TurnCtx& turn, JsonObjectConst a, const std::string& query) {
+  const std::string before = str(a, "before");
+  size_t start = 0;
+  if (!before.empty()) {
+    if (before.size() < 2 || before.size() > 8 || before[0] != 'f' ||
+        before.find_first_not_of("0123456789", 1) != std::string::npos)
+      return fail(R::kSearchBadArgs);
+    start = size_t(std::stoul(before.substr(1)));
+  }
+  FileSearch found;
+  if (!d_.fileSearch(*turn.who, query, found)) return fail(R::kCardStopped + before);
+  std::string text;
+  bool outside = false;
+  size_t i = start;
+  for (; i < found.hits.size() && i < start + kFilesPerPage; ++i) {
+    const FileHit& h = found.hits[i];
+    const std::string ex = R::kCutMark + h.excerpt + R::kCutMark;
+    text += R::kSrcFile + h.path + ": " + (h.outside ? framed(ex) : ex) + "\n";
+    outside = outside || h.outside;
+  }
+  if (i == start) text += std::string(R::kSearchNone) + "\n";
+  const size_t rest = found.hits.size() > i ? found.hits.size() - i : 0;
+  if (rest) text += std::to_string(rest) + R::kSearchFurther + R::kBeforeEq + "f" + std::to_string(i);
+  else if (found.scanned < found.candidates)
+    text += R::kSearchMore + whenOf(found.oldestT, tz(found.oldestT)) + R::kSearchBefore;
+  else text += R::kSearchEnd;
+  logCall(turn, card_, text.size(), CallLog{kSearch, kFiles, i - start, rest > 0, "ok"});
+  ToolOutput out = ok(std::move(text));
+  out.outside = outside;   // an excerpt of outside content is outside content
+  return out;
+}
+
+// Scope memories (lane E2-P-MEM): engine 1's memory.search answer, whole and read only.
+ToolOutput HistoryTools::searchMemories(const TurnCtx& turn, const std::string& query) {
+  std::string text;
+  const bool answered = d_.memories(*turn.who, query, text);
+  logCall(turn, card_, text.size(), CallLog{kSearch, kMemories, answered ? size_t(1) : size_t(0), false, answered ? "ok" : "fail"});
+  return answered ? ok(std::move(text)) : fail(text);
 }
 
 ToolOutput HistoryTools::view(const ToolCall&, const TurnCtx& turn, JsonObjectConst a) {

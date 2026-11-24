@@ -109,7 +109,7 @@ bool isRoutineChat(const std::string& chatKey) {
 
 orch::UnattendedFacts routineFacts(const RoutineFire& f, bool outside) {
   orch::UnattendedFacts facts;
-  facts.cls = orch::TurnClass::Routine;
+  facts.cls = f.def.wakeup ? orch::TurnClass::Wakeup : orch::TurnClass::Routine;
   facts.routineGrants = f.grants;
   facts.outside = outside;
   facts.listed = &f.def.paths;

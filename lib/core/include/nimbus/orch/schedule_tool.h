@@ -17,7 +17,7 @@
 // its loadLoops (orch_loops.cpp is not touched): engine 1 lists and fires what engine 2 made. The
 // fields engine 1 does not know live in the sidecar /data/loops2.json, keyed by loop id (the old
 // writer drops unknown fields). The sidecar format, version 1 ("loops2"):
-//   {"v":1,"loops":[{"id":"lp1a2b3c","kind":"reminder"|"routine","tools":["..."],"paths":["..."],
+//   {"v":1,"loops":[{"id":"lp1a2b3c","kind":"reminder"|"routine"|"wakeup","tools":["..."],"paths":["..."],
 //                    "holdS":0,"outsideAt":[<epoch>,...]}]}
 // An id with no sidecar entry is an old record (kindOf). An entry whose id is not in loops.json
 // is an orphan: ignored on load, dropped on the next write. Write order: a create or update writes
@@ -35,7 +35,10 @@ namespace nimbus {
 namespace orch {
 namespace schedule {
 
-enum class Kind : uint8_t { Reminder = 0, Routine = 1 };
+// Wakeup (lane E2-P-MEM, engine 1's wakeup.set): a one-time model run the assistant sets for itself at
+// `when`, its text the instruction; it fires through runRoutine under the policy row TurnClass::Wakeup,
+// at most kWakeupMaxPending at once, auto-approved unless the owner's "Wake-ups: ask me first" is on.
+enum class Kind : uint8_t { Reminder = 0, Routine = 1, Wakeup = 2 };
 
 // Storage words no model reads: the sidecar's own keys (beside "id" and "kind", which the tool's
 // arguments share), the state file's extensions and the e item event of a fire that read outside
@@ -122,7 +125,7 @@ struct CallCtx {
   bool owner = false;
 };
 
-// One `schedule` call: op create | update | delete | list; kind reminder | routine; id, when, text,
+// One `schedule` call: op create | update | delete | list; kind reminder | routine | wakeup; id, when, text,
 // every. An attended turn may do all of it; any other origin may list and create a reminder only.
 ToolResult call(Host& host, ArduinoJson::JsonObjectConst args, const CallCtx& ctx);
 

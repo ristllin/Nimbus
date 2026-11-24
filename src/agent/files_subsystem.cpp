@@ -1676,6 +1676,62 @@ void runScanFetch(nimbus::orch::FetchReq req) {
 }
 }  // namespace
 
+// files.search's scan (lane E2-P-MEM moved it out of registerTools unchanged, so engine 2's search
+// scope files runs the same code): the newest kSearchScanMax text docs the caller may read, each read
+// size-limited, ranked by textMatchScore (the shared lexical.h word rule, CUM-515), each with a snippet
+// around the earliest matching word. False: no store.
+bool searchText(const std::string& qy, const std::string& proj, const nimbus::orch::Principal& who, TextSearch& out) {
+  constexpr size_t kSearchScanMax = 512;   // newest text docs scanned per call
+  out = TextSearch();
+  std::vector<TextHit>& hits = out.hits;
+  const nimbus::orch::LexQuery qlex = nimbus::orch::lexParse(qy);
+  size_t candidates = 0, scanned = 0;
+  {
+    memory::Lock g;
+    if (!available()) return false;
+    // Lane FSCAP: collect the readable text docs in chunks (pointers
+    // only), newest first, and scan at most kSearchScanMax of them -
+    // one call never reads the whole card however large the index.
+    std::vector<const nimbus::orch::FileEntry*> docs;
+    for (size_t base = 0;; base += kListPageChunk) {
+      const auto page = g_store.listPage(proj, base, kListPageChunk);
+      if (page.empty()) break;
+      for (const auto* e : page) {
+        if (!textDocName(e->name)) continue;
+        if (!g_store.readableBy(*e, who.ns, who.owner, who.perms().readShared)) continue;
+        docs.push_back(e);
+      }
+    }
+    candidates = docs.size();
+    std::sort(docs.begin(), docs.end(),
+              [](const nimbus::orch::FileEntry* x, const nimbus::orch::FileEntry* y) {
+                if (x->createdAt != y->createdAt) return x->createdAt > y->createdAt;
+                return x->name < y->name;
+              });
+    if (docs.size() > kSearchScanMax) docs.resize(kSearchScanMax);
+    for (const auto* e : docs) {
+      ++scanned;
+      out.oldestAt = e->createdAt;
+      std::string body = readWhole(e->project, e->name, 64 * 1024);
+      int sc = nimbus::orch::textMatchScore(body, qy);
+      if (sc <= 0) continue;
+      // Snippet: a window around the earliest word that MATCHED, single-
+      // line. Any one word is enough to match now (CUM-515), so the
+      // query's first word may not occur in the doc at all - anchoring on
+      // it snipped the doc's head instead of the hit.
+      size_t at = nimbus::orch::lexFirstHit(body.data(), body.size(), qlex);
+      // Both ends on a character boundary: a byte-offset cut tore a character.
+      std::string snip = nimbus::utf8Window(body, at, 40, 160);
+      for (char& c : snip) if (c == '\n' || c == '\r' || c == '\t') c = ' ';
+      hits.push_back(TextHit{nimbus::orch::plainCopy(e->project), nimbus::orch::plainCopy(e->name), snip, sc});
+    }
+  }
+  std::sort(hits.begin(), hits.end(),
+            [](const TextHit& x, const TextHit& y) { return x.score > y.score; });
+  out.scanned = scanned;
+  out.candidates = candidates;
+  return true;
+}
 
 #if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: no old-engine tool registers on engine 2 (RB-I0)
 void registerTools() {
@@ -1799,7 +1855,6 @@ void registerTools() {
   // older docs were not scanned) - no index to maintain (the corpus is too
   // small for BM25's IDF to earn its cost). For a MEANING search over facts
   // use memory.search; for conversation history use memory.episodic.
-  constexpr size_t kSearchScanMax = 512;   // newest text docs scanned per call
   reg.add("files.search",
           "Search the CONTENT of saved TEXT documents (md/txt/json/csv/log) for words. "
           "Returns the best-matching files with a snippet. Optional 'project' scopes it. "
@@ -1808,52 +1863,11 @@ void registerTools() {
             const std::string qy = argStr(a, "query");
             const std::string proj = argStr(a, "project");
             if (qy.empty()) return nimbus::orch::ToolResult::fail("need 'query'");
-            struct Hit { std::string project, name, snippet; int score; };
-            std::vector<Hit> hits;
-            const nimbus::orch::LexQuery qlex = nimbus::orch::lexParse(qy);
-            size_t candidates = 0, scanned = 0;
-            {
-              memory::Lock g;
-              if (!available())
-                return nimbus::orch::ToolResult::fail("no SD card - artifact store absent");
-              // Lane FSCAP: collect the readable text docs in chunks (pointers
-              // only), newest first, and scan at most kSearchScanMax of them -
-              // one call never reads the whole card however large the index.
-              std::vector<const nimbus::orch::FileEntry*> docs;
-              for (size_t base = 0;; base += kListPageChunk) {
-                const auto page = g_store.listPage(proj, base, kListPageChunk);
-                if (page.empty()) break;
-                for (const auto* e : page) {
-                  if (!textDocName(e->name)) continue;
-                  if (!g_store.readableBy(*e, who.ns, who.owner, who.perms().readShared)) continue;
-                  docs.push_back(e);
-                }
-              }
-              candidates = docs.size();
-              std::sort(docs.begin(), docs.end(),
-                        [](const nimbus::orch::FileEntry* x, const nimbus::orch::FileEntry* y) {
-                          if (x->createdAt != y->createdAt) return x->createdAt > y->createdAt;
-                          return x->name < y->name;
-                        });
-              if (docs.size() > kSearchScanMax) docs.resize(kSearchScanMax);
-              for (const auto* e : docs) {
-                ++scanned;
-                std::string body = readWhole(e->project, e->name, 64 * 1024);
-                int sc = nimbus::orch::textMatchScore(body, qy);
-                if (sc <= 0) continue;
-                // Snippet: a window around the earliest word that MATCHED, single-
-                // line. Any one word is enough to match now (CUM-515), so the
-                // query's first word may not occur in the doc at all - anchoring on
-                // it snipped the doc's head instead of the hit.
-                size_t at = nimbus::orch::lexFirstHit(body.data(), body.size(), qlex);
-                // Both ends on a character boundary: a byte-offset cut tore a character.
-                std::string snip = nimbus::utf8Window(body, at, 40, 160);
-                for (char& c : snip) if (c == '\n' || c == '\r' || c == '\t') c = ' ';
-                hits.push_back(Hit{nimbus::orch::plainCopy(e->project), nimbus::orch::plainCopy(e->name), snip, sc});
-              }
-            }
-            std::sort(hits.begin(), hits.end(),
-                      [](const Hit& x, const Hit& y) { return x.score > y.score; });
+            TextSearch found;
+            if (!searchText(qy, proj, who, found))
+              return nimbus::orch::ToolResult::fail("no SD card - artifact store absent");
+            const std::vector<TextHit>& hits = found.hits;
+            const size_t scanned = found.scanned, candidates = found.candidates;
             std::string out;
             if (scanned < candidates)
               out += "(scanned the newest " + std::to_string(scanned) + " of " +

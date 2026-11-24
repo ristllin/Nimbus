@@ -1177,7 +1177,7 @@ nimbus::orch::FireOutcome fireEntry(const String& chatIn, const String& id) {
   }
   sch::Kind kind = sch::Kind::Routine;
   if (!sch::entryKind(scheduledev::host(), sid, kind)) kind = sch::Kind::Routine;   // fire() answers it
-  if (kind == sch::Kind::Routine && spend::frozen()) {   // the money guard: a routine waits, a reminder goes
+  if (kind != sch::Kind::Reminder && spend::frozen()) {   // the money guard: a routine or wakeup waits, a reminder goes
     out.deferred = true;
     out.error = nimbus::orch::kSpendFrozenError;
     return out;
@@ -1186,7 +1186,7 @@ nimbus::orch::FireOutcome fireEntry(const String& chatIn, const String& id) {
   const std::string chatId(chat.c_str(), chat.length());
   const String host = store::resolvedOrchHost();
   plain::ChatBinding* b = nullptr;
-  if (chat.length() && !(kind == sch::Kind::Routine && refusalFor(host)))
+  if (chat.length() && !(kind != sch::Kind::Reminder && refusalFor(host)))
     b = chatFor(chat, std::string(store::orchModel(host).c_str()), roleOfChat(chat));
   // The binding of the fire on the heap, off the tg_poll stack (lane E2-FIX2B: the routine path is
   // the deepest the poll task runs).
@@ -1224,7 +1224,7 @@ nimbus::orch::FireOutcome fireEntry(const String& chatIn, const String& id) {
     out = scheduledev::fire(nimbus::orch::LoopFireRequest{sid, std::string(), chatId, std::string()}, fb);
   }
   alogf("e2: fire %s %s chat=%s ok=%d deferred=%d answered=%d parts=%u reqs=%u ms=%u err=%s", sid.c_str(),
-        kind == sch::Kind::Reminder ? "reminder" : "routine", chatId.c_str(), (int)out.ok, (int)out.deferred,
+        kind == sch::Kind::Reminder ? "reminder" : kind == sch::Kind::Wakeup ? "wakeup" : "routine", chatId.c_str(), (int)out.ok, (int)out.deferred,
         (int)out.answered, (unsigned)(b ? b->sentParts() - parts0 : 0), (unsigned)s_transport.requests,
         (unsigned)(millis() - t0), out.error.c_str());
   return out;

@@ -1522,6 +1522,12 @@ static void registerOptionalMemoryTools(ToolRegistry& reg, const MemoryContext& 
   }
 }
 
+ToolResult searchMemories(const MemoryContext& ctx, const std::string& query, const Principal& who) {
+  ArduinoJson::JsonDocument args;
+  args["query"] = query;
+  return doSearch(ctx, args.as<ArduinoJson::JsonObjectConst>(), who);
+}
+
 // ---- degraded automatic recall ------------------------------------------------
 const char kRecallLowMemoryTail[] = "; keyword recall skipped, the device is low on memory";
 

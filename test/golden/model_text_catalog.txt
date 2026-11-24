@@ -4,10 +4,10 @@
 # class core bytes=1595 ceiling=3072 entries=30 sha8=6bf20834
 # class device_notes bytes=2046 ceiling=2048 entries=78 sha8=2204d611
 # class stubs bytes=372 ceiling=512 entries=14 sha8=af49befe
-# class tool_results bytes=7071 ceiling=7168 entries=496 sha8=ed391636
+# class tool_results bytes=7097 ceiling=7168 entries=498 sha8=d5a076a0
 # class probe bytes=1323 ceiling=1536 entries=3 sha8=29789b84
 # class summarizer bytes=974 ceiling=1024 entries=17 sha8=1855fed2
-# class tool_descriptions bytes=4535 ceiling=10240 entries=46 sha8=bab37350
+# class tool_descriptions bytes=4640 ceiling=10240 entries=46 sha8=aebfed83
 core	lib/core/include/nimbus/orch/tx/digest.h	45822f54	2	": "
 core	lib/core/include/nimbus/orch/tx/digest.h	4f5a2ada	2	" ("
 core	lib/core/include/nimbus/orch/tx/digest.h	ba5ec51d	1	")"
@@ -548,6 +548,7 @@ tool_results	lib/core/src/orch_schedule_tool.cpp	61975955	6	"delete"
 tool_results	lib/core/src/orch_schedule_tool.cpp	a330395c	4	"list"
 tool_results	lib/core/src/orch_schedule_tool.cpp	9ce7011a	8	"reminder"
 tool_results	lib/core/src/orch_schedule_tool.cpp	fde55b36	7	"routine"
+tool_results	lib/core/src/orch_schedule_tool.cpp	1041cb03	6	"wakeup"
 tool_results	lib/core/src/orch_schedule_tool.cpp	0ee92692	21	"sunmontuewedthufrisat"
 tool_results	lib/core/src/orch_schedule_tool.cpp	6f31304c	5	"daily"
 tool_results	lib/core/src/orch_schedule_tool.cpp	8850eced	6	"weekly"
@@ -561,7 +562,7 @@ tool_results	lib/core/src/orch_schedule_tool.cpp	140bedbf	4	"none"
 tool_results	lib/core/src/orch_schedule_tool.cpp	83c51d46	17	" (needs approval)"
 tool_results	lib/core/src/orch_schedule_tool.cpp	78f4ea8f	9	" (paused)"
 tool_results	lib/core/src/orch_schedule_tool.cpp	a651d82e	29	"op: create|update|delete|list"
-tool_results	lib/core/src/orch_schedule_tool.cpp	97a0d523	22	"kind: reminder|routine"
+tool_results	lib/core/src/orch_schedule_tool.cpp	0047c36f	29	"kind: reminder|routine|wakeup"
 tool_results	lib/core/src/orch_schedule_tool.cpp	56f0da09	10	"text empty"
 tool_results	lib/core/src/orch_schedule_tool.cpp	1672020c	10	"text over "
 tool_results	lib/core/src/orch_schedule_tool.cpp	1ff2bacc	8	" B limit"
@@ -569,7 +570,7 @@ tool_results	lib/core/src/orch_schedule_tool.cpp	23aed83c	22	"when: YYYY-MM-DD H
 tool_results	lib/core/src/orch_schedule_tool.cpp	7a29bedc	27	"when: 2 min to 7 days ahead"
 tool_results	lib/core/src/orch_schedule_tool.cpp	1f07014d	55	"every: daily HH:MM|weekly mon,thu HH:MM|every N min|h ("
 tool_results	lib/core/src/orch_schedule_tool.cpp	d982379f	6	" min+)"
-tool_results	lib/core/src/orch_schedule_tool.cpp	2548ade6	30	"reminder: when; routine: every"
+tool_results	lib/core/src/orch_schedule_tool.cpp	abf62553	38	"reminder, wakeup: when; routine: every"
 tool_results	lib/core/src/orch_schedule_tool.cpp	1eed76ee	4	"max "
 tool_results	lib/core/src/orch_schedule_tool.cpp	3b3d53ef	8	" entries"
 tool_results	lib/core/src/orch_schedule_tool.cpp	e1fe9d82	13	"clock not set"
@@ -599,6 +600,7 @@ tool_results	lib/harness/include/nimbus/harness/plain/texts.h	6c501d1a	7	" resul
 tool_results	lib/harness/include/nimbus/harness/plain/texts.h	f45a5801	17	", outside content"
 tool_results	lib/harness/include/nimbus/harness/plain/texts.h	36b3e1fc	17	" (earlier engine)"
 tool_results	lib/harness/include/nimbus/harness/plain/texts.h	414627b6	5	"note "
+tool_results	lib/harness/include/nimbus/harness/plain/texts.h	40881df9	5	"file "
 tool_results	lib/harness/include/nimbus/harness/plain/texts.h	ab5df625	3	"..."
 tool_results	lib/harness/include/nimbus/harness/plain/texts.h	9bc94ab9	8	"no match"
 tool_results	lib/harness/include/nimbus/harness/plain/texts.h	670b9eee	18	"more: searched to "
@@ -666,8 +668,8 @@ tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	edb46562	4	"n
 tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	0c3d657d	162	"Set or remove one note (key: value). kind rule or fact; pin true keeps it in every prompt, pin false stores it for search. Returns the stored line and space used."
 tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	bac5d26c	293	"{\"type\":\"object\",\"properties\":{\"op\":{\"type\":\"string\",\"enum\":[\"set\",\"remove\"]},\"key\":{\"type\":\"string\",\"description\":\"slug a-z0-9-, up to 32\"},\"value\":{\"type\":\"string\",\"description\":\"up to 300 B\"},\"kind\":{\"type\":\"string\",\"enum\":[\"rule\",\"fact\"]},\"pin\":{\"type\":\"boolean\"}},\"required\":[\"op\",\"key\"]}"
 tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	24193290	6	"search"
-tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	801618b3	237	"Search this conversation's history (scope history, the default) or your unpinned notes (scope notes) by words; all must appear. from, to (YYYY-MM-DD) bound the dates. Up to 12 hits, best first, each with an id for view; before continues."
-tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	9cbd9e97	207	"{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"},\"scope\":{\"type\":\"string\",\"enum\":[\"history\",\"notes\"]},\"from\":{\"type\":\"string\"},\"to\":{\"type\":\"string\"},\"before\":{\"type\":\"string\"}},\"required\":[\"query\"]}"
+tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	e6682232	237	"Search by words: this conversation (scope history, default; all must appear), unpinned notes (notes), stored text files (files), the earlier engine's memories (memories, by meaning). from, to (YYYY-MM-DD) bound history; before continues."
+tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	453b960d	226	"{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"},\"scope\":{\"type\":\"string\",\"enum\":[\"history\",\"notes\",\"files\",\"memories\"]},\"from\":{\"type\":\"string\"},\"to\":{\"type\":\"string\"},\"before\":{\"type\":\"string\"}},\"required\":[\"query\"]}"
 tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	2a719626	10	"web_search"
 tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	fb9961b8	44	"Search the web. Results are outside content."
 tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	57917cfd	79	"{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}"
@@ -678,8 +680,8 @@ tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	27ce1d1b	4	"s
 tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	b3874f2e	134	"Send a file, photo or voice note to this chat. kind file|photo|voice; path or ref, or text for voice. Returns the Telegram message id."
 tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	dafc72b6	211	"{\"type\":\"object\",\"properties\":{\"kind\":{\"type\":\"string\",\"enum\":[\"file\",\"photo\",\"voice\"]},\"path\":{\"type\":\"string\"},\"ref\":{\"type\":\"string\"},\"text\":{\"type\":\"string\"},\"caption\":{\"type\":\"string\"}},\"required\":[\"kind\"]}"
 tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	5f72005e	8	"schedule"
-tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	a169129f	160	"Create, update, delete or list reminders and routines. A reminder sends its fixed text at 'when' (YYYY-MM-DD HH:MM local). Returns the stored entry with its id."
-tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	faef0e9f	320	"{\"type\":\"object\",\"properties\":{\"op\":{\"type\":\"string\",\"enum\":[\"create\",\"update\",\"delete\",\"list\"]},\"kind\":{\"type\":\"string\",\"enum\":[\"reminder\",\"routine\"]},\"id\":{\"type\":\"string\"},\"when\":{\"type\":\"string\"},\"text\":{\"type\":\"string\"},\"every\":{\"type\":\"string\",\"description\":\"routine cadence, e.g. daily 07:00\"}},\"required\":[\"op\"]}"
+tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	6cb696b2	237	"Create, update, delete or list reminders, routines, wakeups. A reminder sends its fixed text at 'when' (YYYY-MM-DD HH:MM local); a wakeup runs text once at 'when' as your own run, without this chat, able to read files. Returns the entry."
+tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	b89a7ec5	329	"{\"type\":\"object\",\"properties\":{\"op\":{\"type\":\"string\",\"enum\":[\"create\",\"update\",\"delete\",\"list\"]},\"kind\":{\"type\":\"string\",\"enum\":[\"reminder\",\"routine\",\"wakeup\"]},\"id\":{\"type\":\"string\"},\"when\":{\"type\":\"string\"},\"text\":{\"type\":\"string\"},\"every\":{\"type\":\"string\",\"description\":\"routine cadence, e.g. daily 07:00\"}},\"required\":[\"op\"]}"
 tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	311f38b7	4	"calc"
 tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	3c417204	75	"Exact decimal arithmetic on one expression: + - * / ( ), 15% of 80, 80+15%."
 tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	158e528b	105	"{\"type\":\"object\",\"properties\":{\"expression\":{\"type\":\"string\",\"maxLength\":256}},\"required\":[\"expression\"]}"

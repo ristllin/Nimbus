@@ -78,6 +78,7 @@ struct RoutineDef {
   std::vector<std::string> tools;   // the tools it names; empty: kDefaultRoutineTools
   std::vector<std::string> paths;   // the files it may write; an entry ending in '/' lists a folder
   uint32_t holdS = 0;               // a held note's expiry in seconds; 0: kHeldNoteExpiryS
+  bool wakeup = false;              // a wakeup the assistant set (lane E2-P-MEM): the policy row TurnClass::Wakeup
 };
 // The default tools of a routine with none named (PRD section 6), before the policy row cuts them.
 extern const char* const kDefaultRoutineTools[3];

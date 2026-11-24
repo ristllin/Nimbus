@@ -109,13 +109,13 @@ bool takeOutsideCall() {
 // calc, web_search.
 // schedule (lane RB-U1b, schedule_device.cpp; lane E2-SCHED binds it): the same origin as the note tool,
 // and an entry delivers to the chat of the turn that made it.
-void registerMemoryFamilies(nimbus::orch::ToolRegistry& reg, const nimbus::orch::MemoryContext&) {
+void registerMemoryFamilies(nimbus::orch::ToolRegistry& reg, const nimbus::orch::MemoryContext& ctx) {
   notesdev::registerNote(reg, turnOrigin);
   scheduledev::registerSchedule(reg, turnOrigin, turnChat);
   filetoolsdev::registerFileTools(reg);
   nimbus::orch::registerCalcTool(reg);
   registerWebSearch(reg);
-  historydev::registerHistory(reg);   // E2-SRCH: answered through the turn (ChatBindingDeps::turnTool)
+  historydev::registerHistory(reg, ctx);   // E2-SRCH: answered through the turn; E2-P-MEM: scope memories reads ctx
   nimbus::orch::registerMore(reg);
 }
 

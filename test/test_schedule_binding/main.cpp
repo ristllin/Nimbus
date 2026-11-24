@@ -192,6 +192,7 @@ struct Device {
   sch::FireBinding fireBinding(bool withOutbox = true) {
     plain::ScheduleBindingDeps d;
     d.held = withOutbox ? &held : nullptr;
+    d.grants = grants;
     d.routineModel = "claude-haiku-5-5";
     d.fired = [this](const plain::FireReport&) { ++fires; };
     return plain::fireBindingFor(*binding, &routineFiles, d);
@@ -219,6 +220,7 @@ struct Device {
   std::unique_ptr<plain::ChatBinding> binding;
   std::vector<std::string> sent;
   int fires = 0;
+  bool grants = false;   // the owner's "/loop grants on"
 };
 
 orch::ToolResult call(MemHost& h, const std::string& json, bool owner = false) {
@@ -384,6 +386,47 @@ void test_with_no_outbox_a_routine_is_skipped_and_a_reminder_still_goes() {
 
 }  // namespace
 
+// Lane E2-P-MEM, D2: the assistant sets itself a wakeup through schedule (kind wakeup, engine 1's
+// wakeup.set): it fires once at `when` as an isolated run on the small model with its text as the
+// instruction, under the policy row of a wakeup (it reads; no spend, so no web_search even with the
+// owner's grants on, where a routine gets it), and at most four wait at once. Red before the lane:
+// "kind: reminder|routine".
+void test_a_wakeup_runs_its_text_once_under_the_wakeup_row() {
+  Device dev;
+  const auto okTool = [](ArduinoJson::JsonObjectConst, const orch::Principal&) { return orch::ToolResult::ok("ok"); };
+  const char* schema = R"({"type":"object","properties":{"query":{"type":"string"}}})";
+  dev.reg.add("web_search", "Search the web.", okTool, schema);
+  dev.reg.add("read_file", "Read a file.", okTool, schema);
+  dev.grants = true;
+  dev.boot();
+  const orch::ToolResult w = call(dev.host,
+      R"({"op":"create","kind":"wakeup","when":"2026-11-17 12:30","text":"check whether the backup job finished"})");
+  TEST_ASSERT_TRUE_MESSAGE(w.success, w.error.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(has(w.output, " wakeup 2026-11-17 12:30: check whether the backup job finished"), w.output.c_str());
+  const orch::ToolResult r = call(dev.host, R"({"op":"create","kind":"routine","every":"daily 12:00","text":"name one prime"})");
+  TEST_ASSERT_TRUE_MESSAGE(r.success, r.error.c_str());
+  dev.model.push(sp::say("The backup finished at 12:10."));
+  const orch::FireOutcome o = dev.fire(idIn(w));
+  TEST_ASSERT_TRUE_MESSAGE(o.ok, o.error.c_str());
+  TEST_ASSERT_EQUAL(1, (int)dev.model.requests().size());
+  const std::string& body = dev.model.requests()[0].body;
+  TEST_ASSERT_TRUE(has(body, "claude-haiku-5-5"));
+  TEST_ASSERT_TRUE(has(body, "check whether the backup job finished"));
+  TEST_ASSERT_TRUE_MESSAGE(has(body, "\"read_file\""), body.c_str());
+  TEST_ASSERT_FALSE_MESSAGE(has(body, "\"web_search\""), "a wakeup may not spend, grants or not");
+  TEST_ASSERT_EQUAL_STRING("web|The backup finished at 12:10.", dev.sent.back().c_str());
+  // The counter: the owner's routine with grants on is offered web_search.
+  dev.model.push(sp::say("7"));
+  TEST_ASSERT_TRUE(dev.fire(idIn(r)).ok);
+  TEST_ASSERT_TRUE(has(dev.model.requests()[1].body, "\"web_search\""));
+  // At most four wakeups wait at once (engine 1's cap).
+  for (int i = 0; i < 3; ++i)
+    TEST_ASSERT_TRUE(call(dev.host, R"({"op":"create","kind":"wakeup","when":"2026-11-18 09:00","text":"look again"})").success);
+  const orch::ToolResult fifth = call(dev.host, R"({"op":"create","kind":"wakeup","when":"2026-11-18 09:00","text":"look again"})");
+  TEST_ASSERT_FALSE(fifth.success);
+  TEST_ASSERT_EQUAL_STRING("max 4 wakeups", fifth.error.c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_a_due_reminder_sends_exactly_its_text_and_makes_no_provider_request);
@@ -392,5 +435,6 @@ int main(int, char**) {
   RUN_TEST(test_an_update_changes_the_named_record_and_no_other);
   RUN_TEST(test_remind_makes_the_owners_record_approved_even_with_ask_first);
   RUN_TEST(test_with_no_outbox_a_routine_is_skipped_and_a_reminder_still_goes);
+  RUN_TEST(test_a_wakeup_runs_its_text_once_under_the_wakeup_row);
   return UNITY_END();
 }

@@ -1,5 +1,6 @@
 #pragma once
 #include "nimbus/harness/plain/turn.h"
+#include "nimbus/orch/memory_tools.h"   // MemoryContext
 #include "nimbus/orch/tool_registry.h"
 
 // history_tools_device - the device binding of engine 2's search and view (lane E2-SRCH,
@@ -10,8 +11,10 @@
 // (tools/engine/engine2_only.txt). Turn task only: the tools run inside the turn like every other tool.
 namespace agent::historydev {
 
-// The declarations of search and view on `reg` (their registry handlers refuse: no turn).
-void registerHistory(nimbus::orch::ToolRegistry& reg);
+// The declarations of search and view on `reg` (their registry handlers refuse: no turn). Lane E2-P-MEM:
+// `mem` is the memory engine's context (memory::begin) the scope memories reads through engine 1's
+// memory.search; the scope files reads through files::searchText.
+void registerHistory(nimbus::orch::ToolRegistry& reg, const nimbus::orch::MemoryContext& mem);
 // ChatBindingDeps::turnTool: search and view of the turn's own conversation, under the PSRAM-first
 // scope; one log line per call with the card time, bytes, the poll task's free stack and the largest
 // internal block after it.

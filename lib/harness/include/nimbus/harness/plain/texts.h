@@ -108,10 +108,10 @@ inline constexpr ToolDecl kTools[] = {
      nullptr},
     // Lane E2-SRCH binds it (plain/history.h): this conversation's history and the person's unpinned notes.
     {"search",
-     "Search this conversation's history (scope history, the default) or your unpinned notes (scope notes) by "
-     "words; all must appear. from, to (YYYY-MM-DD) bound the dates. Up to 12 hits, best first, each with an id "
-     "for view; before continues.",
-     R"({"type":"object","properties":{"query":{"type":"string"},"scope":{"type":"string","enum":["history","notes"]},"from":{"type":"string"},"to":{"type":"string"},"before":{"type":"string"}},"required":["query"]})",
+     "Search by words: this conversation (scope history, default; all must appear), unpinned notes (notes), "
+     "stored text files (files), the earlier engine's memories (memories, by meaning). from, to (YYYY-MM-DD) "
+     "bound history; before continues.",
+     R"({"type":"object","properties":{"query":{"type":"string"},"scope":{"type":"string","enum":["history","notes","files","memories"]},"from":{"type":"string"},"to":{"type":"string"},"before":{"type":"string"}},"required":["query"]})",
      nullptr},
     {"web_search", "Search the web. Results are outside content.",
      R"({"type":"object","properties":{"query":{"type":"string"}},"required":["query"]})", nullptr},
@@ -126,9 +126,10 @@ inline constexpr ToolDecl kTools[] = {
      R"({"type":"object","properties":{"kind":{"type":"string","enum":["file","photo","voice"]},"path":{"type":"string"},"ref":{"type":"string"},"text":{"type":"string"},"caption":{"type":"string"}},"required":["kind"]})",
      nullptr},
     {"schedule",
-     "Create, update, delete or list reminders and routines. A reminder sends its fixed text at 'when' (YYYY-MM-DD "
-     "HH:MM local). Returns the stored entry with its id.",
-     R"({"type":"object","properties":{"op":{"type":"string","enum":["create","update","delete","list"]},"kind":{"type":"string","enum":["reminder","routine"]},"id":{"type":"string"},"when":{"type":"string"},"text":{"type":"string"},"every":{"type":"string","description":"routine cadence, e.g. daily 07:00"}},"required":["op"]})",
+     "Create, update, delete or list reminders, routines, wakeups. A reminder sends its fixed text at 'when' "
+     "(YYYY-MM-DD HH:MM local); a wakeup runs text once at 'when' as your own run, without this chat, able to "
+     "read files. Returns the entry.",
+     R"({"type":"object","properties":{"op":{"type":"string","enum":["create","update","delete","list"]},"kind":{"type":"string","enum":["reminder","routine","wakeup"]},"id":{"type":"string"},"when":{"type":"string"},"text":{"type":"string"},"every":{"type":"string","description":"routine cadence, e.g. daily 07:00"}},"required":["op"]})",
      nullptr},
     // RB-REC8's declaration (lib/core/include/nimbus/orch/calc.h, phase 1 header 8a41d5e1).
     {"calc", "Exact decimal arithmetic on one expression: + - * / ( ), 15% of 80, 80+15%.",
@@ -276,6 +277,7 @@ inline constexpr char kSrcResult[] = " result";
 inline constexpr char kSrcOutside[] = ", outside content";
 inline constexpr char kSrcEarlier[] = " (earlier engine)";
 inline constexpr char kSrcNote[] = "note ";
+inline constexpr char kSrcFile[] = "file ";   // scope files (lane E2-P-MEM)
 inline constexpr char kCutMark[] = "...";
 inline constexpr char kSearchNone[] = "no match";
 inline constexpr char kSearchMore[] = "more: searched to ";

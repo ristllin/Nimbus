@@ -1347,3 +1347,23 @@ PC-0175, PC-0176: not used.
 - lane: E2-P-PHOTO
 - prd: section 5 (photos; PRD.md:189, a blind head reads the description stored at arrival), ROUTER-DESIGN.md section 7, ruling 116, AGENTS.md rule 9
 - why: lib/core/include/nimbus/orch/tx/photo_text.h kPhotoNoSight and kPhotoRefused, the two ends of tx::photoAbsentLine, which never says "shown earlier". Blind (a head without image input): "[photo p<ref> <when>: <description>]" with the description made once at arrival by engine 1's caption walk (only for such a head; no catalogued text), else "...: this model cannot see photos]" (the router design's words); before, such a head got the photo's bracket with "(attached: the photo itself is in this message)", which was not true. Refused: "...: the provider refused this photo, so it is not attached]": a provider refusal naming the image (imageparts::refusedImages, a 400 or 422) re-sends the round once with the photo as this line and keeps it out of view in the chat, so the turn ends in the model's reply instead of an error line alone (engine 1 re-sends with a transcription). Red scenario: test_plain_conformance test_a_photo_the_provider_refuses_ends_in_a_reply_with_a_true_line. PC-0232: not used.
+
+### PC-0233: search declares the scopes files and memories, schedule declares the kind wakeup (engine 2)
+- catalog: e2
+- class: tool_descriptions
+- kind: spec
+- bytes: 4535 -> 4640
+- sha8: bab37350 -> aebfed83
+- lane: RB-N3
+- prd: section 4 (tool 7, search scope files and memories, read only over /mem/vectors.bin; wakeup.set becomes schedule), section 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h kTools: search's description names its four scopes (history with all words, notes, files, the earlier engine's memories by meaning) and its schema enum gains "files" and "memories"; schedule's description names the wakeup ("runs text once at 'when' as your own run, without this chat, able to read files": what the policy row TurnClass::Wakeup lets a routine fire do) and its kind enum gains "wakeup". Both stay under 240 B. Written by lane E2-P-MEM (the schedule part is RB-U1b's tool). Planned work, not a fix (inventory parity-modalities-media rows 18 and 25, parity-autonomy-memory-safety rows A6 and M7).
+
+### PC-0234: search's file hit line and schedule's wakeup words (engine 2)
+- catalog: e2
+- class: tool_results
+- kind: spec
+- bytes: 7071 -> 7097
+- sha8: ed391636 -> d5a076a0
+- lane: RB-N3
+- prd: section 4 (tools 7 and schedule), ruling 117 (the class ceiling 7,168 B for search's lines), ruling 116
+- why: texts.h kSrcFile "file " opens a scope-files hit ("file <project>/<name>: ...<excerpt>..."; the rest lines are search's own). lib/core/src/orch_schedule_tool.cpp: the kind slug "wakeup"; kBadKind "kind: reminder|routine" becomes "kind: reminder|routine|wakeup"; kWrongKey "reminder: when; routine: every" becomes "reminder, wakeup: when; routine: every"; the cap refusal "max 4 wakeups" is built from the existing "max " and the slug. The scope memories answers engine 1's memory.search text whole (e1 catalog, unchanged), including its one line when embeddings cannot serve ("keyword match, embeddings unavailable: <why>"). Facts only. Written by lane E2-P-MEM (the schedule words are RB-U1b's tool). PC-0235: not used.

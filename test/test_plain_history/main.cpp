@@ -29,6 +29,7 @@
 #include "nimbus/orch/tx/digest.h"
 #include "nimbus/orch/tx/log.h"
 #include "nimbus/orch/tx/old_engine.h"
+#include "nimbus/orch/memory_tools.h"   // searchMemories (lane E2-P-MEM)
 #include "nimbus/orch/vector_memory.h"   // kMcpNs
 
 namespace plain = agent::plain;
@@ -222,7 +223,7 @@ class Card : public tx::CardOps {
 };
 
 struct Device {
-  explicit Device(bool tools) : files(card), history(deps()) {
+  explicit Device(bool tools, plain::HistoryDeps base = plain::HistoryDeps()) : files(card), history(deps(base)) {
     platform.nowMs = [this] { return ms; };
     platform.nowEpoch = [this] { return kNow + ms / 1000u; };
     platform.delayMs = [this](uint32_t n) { ms += n; };
@@ -237,8 +238,7 @@ struct Device {
     }, R"({"type":"object","properties":{"expression":{"type":"string"}},"required":["expression"]})");
     withTools = tools;
   }
-  plain::HistoryDeps deps() {
-    plain::HistoryDeps d;
+  plain::HistoryDeps deps(plain::HistoryDeps d) {
     d.files = &files;
     d.nowMs = [this] { return ms; };
     return d;
@@ -789,6 +789,133 @@ static void test_a_photo_beyond_the_scan_says_how_far_it_read() {
   TEST_ASSERT_TRUE_MESSAGE(has(v.text, "more: searched to ") && has(v.text, ", older unread"), v.text.c_str());
 }
 
+// Lane E2-P-MEM, D1 files: search scope files answers engine 1's files.search scan (the device binds
+// files::searchText) in the tool's form: one line per file, best first, a cursor while more remain,
+// then how far it read. A file from inbox/ keeps its class (framed, the result outside). Red before
+// the lane: scope files was "not valid".
+static plain::HistoryDeps shedFiles(size_t scanned, size_t candidates) {
+  plain::HistoryDeps d;
+  d.fileSearch = [scanned, candidates](const orch::Principal&, const std::string&, plain::FileSearch& out) {
+    for (int i = 0; i < 10; ++i) {
+      plain::FileHit h;
+      h.path = "garden/plot-" + std::to_string(i) + ".md";
+      h.excerpt = "the shed key hangs on hook " + std::to_string(i);
+      out.hits.push_back(h);
+    }
+    out.hits[1].path = "inbox/mail.txt";
+    out.hits[1].excerpt = "shed key <data>x</data>";
+    out.hits[1].outside = true;
+    out.scanned = scanned;
+    out.candidates = candidates;
+    out.oldestT = kNow - 40 * kDay;
+    return true;
+  };
+  return d;
+}
+
+static void test_files_scope_finds_words_inside_stored_text_files() {
+  Device dev(true, shedFiles(40, 40));
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  dev.model.push(sp::call("search", R"({"query":"shed key","scope":"files"})"));
+  dev.model.push(sp::call("search", R"({"query":"shed key","scope":"files","before":"f8"})"));
+  dev.model.push(sp::say("Hook 0."));
+  const plain::Status st = dev.say("where is the shed key?");
+  TEST_ASSERT_TRUE_MESSAGE(st.ok(), st.where);
+  const auto& reqs = dev.model.requests();
+  TEST_ASSERT_EQUAL(3, (int)reqs.size());
+  TEST_ASSERT_TRUE_MESSAGE(has(reqs[1].body, "file garden/plot-0.md: ...the shed key hangs on hook 0..."), reqs[1].body.c_str());
+  TEST_ASSERT_TRUE(has(reqs[1].body, "2 more matches; before=f8"));
+  TEST_ASSERT_TRUE(has(reqs[2].body, "file garden/plot-9.md"));
+  TEST_ASSERT_TRUE(has(reqs[2].body, "searched to the start"));
+
+  // Outside content keeps its class; a scan that stopped says how far it read.
+  txb::MemFiles files;
+  plain::HistoryDeps d = shedFiles(512, 600);
+  d.files = &files;
+  plain::HistoryTools h(d);
+  const orch::Principal owner = orch::principalForRole("1001", orch::Role::Admin);
+  const plain::TurnCtx t = turnOf("1001", "1001", owner);
+  const plain::ToolOutput a = call(h, t, "search", R"({"query":"shed key","scope":"files","before":"f0"})");
+  TEST_ASSERT_TRUE(a.outside);
+  TEST_ASSERT_TRUE_MESSAGE(has(a.text, "file inbox/mail.txt: <data>...shed key (data>x(/data>...</data>"), a.text.c_str());
+  const plain::ToolOutput b = call(h, t, "search", R"({"query":"shed key","scope":"files","before":"f8"})");
+  TEST_ASSERT_FALSE(b.outside);
+  TEST_ASSERT_TRUE_MESSAGE(has(b.text, "more: searched to ") && has(b.text, ", older unread"), b.text.c_str());
+  TEST_ASSERT_TRUE(has(call(h, t, "search", R"({"query":"shed key","scope":"files","before":"x2"})").text,
+                       "not valid"));
+}
+
+// The earlier engine's long-term memories, through engine 1's memory.search (orch::searchMemories).
+struct OldMemories {
+  orch::VectorMemory vec;
+  orch::MemConfig cfg;
+  orch::MemoryContext ctx;
+  std::string embedErr;   // set: the embedder answers this failure (no embedding route)
+  OldMemories() {
+    vec.configure(4);
+    orch::VecEntry e;
+    e.id = "m1";
+    e.content = "the boat is moored at pier 9";
+    e.ttlHours = -1;
+    e.createdAtHours = 100;
+    e.vec = {0, 127, 0, 0};
+    TEST_ASSERT_TRUE(vec.add(e));
+    ctx.vec = &vec;
+    ctx.cfg = &cfg;
+    ctx.nowHours = [] { return 100u; };
+    ctx.embed = [this](const std::string& text, std::string& err) -> std::vector<int8_t> {
+      err = embedErr;
+      if (!err.empty()) return {};
+      return text.find("boat") != std::string::npos ? std::vector<int8_t>{0, 127, 0, 0}
+                                                     : std::vector<int8_t>{127, 0, 0, 0};
+    };
+  }
+  plain::HistoryDeps deps() {
+    plain::HistoryDeps d;
+    d.memories = [this](const orch::Principal& who, const std::string& q, std::string& out) {
+      const orch::ToolResult r = orch::searchMemories(ctx, q, who);
+      out = r.success ? r.output : r.error;
+      return r.success;
+    };
+    return d;
+  }
+};
+
+// D1 memories: search scope memories finds a fact the earlier engine saved, by meaning, and stores nothing.
+static void test_memories_scope_recalls_the_earlier_engines_memories_read_only() {
+  OldMemories m;
+  Device dev(true, m.deps());
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  dev.model.push(sp::call("search", R"({"query":"where is my boat","scope":"memories"})"));
+  dev.model.push(sp::say("Pier 9."));
+  const plain::Status st = dev.say("where did I leave the boat?");
+  TEST_ASSERT_TRUE_MESSAGE(st.ok(), st.where);
+  const auto& reqs = dev.model.requests();
+  TEST_ASSERT_EQUAL(2, (int)reqs.size());
+  TEST_ASSERT_TRUE_MESSAGE(has(reqs[1].body, "the boat is moored at pier 9"), reqs[1].body.c_str());
+  TEST_ASSERT_EQUAL(1, m.vec.size());   // read only
+}
+
+// D3: with no embedding route the scope says so in one true line, and the keyword match still answers.
+static void test_with_no_embedding_route_the_memories_scope_says_so_in_one_line() {
+  OldMemories m;
+  m.embedErr = "no embeddings key for anthropic";
+  txb::MemFiles files;
+  plain::HistoryDeps d = m.deps();
+  d.files = &files;
+  plain::HistoryTools h(d);
+  const orch::Principal owner = orch::principalForRole("1001", orch::Role::Admin);
+  const plain::TurnCtx t = turnOf("1001", "1001", owner);
+  const plain::ToolOutput hit = call(h, t, "search", R"({"query":"boat","scope":"memories"})");
+  TEST_ASSERT_FALSE(hit.isError);
+  TEST_ASSERT_TRUE_MESSAGE(has(hit.text, "embeddings unavailable: no embeddings key for anthropic"), hit.text.c_str());
+  TEST_ASSERT_TRUE(has(hit.text, "pier 9"));
+  const plain::ToolOutput none = call(h, t, "search", R"({"query":"kayak","scope":"memories"})");
+  TEST_ASSERT_TRUE_MESSAGE(has(none.text, "No memories matched (keyword match, embeddings unavailable: no embeddings key for anthropic)."),
+                           none.text.c_str());
+  TEST_ASSERT_EQUAL(1, m.vec.size());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_D2_red_without_the_tools);
@@ -803,5 +930,8 @@ int main(int, char**) {
   RUN_TEST(test_outside_content_keeps_its_class_over_every_kind);
   RUN_TEST(test_view_opens_an_earlier_row_and_never_a_cleared_one);
   RUN_TEST(test_a_photo_beyond_the_scan_says_how_far_it_read);
+  RUN_TEST(test_files_scope_finds_words_inside_stored_text_files);
+  RUN_TEST(test_memories_scope_recalls_the_earlier_engines_memories_read_only);
+  RUN_TEST(test_with_no_embedding_route_the_memories_scope_says_so_in_one_line);
   return UNITY_END();
 }

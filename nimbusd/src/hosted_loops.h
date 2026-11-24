@@ -269,7 +269,7 @@ class HostedLoops {
   bool firesAsRoutine(const std::string& id) {
     ScheduleHost h(*this);
     nimbus::orch::schedule::Kind k = nimbus::orch::schedule::Kind::Routine;
-    return !nimbus::orch::schedule::entryKind(h, id, k) || k == nimbus::orch::schedule::Kind::Routine;
+    return !nimbus::orch::schedule::entryKind(h, id, k) || k != nimbus::orch::schedule::Kind::Reminder;
   }
   std::string sidecarPath() const { return sidecarPath_; }
   // Where routine state files live (the instance's transcript storage, FireBinding::files): a

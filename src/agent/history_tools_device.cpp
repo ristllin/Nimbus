@@ -10,8 +10,10 @@
 
 #include "../sys/agent_log.h"
 #include "engine_api.h"                       // utcOffsetAt
+#include "files_subsystem.h"                  // files::searchText, readsOthersFile (lane E2-P-MEM)
 #include "memory_subsystem.h"                 // memory::Lock, memory::episodic, haveSd, dataFs
 #include "nimbus/harness/plain/history.h"
+#include "nimbus/harness/plain/rails.h"       // readsOutsidePath
 #include "nimbus/harness/turn_memory.h"       // PsramFirstScope
 #include "nimbus/orch/blob_store.h"           // blobPath
 #include "nimbus/orch/episodic.h"
@@ -64,6 +66,46 @@ bool photoOnCard(const std::string& ref) {
   return false;
 }
 
+// Lane E2-P-MEM: the memory engine's context, kept from registerHistory (memory::begin's).
+nimbus::orch::MemoryContext s_mem;
+bool s_memBound = false;
+
+// Scope files: engine 1's files.search scan; a hit under inbox/ or agents/, or another person's file,
+// is outside content (file_tools_device.cpp's rule for read_file).
+bool fileSearch(const orch::Principal& who, const std::string& query, agent::plain::FileSearch& out) {
+  files::TextSearch found;
+  if (!files::searchText(query, std::string(), who, found)) return false;
+  out.scanned = found.scanned;
+  out.candidates = found.candidates;
+  out.oldestT = found.oldestAt;
+  for (const files::TextHit& h : found.hits) {
+    agent::plain::FileHit f;
+    f.path = h.project + "/" + h.name;
+    f.excerpt = h.snippet;
+    ArduinoJson::JsonDocument args;
+    args["path"] = f.path;
+    std::string json;
+    serializeJson(args, json);
+    f.outside = agent::plain::readsOutsidePath("read_file", json) || files::readsOthersFile(who, f.path);
+    out.hits.push_back(std::move(f));
+  }
+  return true;
+}
+
+// Scope memories: engine 1's memory.search under the card lock, as engine 1 dispatched it (its embedding
+// request releases the lock, CardRelease). The embedding provider is picked from the keys the device
+// holds first (memory::noteProviderKeysChanged: engine 1's pick, QW5), as engine 1's recall does.
+bool memoriesSearch(const orch::Principal& who, const std::string& query, std::string& out) {
+  memory::noteProviderKeysChanged();
+  orch::ToolResult r;
+  {
+    memory::Lock lk;
+    r = orch::searchMemories(s_mem, query, who);
+  }
+  out = r.success ? r.output : r.error;
+  return r.success;
+}
+
 agent::plain::HistoryTools& tools() {
   static agent::plain::HistoryTools* t = [] {
     agent::plain::HistoryDeps d;
@@ -75,6 +117,8 @@ agent::plain::HistoryTools& tools() {
     d.tzAt = [](uint64_t t) { return (int16_t)orchestrator::utcOffsetAt((uint32_t)t); };
     d.nowMs = [] { return (uint32_t)millis(); };
     d.photoReadable = photoOnCard;
+    d.fileSearch = fileSearch;
+    if (s_memBound) d.memories = memoriesSearch;
     return new agent::plain::HistoryTools(d);
   }();
   return *t;
@@ -82,7 +126,11 @@ agent::plain::HistoryTools& tools() {
 
 }  // namespace
 
-void registerHistory(orch::ToolRegistry& reg) { tools().registerInto(reg); }
+void registerHistory(orch::ToolRegistry& reg, const orch::MemoryContext& mem) {
+  s_mem = mem;
+  s_memBound = mem.vec && mem.embed;
+  tools().registerInto(reg);
+}
 
 bool answer(const agent::plain::ToolCall& call, const agent::plain::TurnCtx& turn, agent::plain::ToolOutput& out) {
   if (call.name != "search" && call.name != "view") return false;
