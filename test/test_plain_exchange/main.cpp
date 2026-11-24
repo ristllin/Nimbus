@@ -7,6 +7,8 @@
 #include <unity.h>
 
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <initializer_list>
@@ -1136,6 +1138,66 @@ static void test_no_markup_in_a_reason_is_read() {
                            refusedLine(400, anthropicError("invalid_request_error", "See https://e.example/docs")).c_str());
 }
 
+// Lane E2-FIX13 (test gap of E2-FIX11): the web chat shows the refusal line through its own renderer
+// (_mdInline and _mdInto in include/web/ui_js.h), which no C++ test runs. This case runs the class of
+// hostile provider text of test_no_markup_in_a_reason_is_read (every construct sample alone and in a
+// sentence, angle brackets and an ampersand, an image tag, every ordered pair of ASCII punctuation as
+// opener and closer) through the real exchange and pins each line the device sends in
+// test/golden/refusal_lines_web.jsonl ({"in": provider message, "line": the line}). The gate test
+// tools/release_gate/test_web_refusal_render.py renders every pinned line with the page's own
+// JavaScript under node and fails on any link, emphasis, code, list or markup. Bless with
+// GOLDEN_UPDATE=1 (and read the diff: every line must still be the literal provider words).
+static const char* const kWebCasesPath = "test/golden/refusal_lines_web.jsonl";
+
+static std::vector<std::string> webCaseMessages() {
+  std::vector<std::string> m = {
+      "[Renew here](https://evil.example/pay)", "**bold**", "say *this* now", "say _this_ now", "`code`",
+      "```\nblock\n```", "# heading", "- bullet", "1. first",
+      "a <b>x</b> & <a href=\"u\">y</a>", "<img src=x onerror=alert(1)> &amp; &lt;script&gt;",
+      "Use [the docs](http://e.example/d) or **call** _us_ at `555` <now> & later",
+      "See https://e.example/docs",
+  };
+  const size_t samples = m.size();
+  for (size_t i = 0; i < samples; ++i) m.push_back("Your plan lapsed. " + m[i] + " now");
+  const std::string punct = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
+  for (char a : punct)
+    for (char b : punct) {
+      std::string s = "w ";
+      s += a; s += "word"; s += b; s += ' ';
+      s += a; s += a; s += "word"; s += b; s += b; s += ' ';
+      s += a; s += "word"; s += b; s += "(https://e.example/p) end";
+      m.push_back(s);
+    }
+  return m;
+}
+
+static void test_the_web_cases_are_the_lines_the_device_sends() {
+  std::string text;
+  for (const std::string& msg : webCaseMessages()) {
+    JsonDocument d;
+    d["in"] = msg;
+    d["line"] = refusedLine(400, anthropicError("invalid_request_error", msg));
+    std::string row;
+    serializeJson(d, row);
+    text += row + '\n';
+  }
+  const char* bless = std::getenv("GOLDEN_UPDATE");
+  if (bless && std::strcmp(bless, "1") == 0) {
+    FILE* f = std::fopen(kWebCasesPath, "wb");
+    TEST_ASSERT_NOT_NULL_MESSAGE(f, kWebCasesPath);
+    std::fwrite(text.data(), 1, text.size(), f);
+    std::fclose(f);
+    return;
+  }
+  FILE* f = std::fopen(kWebCasesPath, "rb");
+  TEST_ASSERT_NOT_NULL_MESSAGE(f, "missing test/golden/refusal_lines_web.jsonl - run with GOLDEN_UPDATE=1");
+  std::string onDisk;
+  char buf[4096];
+  for (size_t n; (n = std::fread(buf, 1, sizeof(buf), f)) > 0;) onDisk.append(buf, n);
+  std::fclose(f);
+  TEST_ASSERT_TRUE_MESSAGE(onDisk == text, "the refusal lines drifted from test/golden/refusal_lines_web.jsonl - re-bless with GOLDEN_UPDATE=1");
+}
+
 // The reason rides class Other only: every other class's line is byte-identical with and without a
 // message in the body; and each body shape providerErrorText reads yields the reason.
 static void test_a_reason_rides_no_other_class_and_every_body_shape_yields_it() {
@@ -1408,6 +1470,7 @@ int main(int, char**) {
   RUN_TEST(test_a_refusal_reason_is_printable_ascii_on_one_line);
   RUN_TEST(test_the_key_rule_keeps_ordinary_reasons_and_drops_keys);
   RUN_TEST(test_no_markup_in_a_reason_is_read);
+  RUN_TEST(test_the_web_cases_are_the_lines_the_device_sends);
   RUN_TEST(test_a_reason_rides_no_other_class_and_every_body_shape_yields_it);
   RUN_TEST(test_a_stale_reason_never_joins_a_later_status);
   RUN_TEST(test_provider_slug_of_a_head);
