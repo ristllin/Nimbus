@@ -6,15 +6,15 @@
     "freenove-35": {"env": "esp32s3-cyd-35", "baseline": 91275, "ceiling": 91723},
     "freenove-40": {"env": "esp32s3-cyd-40", "baseline": 91275, "ceiling": 91723}
   },
-  "engine2_about": "Engine-2 images (lane RB-I0), checked by check_static_dram.py like the shipped variants but kept apart from them: release.yml ships none yet (RB-FLIP adds a shipped e2 variant to `variants` when it ships). baseline: measured at rb-main engine2_baseline_sha (lane E2-GATE, 24 Nov 2026). ceiling: baseline + 2048 B of declared room (ruling 121): a policy line, not the physical limit; growth above the baseline must be declared (allowance_how), and using more than the room needs the bench heap A/B and a ruling.",
-  "engine2_baseline_sha": "902391f7ff2440d8fcc500ee8c5885ab30454f8b",
+  "engine2_about": "Engine-2 images (lane RB-I0), checked by check_static_dram.py like the shipped variants but kept apart from them: release.yml ships none yet (RB-FLIP adds a shipped e2 variant to `variants` when it ships). baseline: measured at engine2_baseline_sha (lane E2-GATE, 24 Nov 2026; re-measured by lane E2-REP5 at its tip, every feature lane of 24 Nov in it). ceiling: baseline + 2048 B of declared room (ruling 121): a policy line, not the physical limit; growth above the baseline must be declared (allowance_how), and using more than the room needs the bench heap A/B and a ruling.",
+  "engine2_baseline_sha": "681321d62d104045ff75c5808ca0d0169eb1d44f",
   "allowance_how": "How a lane declares static DRAM growth (ruling 121): add \"static_dram_bytes\": N (bytes, an integer) to the lane's tools/release_gate/image_budget.d/<lane>.json, the same file as its image allowance (allowance_bytes 0 when the image does not grow), with the measured figure in its why. check_static_dram.py --lane <lane>, or any run on a lane/<lane> branch while engine2_baseline_sha is fresh, fails an engine-2 image whose growth over its baseline exceeds N, even under the ceiling; no declaration is 0 B. A declaration never lifts the ceiling. After a merge the orchestrator re-measures the engine-2 baselines (and this sha) with the image baseline.",
   "engine2": {
-    "nimbus-tft-e2": {"env": "esp32s3-e2", "baseline": 88195, "ceiling": 90243},
-    "freenove-28-e2": {"env": "esp32s3-cyd-e2", "baseline": 88275, "ceiling": 90323},
-    "freenove-35-e2": {"env": "esp32s3-cyd-35-e2", "baseline": 88275, "ceiling": 90323},
-    "freenove-40-e2": {"env": "esp32s3-cyd-40-e2", "baseline": 88275, "ceiling": 90323},
-    "test-e2": {"env": "test-e2", "baseline": 91027, "ceiling": 93075},
-    "test-cyd-e2": {"env": "test-cyd-e2", "baseline": 91107, "ceiling": 93155}
+    "nimbus-tft-e2": {"env": "esp32s3-e2", "baseline": 89035, "ceiling": 91083},
+    "freenove-28-e2": {"env": "esp32s3-cyd-e2", "baseline": 89131, "ceiling": 91179},
+    "freenove-35-e2": {"env": "esp32s3-cyd-35-e2", "baseline": 89131, "ceiling": 91179},
+    "freenove-40-e2": {"env": "esp32s3-cyd-40-e2", "baseline": 89131, "ceiling": 91179},
+    "test-e2": {"env": "test-e2", "baseline": 91867, "ceiling": 93915},
+    "test-cyd-e2": {"env": "test-cyd-e2", "baseline": 91963, "ceiling": 94011}
   }
 }
