@@ -1338,3 +1338,12 @@ PC-0175, PC-0176: not used.
 - lane: E2-FIX16
 - prd: section 4 (System prompt; a sentence that names a tool is shown only to a caller who can call it), AGENTS.md rule 9
 - why: lib/harness/include/nimbus/harness/plain/texts.h core::kNoLater "Promise nothing for later that you have not scheduled." (PC-0225) becomes "Promise nothing for later unless you schedule it.": composeSystem leaves out a sentence that names a tool its caller cannot call, and "scheduled" is not the tool's name, so PC-0225's words reached a guest, who cannot schedule (test_plain_request test_the_checker_catches_an_uncallable_name went red). With the tool's word the guest's core is as before. Replay of the captured first long-chat request on Haiku (lanes/E2-FIX16/scratch/probe.py, variant C1b): an unasked reminder in 1 of 10 (5 of 10 with the old line, 0 of 10 with none). 5 bytes fewer.
+### PC-0231: the line of a photo a head cannot take as pixels: blind head, refused photo (engine 2)
+- catalog: e2
+- class: stubs
+- kind: build
+- bytes: 290 -> 372
+- sha8: 3e277c2a -> af49befe
+- lane: E2-P-PHOTO
+- prd: section 5 (photos; PRD.md:189, a blind head reads the description stored at arrival), ROUTER-DESIGN.md section 7, ruling 116, AGENTS.md rule 9
+- why: lib/core/include/nimbus/orch/tx/photo_text.h kPhotoNoSight and kPhotoRefused, the two ends of tx::photoAbsentLine, which never says "shown earlier". Blind (a head without image input): "[photo p<ref> <when>: <description>]" with the description made once at arrival by engine 1's caption walk (only for such a head; no catalogued text), else "...: this model cannot see photos]" (the router design's words); before, such a head got the photo's bracket with "(attached: the photo itself is in this message)", which was not true. Refused: "...: the provider refused this photo, so it is not attached]": a provider refusal naming the image (imageparts::refusedImages, a 400 or 422) re-sends the round once with the photo as this line and keeps it out of view in the chat, so the turn ends in the model's reply instead of an error line alone (engine 1 re-sends with a transcription). Red scenario: test_plain_conformance test_a_photo_the_provider_refuses_ends_in_a_reply_with_a_true_line. PC-0232: not used.

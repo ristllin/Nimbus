@@ -3,7 +3,7 @@
 # One entry per line: class, source, sha8, bytes, the text as a JSON string.
 # class core bytes=1595 ceiling=3072 entries=30 sha8=6bf20834
 # class device_notes bytes=2046 ceiling=2048 entries=78 sha8=2204d611
-# class stubs bytes=290 ceiling=512 entries=12 sha8=3e277c2a
+# class stubs bytes=372 ceiling=512 entries=14 sha8=af49befe
 # class tool_results bytes=7071 ceiling=7168 entries=496 sha8=ed391636
 # class probe bytes=1323 ceiling=1536 entries=3 sha8=29789b84
 # class summarizer bytes=974 ceiling=1024 entries=17 sha8=1855fed2
@@ -120,6 +120,8 @@ stubs	lib/core/include/nimbus/net/tg_inbox.h	2b588162	31	" (a PDF: it cannot be 
 stubs	lib/core/include/nimbus/orch/tx/photo_text.h	775c6514	64	"shown earlier in this conversation; not attached to this request"
 stubs	lib/core/include/nimbus/orch/tx/photo_text.h	f7faedee	11	"; view id=p"
 stubs	lib/core/include/nimbus/orch/tx/photo_text.h	1c1868da	15	" shows it again"
+stubs	lib/core/include/nimbus/orch/tx/photo_text.h	bc665f65	28	"this model cannot see photos"
+stubs	lib/core/include/nimbus/orch/tx/photo_text.h	0ca121a8	54	"the provider refused this photo, so it is not attached"
 stubs	lib/core/include/nimbus/orch/tx/result_text.h	32ebb1ab	1	"("
 stubs	lib/core/include/nimbus/orch/tx/result_text.h	27e11f66	6	" ... ("
 stubs	lib/core/include/nimbus/orch/tx/result_text.h	0376d46c	72	"shown in full earlier in this conversation; not attached to this request"
