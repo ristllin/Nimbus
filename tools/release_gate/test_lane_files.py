@@ -459,7 +459,17 @@ def test_every_router_lane_has_its_entry_and_a_dry_run_of_its_files_passes():
     table = real_owners()
     rows = router_plan()
     assert [r["id"] for r in rows] == [
-        "E2-R1", "E2-R2a", "E2-R2b", "E2-R3", "E2-R4a", "E2-R4b", "E2-R5", "E2-R6", "E2-R7", "E2-R8", "E2-R10",
+        "E2-R1",
+        "E2-R2a",
+        "E2-R2b",
+        "E2-R3",
+        "E2-R4a",
+        "E2-R4b",
+        "E2-R5",
+        "E2-R6",
+        "E2-R7",
+        "E2-R8",
+        "E2-R10",
     ]
     for row in rows:
         entry = table["lanes"][row["id"]]

@@ -243,20 +243,34 @@ static void test_a_routed_row_takes_the_routers_limits() {
 // ---- the refused-field memory: only narrows ------------------------------------------------------------
 static bool subset(uint8_t a, uint8_t b) { return (a & ~b) == 0; }
 
-static bool narrowerOrEqual(const ModelRow& n, const ModelRow& r) {
-  return n.match == r.match && n.slot == r.slot && subset(n.inputKinds, r.inputKinds) &&
-         subset(n.imageFormats, r.imageFormats) && n.imageMaxKiB <= r.imageMaxKiB && n.imagesMax <= r.imagesMax &&
-         subset(n.flags & (uint8_t)~flag::kTools, r.flags) && (n.flags & flag::kTools) == (r.flags & flag::kTools) &&
-         subset(n.toolChoice, r.toolChoice) && subset(n.effortSet, r.effortSet) &&
-         (n.structured == r.structured || n.structured == Structured::None) &&
+// The bitmasks and sizes: never wider. The tools bit is never taken away.
+static bool bitsNarrower(const ModelRow& n, const ModelRow& r) {
+  return subset(n.inputKinds, r.inputKinds) && subset(n.imageFormats, r.imageFormats) &&
+         n.imageMaxKiB <= r.imageMaxKiB && n.imagesMax <= r.imagesMax && subset(n.flags, r.flags) &&
+         (n.flags & flag::kTools) == (r.flags & flag::kTools) && subset(n.toolChoice, r.toolChoice) &&
+         subset(n.effortSet, r.effortSet);
+}
+
+// Each enum either keeps its value or falls to the one that sends nothing.
+static bool enumsNarrower(const ModelRow& n, const ModelRow& r) {
+  const bool cache = n.cacheStyle == r.cacheStyle ||
+                     (r.cacheStyle == CacheStyle::OpenaiBreakpoints && n.cacheStyle == CacheStyle::OpenaiImplicit);
+  return (n.structured == r.structured || n.structured == Structured::None) &&
          (n.summarizerStructured == r.summarizerStructured || n.summarizerStructured == Structured::None) &&
          (n.thinking == r.thinking || n.thinking == Thinking::Off) &&
-         (n.replay == r.replay || n.replay == Replay::None) && n.replayScope == r.replayScope &&
-         (n.cacheStyle == r.cacheStyle ||
-          (r.cacheStyle == CacheStyle::OpenaiBreakpoints && n.cacheStyle == CacheStyle::OpenaiImplicit)) &&
-         (n.capMode == r.capMode || n.capMode == CapMode::Omit) && n.capParam == r.capParam &&
-         n.idRule == r.idRule && n.usageMode == r.usageMode && n.orderRules == r.orderRules &&
-         n.cacheMinTok == r.cacheMinTok;
+         (n.replay == r.replay || n.replay == Replay::None) && cache &&
+         (n.capMode == r.capMode || n.capMode == CapMode::Omit);
+}
+
+// What a refusal never touches.
+static bool sameIdentity(const ModelRow& n, const ModelRow& r) {
+  return n.match == r.match && n.slot == r.slot && n.kind == r.kind && n.replayScope == r.replayScope &&
+         n.capParam == r.capParam && n.idRule == r.idRule && n.usageMode == r.usageMode &&
+         n.orderRules == r.orderRules && n.cacheMinTok == r.cacheMinTok;
+}
+
+static bool narrowerOrEqual(const ModelRow& n, const ModelRow& r) {
+  return bitsNarrower(n, r) && enumsNarrower(n, r) && sameIdentity(n, r);
 }
 
 static void test_every_refusal_only_narrows_every_row() {

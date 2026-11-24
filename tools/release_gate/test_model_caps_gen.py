@@ -75,7 +75,7 @@ def test_counter_a_role_default_without_a_row_or_read_long_ago_fails(data):
 def test_role_defaults_are_read_from_the_defaults_table():
     rows = gen.role_defaults(open(gen.DEFAULTS_H, encoding="utf-8").read())
     assert ("anthropic", "claude-sonnet-5") in rows
-    assert ("openai", "gpt-5.6") in rows   # cumulo's head, read on its upstream
+    assert ("openai", "gpt-5.6") in rows  # cumulo's head, read on its upstream
     assert len(rows) >= 8
 
 
@@ -99,9 +99,12 @@ def test_role_defaults_are_read_from_the_defaults_table():
         (lambda d: d["template"]["failsafe"].update(inherit="claude5"), "inheritance cycle"),
         (lambda d: d["template"]["gpt"]["cap_param"].update(v="max_tokens"), "does not match the responses dialect"),
         (lambda d: d["template"]["claude5"]["cap_mode"].update(v="send_always"), "requires max_tokens"),
-        (lambda d: model(d, "anthropic", "claude-opus-5-5").update(
-            tool_choice={"v": ["auto", "any"], "src": "ant-errors", "read": "2026-11-24", "ver": "docs"}),
-         "which the model refuses"),
+        (
+            lambda d: model(d, "anthropic", "claude-opus-5-5").update(
+                tool_choice={"v": ["auto", "any"], "src": "ant-errors", "read": "2026-11-24", "ver": "docs"}
+            ),
+            "which the model refuses",
+        ),
         (lambda d: d["template"]["glm"]["tool_choice"].update(v=["required"]), "must allow tool_choice auto"),
         (lambda d: d["model"].append(copy.deepcopy(model(d, "zai", "glm-5.3"))), "listed twice"),
         (lambda d: d["model"].remove(model(d, "zai", "")), "needs exactly one '*'"),

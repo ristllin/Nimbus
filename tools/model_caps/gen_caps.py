@@ -385,27 +385,24 @@ def load(path: Path = SRC) -> dict:
         return tomllib.load(fh)
 
 
-def lint(data: dict, today: dt.date, tree=True, ids=None, defaults_text=None) -> "tuple[list, list, list]":
-    """(errors, resolved model rows, provider rows in slot order)."""
-    errs: list = []
-    if data.get("schema") != 1:
-        errs.append("schema must be 1")
-    sources = data.get("sources", {})
+def check_sources(sources: dict, errs: list) -> None:
     for k, s in sources.items():
         if not isinstance(s, str) or not s.startswith(("https://", "cumulo-nimbus/", "program-2026-10-18")):
             errs.append(f"source {k}: must be an https URL or a named project document")
-    templates = data.get("template", {})
-    provs = data.get("provider", [])
+
+
+def check_providers(provs: list, sources: dict, today: dt.date, errs: list) -> dict:
     by_slot = {}
     for p in provs:
         check_provider(p, sources, today, errs)
         if p.get("slot") in by_slot:
             errs.append(f"provider {p.get('slot')}: listed twice")
         by_slot[p.get("slot")] = p
-    for s in SLOTS:
-        if s not in by_slot:
-            errs.append(f"provider {s}: missing")
-    rows = [resolve(r, templates, model_where(r), errs) for r in data.get("model", [])]
+    errs += [f"provider {s}: missing" for s in SLOTS if s not in by_slot]
+    return by_slot
+
+
+def check_models(rows: list, sources: dict, by_slot: dict, today: dt.date, errs: list) -> None:
     seen = set()
     for r in rows:
         check_model(r, sources, by_slot, today, errs)
@@ -417,14 +414,26 @@ def lint(data: dict, today: dt.date, tree=True, ids=None, defaults_text=None) ->
         n = sum(1 for r in rows if r.get("slot") == s and r.get("kind") == "any")
         if n != 1:
             errs.append(f"slot {s}: needs exactly one '*' (kind any) row, has {n}")
-    for m in data.get("marker", []):
-        check_marker(m, sources, today, errs)
     if len(rows) > MAX_MODEL_ROWS:
         errs.append(f"{len(rows)} model rows (limit {MAX_MODEL_ROWS})")
+
+
+def lint(data: dict, today: dt.date, tree=True, ids=None, defaults_text=None) -> "tuple[list, list, list]":
+    """(errors, resolved model rows, provider rows in slot order)."""
+    errs: list = []
+    if data.get("schema") != 1:
+        errs.append("schema must be 1")
+    sources = data.get("sources", {})
+    check_sources(sources, errs)
+    by_slot = check_providers(data.get("provider", []), sources, today, errs)
+    templates = data.get("template", {})
+    rows = [resolve(r, templates, model_where(r), errs) for r in data.get("model", [])]
+    check_models(rows, sources, by_slot, today, errs)
+    for m in data.get("marker", []):
+        check_marker(m, sources, today, errs)
     if tree and not errs:
         check_tree(rows, data, today, errs, ids, defaults_text)
-    ordered = [by_slot[s] for s in SLOTS if s in by_slot]
-    return errs, rows, ordered
+    return errs, rows, [by_slot[s] for s in SLOTS if s in by_slot]
 
 
 # ---- the header --------------------------------------------------------------------------------
