@@ -1676,6 +1676,8 @@ void runScanFetch(nimbus::orch::FetchReq req) {
 }
 }  // namespace
 
+}  // namespace (the agent-tools block reopens below; searchText has the header's linkage)
+
 // files.search's scan (lane E2-P-MEM moved it out of registerTools unchanged, so engine 2's search
 // scope files runs the same code): the newest kSearchScanMax text docs the caller may read, each read
 // size-limited, ranked by textMatchScore (the shared lexical.h word rule, CUM-515), each with a snippet
@@ -1732,6 +1734,8 @@ bool searchText(const std::string& qy, const std::string& proj, const nimbus::or
   out.candidates = candidates;
   return true;
 }
+
+namespace {
 
 #if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: no old-engine tool registers on engine 2 (RB-I0)
 void registerTools() {
