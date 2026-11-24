@@ -19,7 +19,7 @@ import check_golden_scope as gs  # noqa: E402
 
 G = gs.GOLDENS
 ANT = G + "messages-anthropic-direct/one_call.req"
-MIS = G + "chat-mistral-direct/one_call.req"
+MIS = G + "chat-mistral-routed/one_call.req"   # lane E2-R10: Mistral direct is releasable (needs a ruling)
 OAI = G + "responses-openai-routed/text_only.req"
 MODELS_TEXT = (REPO / gs.MODELS).read_text(encoding="utf-8")
 
@@ -48,9 +48,9 @@ def test_a_planner_change_names_nothing_until_it_lists_its_goldens():
     assert len(gs.verdict([planner, MIS, OAI], set(), set(), {}, set())) == 2
     names, _ = gs.parse_names(["fix the pairing\n\nGolden-scope: mistral, responses-openai-routed\n"])
     assert gs.verdict([planner, MIS, OAI], set(), names, {}, set()) == []
-    names, _ = gs.parse_names(["Golden-scope: chat-mistral-direct/one_call.req"])
+    names, _ = gs.parse_names(["Golden-scope: chat-mistral-routed/one_call.req"])
     assert gs.verdict([planner, MIS], set(), names, {}, set()) == []
-    assert len(gs.verdict([planner, MIS, G + "chat-mistral-direct/two.req"], set(), names, {}, set())) == 1
+    assert len(gs.verdict([planner, MIS, G + "chat-mistral-routed/two.req"], set(), names, {}, set())) == 1
 
 
 def test_a_releasable_slot_needs_a_ruling_even_when_named():
