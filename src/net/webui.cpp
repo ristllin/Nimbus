@@ -1391,11 +1391,9 @@ static void buildOrchState(String& out) {
       JsonArray a = inert.add<JsonArray>();
       a.add(id); a.add(line); a.add(up);
     };
-    add("midFail", "Switching providers mid-task is not used by the new engine: it runs on one provider.", 0);
-    add("codeSbx", "The code sandbox is not part of the new engine.", 0);
+    // Fail-over, both fallback orders, the connectors and the sandbox switch (OpenAI head) act on the new
+    // engine since E2-P-FO and E2-P-CONN2, so none is hidden.
     add("orchTrace", "The new engine always keeps the record of each turn; this switch does nothing there.", 0);
-    add("provPrioList", "The fallback order is not used by the new engine: it runs on one provider.", 2);
-    add("subPrioList", "The session fallback order is not used by the new engine.", 2);
   }
 #endif
   d["ttsOn"]    = agent::store::ttsEnabled();   // "Voice replies" toggle (P2.5)

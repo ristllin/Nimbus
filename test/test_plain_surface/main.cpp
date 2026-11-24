@@ -433,6 +433,23 @@ static void test_tools_page_and_help_name_only_what_engine_2_has() {
   }
 }
 
+// E2-REP2: a setting that acts on engine 2 is not hidden as inert. Fail-over, the fallback orders and
+// /api/fallbacks reach the head (E2-P-FO); the page hides only what the engine still ignores.
+static void test_a_setting_the_engine_reads_is_not_hidden_as_inert() {
+  const std::string web = readFile("src/net/webui.cpp");
+  const size_t at = web.find("JsonArray inert = d[\"inert\"]");
+  TEST_ASSERT_TRUE(at != std::string::npos);
+  const size_t end = web.find("#endif", at);
+  const std::string block = web.substr(at, end - at);
+  for (const char* id : {"\"midFail\"", "\"provPrioList\"", "\"subPrioList\"", "\"codeSbx\""})
+    TEST_ASSERT_TRUE_MESSAGE(!has(block, id), id);
+  TEST_ASSERT_TRUE(has(block, "\"orchTrace\""));
+  const std::string orch = readFile("src/agent/orchestrator_plain.cpp");
+  TEST_ASSERT_TRUE(has(orch, "store::midTurnFailover()"));
+  TEST_ASSERT_TRUE(has(orch, "store::providerPriority()"));
+  TEST_ASSERT_TRUE(has(orch, "store::subPriority()"));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_lastturn_renders_the_stored_turn_again_byte_for_byte);
@@ -443,5 +460,6 @@ int main(int, char**) {
   RUN_TEST(test_a_call_the_rails_refuse_is_told_for_the_safety_tab);
   RUN_TEST(test_usage_rows_carry_the_provider_and_the_served_model);
   RUN_TEST(test_tools_page_and_help_name_only_what_engine_2_has);
+  RUN_TEST(test_a_setting_the_engine_reads_is_not_hidden_as_inert);
   return UNITY_END();
 }
