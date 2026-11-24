@@ -52,8 +52,11 @@ and the lab cannot quietly rot.
 every command above runs on it unchanged. `--engine=2 selftest` (also run by
 `make check`) sends one scripted owner text through the plain loop, engine 2,
 using nimbusd's `src/plain_rig.h`, plus a provider that errors, one that hangs and
-an empty answer. It is offline only: until the wires land, engine 2 answers no
-other command, and none falls back to engine 1.
+an empty answer. It is offline. The one other engine-2 command is `r10` (lab_r10.h, lane
+E2-R10): PAID, it runs owner turns and the route goldens' transcripts on engine 2 against a
+real provider and records every body (`--engine=2 r10 <provider> <model> <out dir> <dotenv>
+<key var> engine,codec`; the key is read from the named file in the process). No command
+falls back to engine 1.
 
 ## Keys
 
