@@ -39,6 +39,7 @@ lib/harness/src/plain_media.cpp
 lib/harness/src/plain_prefix.cpp
 lib/harness/src/plain_rails.cpp
 lib/harness/src/plain_request.cpp
+lib/harness/src/plain_head_slot.cpp
 lib/harness/src/plain_resume.cpp
 lib/harness/src/plain_route.cpp
 lib/harness/src/plain_surface.cpp
@@ -48,6 +49,9 @@ lib/harness/src/plain_waiting.cpp
 lib/harness/src/plain_wire.cpp
 lib/harness/src/schedule_fire.cpp
 lib/harness/src/providers/plain_wire_anthropic.cpp
+# E2-R6 and E2-R7: the Chat and Responses codecs.
+lib/harness/src/providers/plain_wire_chat.cpp
+lib/harness/src/providers/plain_wire_openai.cpp
 # E2-R2b: the shared planner and the strict JSON reader of the wires.
 lib/harness/src/providers/plain_json_reader.cpp
 lib/harness/src/providers/plain_plan.cpp
