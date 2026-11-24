@@ -6,10 +6,10 @@ parse refusal ""
 parse calls 0
 parse meta 0
 parse usage prompt=0 completion=0 cacheRead=0 cacheWrite=0 cacheWrite1h=0 responses=0 maxRequestIn=0 served=""
-exchange err=key http=429 requests=1 retries=0 climbs=0 cutRetried=0 failOver=0 parkHost=1 maxTokens=1998 requestBytes=734 ms=0 waitedMs=0 statusLine=5
+exchange err=key http=429 requests=1 retries=0 climbs=0 cutRetried=0 failOver=0 parkHost=1 maxTokens=1998 requestBytes=792 ms=0 waitedMs=0 statusLine=5
 exchange line "No reply: Z.ai refused the key or the account has no credit (HTTP 429). Check the key and credit."
 exchange line stored "No reply: Z.ai refused the key or the account has no credit (HTTP 429). Check the key and credit."
-exchange request 0 734 B fnv64=b28e696838d5468f
+exchange request 0 792 B fnv64=e4823a3784053fb0
 exchange step stop other
 exchange step text 0 B fnv64=14650fb0739d0383 head=""
 exchange step refusal ""

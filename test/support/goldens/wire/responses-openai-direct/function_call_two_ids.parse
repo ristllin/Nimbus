@@ -8,10 +8,10 @@ parse   call 0 id="call_42aef2563875462f9c98701fcbbf0c5b" name="read_file" compl
 parse meta 1
 parse   meta 0 beforeCall=0 1903 B fnv64=359961455c37c7da head="{\"type\":\"reasoning\",\"id\":\"rs_scrubbed\",\"summary\""
 parse usage prompt=3 completion=48 cacheRead=1206 cacheWrite=49 cacheWrite1h=0 responses=1 maxRequestIn=1258 served="gpt-5.6-luna"
-exchange err=ok http=200 requests=1 retries=0 climbs=0 cutRetried=0 failOver=0 parkHost=0 maxTokens=0 requestBytes=1129 ms=0 waitedMs=0 statusLine=0
+exchange err=ok http=200 requests=1 retries=0 climbs=0 cutRetried=0 failOver=0 parkHost=0 maxTokens=0 requestBytes=1187 ms=0 waitedMs=0 statusLine=0
 exchange line ""
 exchange line stored ""
-exchange request 0 1129 B fnv64=aa6f4f795f9866d9
+exchange request 0 1187 B fnv64=9796c3b8ff15234a
 exchange step stop tool
 exchange step text 0 B fnv64=14650fb0739d0383 head=""
 exchange step refusal ""

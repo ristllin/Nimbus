@@ -7,10 +7,10 @@ parse calls 0
 parse meta 1
 parse   meta 0 beforeCall=0 247 B fnv64=3994060579d1f2e1 head="{\"type\":\"thinking\",\"thinking\":[{\"type\":\"text\",\"t"
 parse usage prompt=1916 completion=45 cacheRead=0 cacheWrite=0 cacheWrite1h=0 responses=1 maxRequestIn=1916 served="mistral-large-4-0"
-exchange err=ok http=200 requests=1 retries=0 climbs=0 cutRetried=0 failOver=0 parkHost=0 maxTokens=2192 requestBytes=817 ms=0 waitedMs=0 statusLine=0
+exchange err=ok http=200 requests=1 retries=0 climbs=0 cutRetried=0 failOver=0 parkHost=0 maxTokens=2192 requestBytes=875 ms=0 waitedMs=0 statusLine=0
 exchange line ""
 exchange line stored ""
-exchange request 0 817 B fnv64=c1f5c67edb0ee48b
+exchange request 0 875 B fnv64=86d23090b910263c
 exchange step stop end
 exchange step text 21 B fnv64=783271277986f1bb head="Two plus two is four."
 exchange step refusal ""

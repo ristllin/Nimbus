@@ -4,5 +4,5 @@ POST https://llm.example.test:443/v1/chat/completions
 header content-type: application/json
 header authorization: Bearer fixture-key-not-a-secret
 splices 0
-body 580
-{"model":"local-model","messages":[{"role":"system","content":"You are a test assistant for the route goldens. Answer briefly.\n\nPinned: the test garden has three beds.\n\nMon 16 Nov: planned the spring beds."},{"role":"user","content":[{"type":"text","text":"[2026-11-17 Tue 13:02] What is in notes/beds.md?"},{"type":"text","text":"[device] earlier I ran read_note: # Beds\nbed 1: beans\nbed 2: leeks\nbed 3: empty"}]},{"role":"assistant","content":"Bed 1 has beans, bed 2 leeks, bed 3 is empty."},{"role":"user","content":"[2026-11-17 Tue 13:12] Plant chard in bed 3 then."}]}
+body 638
+{"model":"local-model","messages":[{"role":"system","content":"You are a test assistant for the route goldens. Answer briefly.\n\nA reply never starts with the time a message was sent.\n\nPinned: the test garden has three beds.\n\nMon 16 Nov: planned the spring beds."},{"role":"user","content":[{"type":"text","text":"[2026-11-17 Tue 13:02] What is in notes/beds.md?"},{"type":"text","text":"[device] earlier I ran read_note: # Beds\nbed 1: beans\nbed 2: leeks\nbed 3: empty"}]},{"role":"assistant","content":"Bed 1 has beans, bed 2 leeks, bed 3 is empty."},{"role":"user","content":"[2026-11-17 Tue 13:12] Plant chard in bed 3 then."}]}
