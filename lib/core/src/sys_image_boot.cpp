@@ -36,10 +36,10 @@ bool imageSeenWriteDue(const std::string& stored, const std::string& elf) {
   return !id.empty() && imageSeenId(stored) != id;
 }
 
-ImageBoot imageBootOf(const std::string& stored, const std::string& elf, bool wrote) {
+ImageBoot imageBootOf(const std::string& stored, const std::string& elf, const std::string& readBack) {
   if (elf.empty()) return ImageBoot::Unknown;
   if (!imageSeenWriteDue(stored, elf)) return ImageBoot::Again;
-  return wrote ? ImageBoot::First : ImageBoot::Unknown;
+  return imageSeenWriteDue(readBack, elf) ? ImageBoot::Unknown : ImageBoot::First;
 }
 
 bool crashNoticeDue(int resetReason, ImageBoot image, bool ownDump) {

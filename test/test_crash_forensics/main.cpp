@@ -946,7 +946,7 @@ static void test_first_boot_of_a_new_image_is_not_a_crash() {
   // Boot 1 of image B: the card names image A; the device writes B's marker.
   std::string card = renderImageSeen(a, 41);
   TEST_ASSERT_TRUE(imageSeenWriteDue(card, b));
-  const ImageBoot first = imageBootOf(card, b, /*wrote=*/true);
+  const ImageBoot first = imageBootOf(card, b, /*readBack=*/renderImageSeen(b, 42));
   TEST_ASSERT_EQUAL_INT((int)ImageBoot::First, (int)first);
   card = renderImageSeen(b, 42);
   for (int r : wdt) {
@@ -957,7 +957,7 @@ static void test_first_boot_of_a_new_image_is_not_a_crash() {
   }
   // Boot 2 of image B after a real watchdog reset: the card names B; nothing is written.
   TEST_ASSERT_FALSE(imageSeenWriteDue(card, b));
-  const ImageBoot again = imageBootOf(card, b, /*wrote=*/false);
+  const ImageBoot again = imageBootOf(card, b, /*readBack=*/"");
   TEST_ASSERT_EQUAL_INT((int)ImageBoot::Again, (int)again);
   for (int r : wdt) TEST_ASSERT_TRUE(crashNoticeDue(r, again, false));
   TEST_ASSERT_TRUE(crashNoticeDue((int)ResetReason::Panic, again, false));
@@ -974,13 +974,13 @@ static void test_first_boot_of_a_new_image_is_not_a_crash() {
 // A fresh card (no marker) whose marker is then written is a first boot.
 static void test_an_unknown_image_keeps_the_notice() {
   const std::string b = "0f1e2d3c4b5a6978";
-  TEST_ASSERT_EQUAL_INT((int)ImageBoot::Unknown, (int)imageBootOf(renderImageSeen("a1b2c3d4e5f60718", 7), b, false));
-  TEST_ASSERT_EQUAL_INT((int)ImageBoot::Unknown, (int)imageBootOf("", b, false));
-  TEST_ASSERT_EQUAL_INT((int)ImageBoot::Unknown, (int)imageBootOf(renderImageSeen(b, 7), "", false));
+  TEST_ASSERT_EQUAL_INT((int)ImageBoot::Unknown, (int)imageBootOf(renderImageSeen("a1b2c3d4e5f60718", 7), b, ""));
+  TEST_ASSERT_EQUAL_INT((int)ImageBoot::Unknown, (int)imageBootOf("", b, ""));
+  TEST_ASSERT_EQUAL_INT((int)ImageBoot::Unknown, (int)imageBootOf(renderImageSeen(b, 7), "", ""));
   TEST_ASSERT_FALSE(imageSeenWriteDue("", ""));
   TEST_ASSERT_TRUE(imageSeenWriteDue("", b));
-  TEST_ASSERT_EQUAL_INT((int)ImageBoot::First, (int)imageBootOf("", b, true));
-  TEST_ASSERT_EQUAL_INT((int)ImageBoot::First, (int)imageBootOf("garbage\n", b, true));
+  TEST_ASSERT_EQUAL_INT((int)ImageBoot::First, (int)imageBootOf("", b, renderImageSeen(b, 8)));
+  TEST_ASSERT_EQUAL_INT((int)ImageBoot::First, (int)imageBootOf("garbage\n", b, renderImageSeen(b, 8)));
   for (int r = -1; r <= kLastResetReason + 1; ++r)
     TEST_ASSERT_EQUAL(isCrashReset(r), crashNoticeDue(r, ImageBoot::Unknown, false));
   TEST_ASSERT_EQUAL_STRING("first", imageBootSlug(ImageBoot::First));
@@ -1012,6 +1012,15 @@ static void test_image_seen_marker_round_trip() {
   TEST_ASSERT_EQUAL_STRING("", imageSeenId("0f1e2d3c-4b5a 42\n").c_str());   // not an id
   // A long id is kept to the field's bound, so a write never grows the file without end.
   TEST_ASSERT_TRUE(renderImageSeen(std::string(200, 'a'), 1).size() <= 48);
+}
+
+// E2-REP6 (review, suspected 3): a marker the store cannot read answers "" as a missing one does. When
+// the read fails on every boot and the write still lands, every crash-type reset looked like the first
+// boot of a new image and its notice was suppressed. The new marker must read back: otherwise Unknown.
+static void test_a_marker_that_does_not_read_back_keeps_the_notice() {
+  const std::string b = "0f1e2d3c4b5a6978";
+  TEST_ASSERT_EQUAL_INT((int)ImageBoot::Unknown, (int)imageBootOf("", b, ""));
+  TEST_ASSERT_TRUE(crashNoticeDue((int)ResetReason::TaskWdt, imageBootOf("", b, ""), false));
 }
 
 int main(int, char**) {
@@ -1052,6 +1061,7 @@ int main(int, char**) {
   RUN_TEST(test_a_crash_without_its_own_dump_never_borrows_an_older_cause);
   RUN_TEST(test_first_boot_of_a_new_image_is_not_a_crash);
   RUN_TEST(test_an_unknown_image_keeps_the_notice);
+  RUN_TEST(test_a_marker_that_does_not_read_back_keeps_the_notice);
   RUN_TEST(test_crash_notice_differs_from_the_reset_reason_only_on_a_first_boot);
   RUN_TEST(test_image_seen_marker_round_trip);
   return UNITY_END();

@@ -24,7 +24,7 @@ inline constexpr size_t kImageSeenMaxBytes = 48;          // what is read back, 
 
 enum class ImageBoot : uint8_t {
   Unknown = 0,   // no storage, no id, or the new marker was not written: treated as seen before
-  First = 1,     // the stored marker names another image (or none) and this image's marker was written
+  First = 1,     // the stored marker names another image (or none) and this image's marker was written and reads back
   Again = 2,     // the stored marker names this image
 };
 const char* imageBootSlug(ImageBoot b);   // "unknown", "first", "again"
@@ -35,8 +35,10 @@ std::string imageSeenId(const std::string& content);
 std::string renderImageSeen(const std::string& elf, uint32_t bootNo);
 // The marker must be written: this image has an id and the stored marker does not name it.
 bool imageSeenWriteDue(const std::string& stored, const std::string& elf);
-// This boot, from the stored marker, this image's id and whether the new marker was written.
-ImageBoot imageBootOf(const std::string& stored, const std::string& elf, bool wrote);
+// This boot, from the stored marker, this image's id and what the store reads back after the new
+// marker was written ("" when it was not written). E2-REP6: a read that fails answers "" like a missing
+// marker, so First needs the new marker read back; a store that cannot read is Unknown.
+ImageBoot imageBootOf(const std::string& stored, const std::string& elf, const std::string& readBack);
 
 // The crash notice is due: a crash-type reset (isCrashReset), unless it is the first boot of a new
 // image and no crash record of this firmware describes the reset (`ownDump`).

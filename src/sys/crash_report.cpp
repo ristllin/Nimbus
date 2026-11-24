@@ -308,7 +308,9 @@ void noteImageBoot() {
   const bool wrote = nimbus::sys::imageSeenWriteDue(stored, elf) &&
                      errlog::writeState(nimbus::sys::kImageSeenName,
                                         nimbus::sys::renderImageSeen(elf, errlog::bootNumber()));
-  g_image = nimbus::sys::imageBootOf(stored, elf, wrote);
+  // E2-REP6: an unreadable marker reads "" like a missing one; only a marker that reads back is First.
+  const std::string back = wrote ? errlog::readState(nimbus::sys::kImageSeenName, nimbus::sys::kImageSeenMaxBytes) : "";
+  g_image = nimbus::sys::imageBootOf(stored, elf, back);
 }
 
 void reportOnce() {
