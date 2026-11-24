@@ -11,6 +11,7 @@
 
 #include "nimbus/harness/channel.h"
 #include "nimbus/harness/plain/exchange.h"
+#include "nimbus/harness/plain/route.h"
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/orch/deliver_text.h"
 
@@ -357,6 +358,11 @@ Status rebuildRequest(const RebuildInput& in, HttpRequest& out) {
   r.longCache = in.longCache;
   r.refusedPhotos = in.refusedPhotos;
   r.ladder = &ladder;
+  // The head's route, as the exchange gave it to the wire (lane E2-BFIX5): the wire reads the row from it
+  // (the guard round's thinking field, E2-REP7; a routed head's path and bare model). The pre-flight is not
+  // run again: the cap and the effort it chose are the reference's.
+  Route route;
+  if (resolveRoute(head, turn, route).ok()) r.route = &route;
   out = HttpRequest{};
   if (!(st = in.wire->render(r, out)).ok()) return st;
   if (requestHashOf(out) != ref.bodyHash) return Status::fail(Err::Torn, "plain::rebuildRequest.hash");

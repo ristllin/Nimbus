@@ -560,6 +560,11 @@ void test_a_request_is_rebuilt_byte_for_byte_from_its_reference() {
   for (const tx::Item& it : items)
     if (it.kind == tx::ItemKind::TurnEnd) last = &it;
   TEST_ASSERT_TRUE(last && last->end.exchanges.back().toolChoiceNone);
+  // Lane E2-BFIX5: that round also carried its row's thinking-off field (E2-REP7; claude-sonnet-5-5 takes
+  // between_tools), and the rebuild above gave it back, so the property covers the guard round's own bytes.
+  const std::vector<const sp::Recorded*> sent = requestsOf(b, last->turn);
+  TEST_ASSERT_TRUE(!sent.empty() && sent.back()->body.find(R"("thinking":{"type":"between_tools"})") != std::string::npos);
+  TEST_ASSERT_TRUE(sent.front()->body.find(R"("thinking":{)") == std::string::npos);   // an ordinary round: none
 }
 
 void test_a_request_with_an_omission_is_rebuilt_byte_for_byte() {
