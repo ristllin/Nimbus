@@ -480,6 +480,20 @@ void noteRail(const plain::TurnCtx& t, const plain::ToolCall& c, bool kept) {
                         kept ? "rails: kept for approval" : "rails: refused", c.name + " " + c.argsJson);
 }
 
+// RailsDeps::pending: a note change goes to the notes' pending shelf; skill_save is kept waiting in the
+// skill store (lane E2-P-SKILL); any other call is refused.
+plain::Status railKeep(const plain::TurnCtx& t, const plain::ToolCall& c) {
+  plain::Status held;
+  if (tools::skillsplain::railHeld(t, c, held)) return held;
+  if (c.name != "note" || !t.who) return plain::Status::fail(nimbus::orch::tx::Err::InvalidArgument, "e2.rails.other");
+  const PsramFirstScope psram;
+  JsonDocument args;
+  (void)deserializeJson(args, c.argsJson, DeserializationOption::NestingLimit(64));
+  const nimbus::orch::ToolResult r =
+      notesdev::notebook().keep(args.as<JsonObjectConst>(), *t.who, nimbus::orch::notes::Origin::Tainted);
+  return r.success ? plain::Status::success() : plain::Status::fail(nimbus::orch::tx::Err::InvalidArgument, "e2.rails.kept");
+}
+
 // The chat's binding for this model and role, booted (null when it could not start).
 plain::ChatBinding* chatFor(const String& chatId, const std::string& model, nimbus::orch::Role role) {
   s_noStartWhy = nullptr;
@@ -527,17 +541,7 @@ plain::ChatBinding* chatFor(const String& chatId, const std::string& model, nimb
   // content (web_search; a file from inbox/, agents/ or another person, as the tool marked it) stores an
   // outside result, so the turn is tainted; the rails then keep its note changes on the pending shelf.
   d.outside = [](const std::string&) { return tools::takeOutsideCall(); };
-  d.railPending = [](const plain::TurnCtx& t, const plain::ToolCall& c) {
-    plain::Status held;
-    if (tools::skillsplain::railHeld(t, c, held)) return held;   // E2-P-SKILL: kept waiting in the store
-    if (c.name != "note" || !t.who) return plain::Status::fail(nimbus::orch::tx::Err::InvalidArgument, "e2.rails.other");
-    const PsramFirstScope psram;
-    JsonDocument args;
-    (void)deserializeJson(args, c.argsJson, DeserializationOption::NestingLimit(64));
-    const nimbus::orch::ToolResult r =
-        notesdev::notebook().keep(args.as<JsonObjectConst>(), *t.who, nimbus::orch::notes::Origin::Tainted);
-    return r.success ? plain::Status::success() : plain::Status::fail(nimbus::orch::tx::Err::InvalidArgument, "e2.rails.kept");
-  };
+  d.railPending = railKeep;
   d.railNoted = noteRail;
   d.recentFiles = [](const nimbus::orch::Principal& who) -> nimbus::orch::tx::RecentFilesBlock::Source {
     return [who](std::vector<nimbus::orch::tx::RecentFile>& out) { return files::recentFiles(who, out); };

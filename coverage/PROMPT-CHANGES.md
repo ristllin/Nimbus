@@ -1467,8 +1467,8 @@ PC-0175, PC-0176: not used.
 - catalog: e2
 - class: tool_descriptions
 - kind: build
-- bytes: 4866 -> 5438
-- sha8: 8e3dd670 -> 360231dc
+- bytes: 6618 -> 7190
+- sha8: 810a26e5 -> 037e6389
 - lane: E2-P-SKILL
 - prd: section 4 (groups behind more: skills; skill.save and skill.delete with the owner's approval), inventory parity-autonomy-memory-safety S3, AGENTS.md rule 9
 - why: lib/harness/include/nimbus/harness/plain/texts.h kBehindMore: skill_list (no arguments), skill_save (id, md: the front matter keys an assistant save needs, desc required, and that the owner approves it first) and skill_delete (id) join the skills group lib/core/src/orch_tool_groups.cpp already names and the skills index already points at ("skill_list through more"). They bind engine 1's skill.save and skill.delete over the same store. Planned work, not a fix (CUM-1004).
@@ -1477,8 +1477,8 @@ PC-0175, PC-0176: not used.
 - catalog: e2
 - class: tool_results
 - kind: build
-- bytes: 7228 -> 7781
-- sha8: 56f1887e -> 584fd061
+- bytes: 8125 -> 8678
+- sha8: 2b214ae3 -> c9108838
 - lane: E2-P-SKILL
 - prd: section 4 (skills), inventory parity-autonomy-memory-safety S3, AGENTS.md rule 9
 - why: lib/harness/include/nimbus/harness/plain/chat_skill_tools.h, engine 1's skill.save and skill.delete handler words (memory_subsystem.cpp, e1 catalog, unchanged) bound for engine 2: the admin refusals, the near-duplicate line, "skill '<id>' deleted"; skill_list's line per skill ("skills/<id>.md: approved | waiting for the owner | approved, an edit waiting for the owner - <desc>", "no saved skills"); the store's own result words (skill_store.cpp, skill_commands.cpp) are engine 1's, unchanged. PC-0249 in the same file: the store's two lines that name engine 1's tools are said in engine 2's words (the size refusal names "skill_save with id <id>-more"; a skill past 4,096 B is "listed and read when needed (read_file skills/<id>.md reads it all)", true on engine 2, which has no attached copy). Facts only, inside the ceiling (no ceiling raised). Planned work, not a fix (CUM-1004).
