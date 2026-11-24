@@ -325,13 +325,13 @@
   "recursion": [
     {
       "function": "JsonDeserializer<ArduinoJson::V743PB22::detail::Reader<agent::\\(anonymous namespace\\)::BlockingClientReader, void> >::parse(Variant|Object|Array)",
-      "depth": 64,
-      "why": "a provider response is parsed off the TLS stream with NestingLimit(kResponseNestingLimit = 64) (http.h, transport_tls.cpp execCore, the only device reader given that limit): a reply whose kept part nests 64 deep recurses 64 levels of parseVariant (112 B a level, parseObject and parseArray inlined)"
+      "depth": 32,
+      "why": "a provider response is parsed off the TLS stream with NestingLimit(kResponseNestingLimit = 32) (http.h, transport_tls.cpp execCore, the only device reader given that limit): a reply whose kept part nests 32 deep recurses 32 levels of parseVariant (112 B a level, parseObject and parseArray inlined)"
     },
     {
       "function": "JsonDeserializer<ArduinoJson::V743PB22::detail::Reader<agent::\\(anonymous namespace\\)::BlockingClientReader, void> >::skip(Variant|Object|Array)",
       "depth": 1,
-      "why": "the same limit counts skipped levels too, and a skipped level costs 64 B (skipVariant plus skipObject or skipArray) against a kept level's 112 B: the 64 kept levels above already bound a reply nested 64 deep however much of it the filter drops, so the skip recursion adds no level of its own"
+      "why": "the same limit counts skipped levels too, and a skipped level costs 64 B (skipVariant plus skipObject or skipArray) against a kept level's 112 B: the 32 kept levels above already bound a reply nested 32 deep however much of it the filter drops, so the skip recursion adds no level of its own"
     },
     {
       "function": "^(_ZN11ArduinoJson|_ZNK11ArduinoJson|ArduinoJson::|bool ArduinoJson::|.* ArduinoJson::V743PB22::detail::(JsonDeserializer|JsonSerializer|VariantData|VariantRefBase))",
@@ -544,7 +544,7 @@
       "_why": "a cut (length) retry runs the same request again inside the same loop step, so it is no deeper than the round"
     },
     {
-      "name": "provider reply parsed off the TLS stream (64 levels)",
+      "name": "provider reply parsed off the TLS stream (32 levels)",
       "through": [
         "JsonDeserializer<ArduinoJson::V743PB22::detail::Reader<agent::\\(anonymous namespace\\)::BlockingClientReader, void> >::parseVariant"
       ]
