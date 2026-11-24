@@ -371,6 +371,26 @@ Status photoStub(const std::string& ref8, const std::string& when, const std::st
   return Status::success();
 }
 
+Status photoAbsentLine(const std::string& ref8, const std::string& when, const std::string& note, PhotoAbsent why,
+                       std::string& out) {
+  if (!isRef(ref8)) {
+    out.clear();
+    return Status::fail(Err::InvalidArgument, "tx::photoAbsentLine");
+  }
+  std::string s = "[photo p" + ref8;
+  if (!when.empty()) {
+    s += ' ';
+    appendLine(s, when, 40, true);
+  }
+  s += ": ";
+  if (!note.empty()) appendLine(s, note, kPhotoNoteMax, true);
+  if (why == PhotoAbsent::Refused) s += std::string(note.empty() ? "" : "; ") + kPhotoRefused;
+  else if (note.empty()) s += kPhotoNoSight;
+  s += ']';
+  out.swap(s);
+  return Status::success();
+}
+
 Status longTextHead(const std::string& text, size_t cap, const std::string& where, std::string& out) {
   if (!cap) {
     out.clear();

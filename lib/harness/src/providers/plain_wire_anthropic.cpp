@@ -495,8 +495,22 @@ void textBlock(Render& r, Role role, uint32_t turn, bool join, const std::string
 // A photo of an owner message: pixels when the open turn shows it (by file id, else inline
 // base64 spliced at send time), else its stub line. False when nothing was written (a
 // part whose ref is not a photo ref has nothing to name).
+// Lane E2-P-PHOTO: why this request may not carry `ref` as pixels at all (a head without image
+// input, a photo the provider refused in this chat); false when it may.
+bool photoAbsent(const Render& r, const std::string& ref, tx::PhotoAbsent& why) {
+  const std::vector<std::string>* refused = r.in.refusedPhotos;
+  if (refused && std::find(refused->begin(), refused->end(), ref) != refused->end()) {
+    why = tx::PhotoAbsent::Refused;
+    return true;
+  }
+  why = tx::PhotoAbsent::Blind;
+  return r.in.turn && r.in.turn->photosBlind;
+}
+
 bool photoBlock(Render& r, const tx::Item& u, const tx::Part& p, bool join) {
-  const bool shown = std::find(r.f.photos.begin(), r.f.photos.end(), p.ref) != r.f.photos.end();
+  tx::PhotoAbsent why = tx::PhotoAbsent::Blind;
+  const bool absent = photoAbsent(r, p.ref, why);
+  const bool shown = !absent && std::find(r.f.photos.begin(), r.f.photos.end(), p.ref) != r.f.photos.end();
   PhotoBytes px;
   if (shown && r.in.photo && r.in.photo(p.ref, px).ok()) {
     if (!px.fileId.empty()) {
@@ -521,7 +535,9 @@ bool photoBlock(Render& r, const tx::Item& u, const tx::Part& p, bool join) {
   std::string when, stub;
   if (!tx::photoWhen(u.t, u.tzMinutes, when).ok()) when.clear();
   // Its note kept (RB-H81). E2-FIX5: names view only when the turn's registry binds it.
-  if (!tx::photoStub(p.ref.substr(1), when, p.note, stub, r.in.bound.view).ok()) return false;
+  if (absent ? !tx::photoAbsentLine(p.ref.substr(1), when, p.note, why, stub).ok()
+             : !tx::photoStub(p.ref.substr(1), when, p.note, stub, r.in.bound.view).ok())
+    return false;
   textBlock(r, Role::User, u.turn, join, stub, Over::Refuse);
   return true;
 }
@@ -585,7 +601,8 @@ tx::ShowFacts showFacts(const Render& r) {
 // nothing is attached. False when the result is not a viewed photo.
 bool attachViewed(Render& r, const std::string& ref, const std::string& text) {
   PhotoBytes px;
-  if (!r.in.photo || !r.in.photo(ref, px).ok()) return false;
+  tx::PhotoAbsent why = tx::PhotoAbsent::Blind;
+  if (photoAbsent(r, ref, why) || !r.in.photo || !r.in.photo(ref, px).ok()) return false;   // E2-P-PHOTO
   const bool file = !px.fileId.empty(), inline64 = px.bytes && px.len && imageMime(px.mime);
   const size_t bytes = file ? 0 : px.len;
   if ((!file && !inline64) || r.photosAttached + 1 > tx::kInlinePhotosInViewMax ||
@@ -614,7 +631,10 @@ bool viewedPhotoContent(Render& r, const tx::Item& it, const std::string& text) 
   const size_t from = std::min(text.size(), sizeof(texts::tool_results::kViewPhoto) - 1 + ref.size() + 1);
   const size_t to = text.size() - (sizeof(texts::tool_results::kViewPhotoShown) - 1);
   std::string line;
-  if (!tx::photoStub(ref.substr(1), from < to ? text.substr(from, to - from) : std::string(), line, r.in.bound.view).ok())
+  const std::string when = from < to ? text.substr(from, to - from) : std::string();
+  tx::PhotoAbsent why = tx::PhotoAbsent::Blind;
+  if (photoAbsent(r, ref, why) ? !tx::photoAbsentLine(ref.substr(1), when, std::string(), why, line).ok()
+                               : !tx::photoStub(ref.substr(1), when, line, r.in.bound.view).ok())
     return false;
   r.w.key("content").str(line, Over::Clip);
   return true;

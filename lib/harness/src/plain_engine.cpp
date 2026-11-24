@@ -43,6 +43,10 @@ struct PlainEngine::ChatState {
   // stubs until a compaction stores (or a restart), so the turns after it share one cached prefix; it moves only
   // when a request is over its cap again, and then down to kLadderLowPercent of the cap.
   uint64_t ladderLine = 0;
+  // Lane E2-P-PHOTO: photo refs a provider refused as pixels in this chat (an image refusal); each
+  // renders as its line from then on, so one bad photo never fails the turns after it (RAM only: after a
+  // restart a refused photo is tried once more and refused once more).
+  std::vector<std::string> refusedPhotos;
   uint32_t lastTurn = 0;
   bool booted = false;
   bool afterRestart = true;            // the first turn after boot opens cold
@@ -104,6 +108,8 @@ struct Turn {
   uint16_t toolRounds = 0;             // rounds whose calls ran (the round guard counts these)
   std::vector<uint64_t> roundStart;    // the first q of each answered round (ladder rung 2)
   bool lastRound = false;              // a guard tripped: this request goes with tool choice none
+  std::vector<std::string> photosShown;   // the open turn's visible photo refs (its t item; E2-P-PHOTO)
+  bool photoRefusalResent = false;     // the round was re-sent once without photos a provider refused
   bool held = false;                   // beforeDeliver held the reply once
   std::string heldText;                // the held reply: delivered if the extra round fails
   std::string interim;                 // text the model wrote beside its calls this turn (RB-H81)
@@ -594,8 +600,17 @@ class TurnRun {
   std::vector<std::string> photosAtOpen(const TurnInput& in) const {
     tx::PhotoFacts f;
     f.noCard = !d_.log->isOpen();
+    if (t_.ctx.photosBlind) return {};   // E2-P-PHOTO: a head without image input sees none as pixels
     for (const tx::Part& p : in.parts) photoCandidate(f, p, 0);
     earlierPhotos(f);
+    // E2-P-PHOTO: a photo a provider refused takes no place in view.
+    const std::vector<std::string>& no = c_.refusedPhotos;
+    for (size_t i = f.candidates.size(); i-- > 0;)
+      if (std::find(no.begin(), no.end(), f.candidates[i]) != no.end()) {
+        f.candidates.erase(f.candidates.begin() + (long)i);
+        f.ownerTurnsSince.erase(f.ownerTurnsSince.begin() + (long)i);
+        f.bytes.erase(f.bytes.begin() + (long)i);
+      }
     std::vector<std::string> out;
     if (tx::visiblePhotos(f, out).ok()) return out;
     out.clear();
@@ -611,6 +626,7 @@ class TurnRun {
     t.profile = tx::headProfileSlug(t_.ctx.profile);   // a smaller profile is the owner's pin (RB-H81)
     t.attempt = t_.ctx.attempt;
     t.photos = photosAtOpen(in);
+    t_.photosShown = t.photos;
     c_.head.openTurn = t_.ctx.turn;
     c_.head.attempts = t_.ctx.attempt;
     c_.head.profile = t.profile;
@@ -911,6 +927,7 @@ class TurnRun {
     r.toolChoiceNone = t_.lastRound;
     r.photo = t_.setup.photo;
     r.bound = bound();
+    r.refusedPhotos = &c_.refusedPhotos;   // E2-P-PHOTO
     r.ladder = &t_.ladder;
     r.longCache = d_.stablePrefix;   // the stable points keep 1 hour (lane E2-CACHE)
     tx::TxLog* log = d_.log;
@@ -933,10 +950,29 @@ class TurnRun {
     const Status st = runExchange(ExchangeDeps{d_.transport, d_.platform}, req, t_.ex);
     account(t_.ex);
     if (!st.ok()) return failed(ExchangeErr::Other, st);
+    if (photosRefused()) return ask();   // E2-P-PHOTO: once, the refused photos as their lines
     if (t_.ex.err == ExchangeErr::Cut) return cut();
     if (t_.ex.err != ExchangeErr::None) return failed(t_.ex.err, Status::success());
     ++t_.rounds;
     return Status::success();
+  }
+
+  // Lane E2-P-PHOTO: the provider refused the request for its image (imageparts::refusedImages: a
+  // 400 or 422 naming the image, a format it does not take). Engine 1 re-sends with the photos as
+  // text; here the open turn's visible photos join the chat's refused list, render as their true line
+  // (tx::photoAbsentLine Refused) and the round is sent once more, so the turn ends in a reply.
+  bool photosRefused() {
+    if (t_.ex.err != ExchangeErr::Other || t_.photoRefusalResent || t_.photosShown.empty() ||
+        !providers::imageparts::refusedImages(t_.ex.httpStatus, t_.ex.providerBody))
+      return false;
+    t_.photoRefusalResent = true;
+    for (const std::string& ref : t_.photosShown)
+      if (std::find(c_.refusedPhotos.begin(), c_.refusedPhotos.end(), ref) == c_.refusedPhotos.end())
+        c_.refusedPhotos.push_back(ref);
+    hlog::logf("plain(%s): the provider refused the photos (HTTP %d): sent again with %u as their line",
+               d_.chatKey.c_str(), t_.ex.httpStatus, (unsigned)t_.photosShown.size());
+    t_.photosShown.clear();
+    return true;
   }
 
   void account(const ExchangeResult& ex) {

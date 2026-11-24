@@ -89,6 +89,9 @@ struct RenderInput {
   BulkReadFn bulk;                                    // whole bulk results (every turn's, E2-VERB)
   PhotoFn photo;                                      // pixels of the visible photos
   nimbus::orch::tx::BoundTools bound;                 // E2-FIX5: the photo stub names view only when bound
+  // Lane E2-P-PHOTO: photo refs a provider refused in this chat (an image refusal); each renders as
+  // tx::photoAbsentLine(Refused), never as pixels. Null: none.
+  const std::vector<std::string>* refusedPhotos = nullptr;
   const LadderState* ladder = nullptr;                // the overflow ladder (null: no rung)
   // Lane E2-CACHE: the cache points on the stable prefix (the system blocks and the end of the
   // previous turn) carry the provider's 1-hour lifetime; the moving last block keeps 5 minutes.

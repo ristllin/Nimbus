@@ -30,7 +30,9 @@
 #include "nimbus/harness/plain/chat_photos.h"
 #include "nimbus/harness/plain/request.h"
 #include "nimbus/harness/plain/texts.h"
+#include "nimbus/orch/media_label.h"
 #include "nimbus/orch/tx/card_files.h"
+#include "nimbus/orch/tx/rules.h"
 
 namespace plain = agent::plain;
 namespace sp = harness_test::scripted;
@@ -185,9 +187,11 @@ struct Device {
   agent::HttpTransport& model_() { return model; }
   plain::Status say(const std::string& text, std::vector<uint64_t> src = {}) {
     plain::ChatMessage m;
-    m.text = text;
     m.src = std::move(src);
-    m.parts = plain::photoParts(photos, "anthropic", "claude-haiku-5-5");
+    // As orchestrator_plain.cpp builds it (E2-P-PHOTO): the photo head is headHost/headModel.
+    m.photosBlind = !nimbus::orch::headTakesImages(headHost, headModel);
+    m.text = plain::photoText(photos, headHost, headModel, text);
+    m.parts = plain::photoParts(photos, headHost, headModel);
     out = plain::TurnOutcome{};
     return binding->turn(m, out);
   }
@@ -206,6 +210,7 @@ struct Device {
   nimbus::orch::SeenIndex seen;
   std::vector<std::string> sent;
   nimbus::orch::TurnImages* photos = nullptr;     // the message's photo set (null: none)
+  std::string headHost = "anthropic", headModel = "claude-haiku-5-5";   // what photoParts is asked about
   nimbus::orch::TurnImages* stored = nullptr;     // earlier photos the card still holds (null: none)
   std::vector<plain::SkillFile> skillFiles;
   std::vector<std::string> refused;
@@ -648,13 +653,64 @@ static void test_only_a_head_that_takes_images_gets_the_part() {
   onePhoto(set);
   TEST_ASSERT_EQUAL(1, (int)plain::photoParts(&set, "anthropic", "claude-haiku-5-5").size());
   TEST_ASSERT_EQUAL_STRING("p0123456789abcdef", plain::photoParts(&set, "anthropic", "claude-sonnet-5-5")[0].ref.c_str());
-  TEST_ASSERT_EQUAL(0, (int)plain::photoParts(&set, "zai", "glm-5.3").size());
-  TEST_ASSERT_EQUAL(0, (int)plain::photoParts(&set, "mistral", "codestral-latest").size());
   TEST_ASSERT_EQUAL(0, (int)plain::photoParts(nullptr, "anthropic", "claude-haiku-5-5").size());
   plain::PhotoBytes px;
   TEST_ASSERT_TRUE(plain::photoBytesFrom(&set, "p0123456789abcdef", px).ok());
   TEST_ASSERT_EQUAL(sizeof(kJpeg), px.len);
   TEST_ASSERT_FALSE(plain::photoBytesFrom(&set, "pffffffffffffffff", px).ok());
+}
+
+// Lane E2-P-PHOTO D2: a head that cannot see gets each photo with one description, made by the set's
+// transcribe hook (engine 1's caption walk on the device) once, and only for such a head; the turn renders
+// it as "[photo p<ref> <when>: <description>]" with no pixels and no "(attached ...)" claim. A seeing head
+// gets the pixels and causes no caption request.
+static void test_a_blind_head_reads_one_stored_description_and_a_seeing_head_costs_none() {
+  nimbus::orch::TurnImages set;
+  onePhoto(set);
+  set.items[0].tag = "[image ref=0123456789abcdef]";
+  set.items[0].segment = set.items[0].tag + nimbus::orch::kAttachedSuffix;
+  int captions = 0;
+  set.transcribe = [&captions](nimbus::orch::TurnImage& it) {
+    ++captions;
+    return it.tag + " (transcribed by mistral) A red bicycle against a brick wall.";
+  };
+  TEST_ASSERT_EQUAL(1, (int)plain::photoParts(&set, "anthropic", "claude-haiku-5-5").size());
+  TEST_ASSERT_TRUE(plain::photoParts(&set, "anthropic", "claude-haiku-5-5")[0].note.empty());
+  TEST_ASSERT_EQUAL_MESSAGE(0, captions, "a seeing head caused a caption request");
+  const std::vector<nimbus::orch::tx::Part> blind = plain::photoParts(&set, "zai", "glm-5.3");
+  TEST_ASSERT_EQUAL(1, (int)blind.size());
+  TEST_ASSERT_EQUAL_STRING("(transcribed by mistral) A red bicycle against a brick wall.", blind[0].note.c_str());
+  TEST_ASSERT_EQUAL(1, (int)plain::photoParts(&set, "mistral", "codestral-latest").size());
+  TEST_ASSERT_EQUAL_MESSAGE(1, captions, "the description was made more than once");
+
+  Device dev;
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  dev.headHost = "zai";
+  dev.headModel = "glm-5.3";
+  dev.photos = &set;
+  dev.model.push(sp::say("A red bicycle."));
+  TEST_ASSERT_TRUE(dev.say("what is this? " + set.items[0].segment).ok());
+  const std::string body = dev.model.last().body;
+  TEST_ASSERT_EQUAL_MESSAGE(0, (int)count(body, "\"type\":\"image\""), "a blind head was sent pixels");
+  TEST_ASSERT_TRUE_MESSAGE(has(body, ": (transcribed by mistral) A red bicycle against a brick wall.]"),
+                           "the photo's line does not carry its description");
+  TEST_ASSERT_TRUE(has(body, "[photo p0123456789abcdef"));
+  TEST_ASSERT_FALSE_MESSAGE(has(body, "shown earlier"), "the blind line says the photo was shown");
+  TEST_ASSERT_FALSE_MESSAGE(has(body, "the photo itself is in this message"), "the text claims the photo is attached");
+  TEST_ASSERT_EQUAL(1, captions);
+  // No description could be made: the line says this model cannot see photos, never nothing.
+  nimbus::orch::TurnImages none;
+  onePhoto(none);
+  none.items[0].ref = "fedcba9876543210";
+  none.items[0].tag = "[image ref=fedcba9876543210]";
+  dev.photos = &none;
+  dev.model.push(sp::say("I cannot see it."));
+  TEST_ASSERT_TRUE(dev.say("and this one?").ok());
+  TEST_ASSERT_TRUE(has(dev.model.last().body, "(not read: no provider could read it)"));
+  std::string line;
+  TEST_ASSERT_TRUE(nimbus::orch::tx::photoAbsentLine("ab12cd34", "", "", nimbus::orch::tx::PhotoAbsent::Blind, line).ok());
+  TEST_ASSERT_EQUAL_STRING("[photo pab12cd34: this model cannot see photos]", line.c_str());
+  dev.photos = nullptr;
 }
 
 static void test_a_context_skill_rides_the_fixed_part_and_a_too_large_one_is_refused_once() {
@@ -864,6 +920,7 @@ int main(int, char**) {
   RUN_TEST(test_a_photo_reaches_its_own_turn_once_as_an_image);
   RUN_TEST(test_later_messages_still_see_the_photo_from_the_card);
   RUN_TEST(test_only_a_head_that_takes_images_gets_the_part);
+  RUN_TEST(test_a_blind_head_reads_one_stored_description_and_a_seeing_head_costs_none);
   RUN_TEST(test_a_context_skill_rides_the_fixed_part_and_a_too_large_one_is_refused_once);
   RUN_TEST(test_a_turns_usage_is_handed_over_once);
   RUN_TEST(test_compact_now_answers_on_the_chat_and_the_budget_view_is_in_tokens);

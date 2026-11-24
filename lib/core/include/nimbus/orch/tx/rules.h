@@ -56,7 +56,11 @@ inline constexpr size_t kInlinePhotosInViewMax = 4;
 inline constexpr size_t kInlinePhotoBytesInViewMax = 600000;
 inline constexpr size_t kFileRefPhotosInViewMax = 4;
 inline constexpr size_t kFileRefPhotoBytesInViewMax = 600000;
-inline constexpr size_t kArrivalPhotosMax = 4;        // the arrival turn (ladder rung 2's photo bound)
+// The arrival turn shows its own photos whole, as engine 1 does (lane E2-P-PHOTO): up to Telegram's
+// album maximum (orch::kTurnImageMax). Ten of 200 KB add about 2.73 MB of base64 to each request of
+// that turn (sent in 4 KB slices; the 2,000,000 B are the set the intake already holds in PSRAM) and
+// 60,000 B against the body cap (kPhotoCapBytes each). Later turns keep the caps above.
+inline constexpr size_t kArrivalPhotosMax = 10;
 // What one photo counts for against a head's body cap (plain_exchange.cpp capLength): the text its
 // tokens would be. Anthropic bills a photo at about (width x height) / 750 tokens, at most about
 // 1,600 for the sizes it keeps (1.15 megapixels); at the wire's dense ratio of about 3.6 B a token
@@ -187,6 +191,15 @@ Status photoStub(const std::string& ref8, const std::string& when, std::string& 
 // and ']' as '(' and ')' so it cannot close the line. An empty note gives the line above.
 Status photoStub(const std::string& ref8, const std::string& when, const std::string& note, std::string& out,
                  bool viewBound = false);
+// A photo whose pixels this head cannot take (lane E2-P-PHOTO): no "shown earlier", which would
+// not be true. Why the pixels are absent decides the end: Blind (a head without image input) gives
+// '[photo p<ref8> <when>: <note>]' with the description stored at arrival, else '...: this model
+// cannot see photos]'; Refused (the provider refused the photo in this conversation) gives '...:
+// <note>; the provider refused this photo, so it is not attached]' (no note: the reason alone).
+// The note as photoStub writes it. InvalidArgument for a bad ref.
+enum class PhotoAbsent : uint8_t { Blind = 0, Refused = 1 };
+Status photoAbsentLine(const std::string& ref8, const std::string& when, const std::string& note, PhotoAbsent why,
+                       std::string& out);
 
 // Ruling 11 (the year in every stamp) for the rules' time texts, from stored epochs:
 // An epoch from before the clock was set (under day_start.h kClockValidEpoch, 0 included)

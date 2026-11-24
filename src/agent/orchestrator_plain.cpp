@@ -894,7 +894,10 @@ bool runOne(const String& text, const String& fromName, const String& chatId) {
     return true;
   }
   const String row = captureOwnerRow(text, fromName, chatId, true);
-  msg.text = std::string(text.c_str(), text.length());
+  // E2-P-PHOTO: a head without image input reads each photo's one description (engine 1's caption walk,
+  // made only for such a head) as its line; a seeing head gets the pixels and no caption call.
+  msg.photosBlind = !nimbus::orch::headTakesImages(host.c_str(), model);
+  msg.text = plain::photoText(s_photos.get(), host.c_str(), model, std::string(text.c_str(), text.length()));
   msg.parts = plain::photoParts(s_photos.get(), host.c_str(), model);
   msg.tzMinutes = (int16_t)(utcOffsetAt((uint32_t)time(nullptr)));
   msg.m = rowNumber(row);

@@ -388,11 +388,19 @@ void test_a_photo_leaves_view_once_and_in_arrival_order() {
   }
 }
 
-// The arrival turn and the device facts the rule still reads: the arrival shows at most 4 and
-// counts first against the caps; no card carries nothing earlier; a head without vision sees nothing.
+// The arrival turn and the device facts the rule still reads: the arrival shows its album whole (at
+// most kArrivalPhotosMax, lane E2-P-PHOTO) and counts first against the caps; no card carries nothing
+// earlier; a head without vision sees nothing.
 void test_rules_photo_table_edges() {
-  expectVisible(photoFacts(tx::PhotoMode::FileRef, 6, 6), 4, "arrival at most 4");
-  expectVisible(photoFacts(tx::PhotoMode::Inline, 6, 6), 4, "inline arrival at most 4");
+  expectVisible(photoFacts(tx::PhotoMode::FileRef, 6, 6), 6, "arrival whole");
+  expectVisible(photoFacts(tx::PhotoMode::Inline, 6, 6), 6, "inline arrival whole");
+  // An album of ten 200 KB photos: all ten as pixels when it arrives (engine 1 shows ten), the
+  // earlier photo behind it waits; one turn later the four-photo and 600,000 B caps hold again.
+  expectVisible(photoFacts(tx::PhotoMode::Inline, 11, 10, 200000), 10, "album of ten whole on arrival");
+  TEST_ASSERT_EQUAL(10, (int)tx::kArrivalPhotosMax);
+  expectVisible(photoFacts(tx::PhotoMode::Inline, 10, 0, 200000), 3, "the album one turn later: 600,000 B");
+  expectVisible(photoFacts(tx::PhotoMode::Inline, 10, 0, 60000), tx::kInlinePhotosInViewMax, "one turn later: four");
+  expectVisible(photoFacts(tx::PhotoMode::Inline, 12, 12), tx::kArrivalPhotosMax, "arrival at most ten");
   expectVisible(photoFacts(tx::PhotoMode::Inline, 6, 2), tx::kInlinePhotosInViewMax, "two arrivals, then the newest earlier");
   expectVisible(photoFacts(tx::PhotoMode::Inline, 3, 1, (uint32_t)(tx::kInlinePhotoBytesInViewMax / 2 + 1)), 1,
                 "the arrival's bytes count first");

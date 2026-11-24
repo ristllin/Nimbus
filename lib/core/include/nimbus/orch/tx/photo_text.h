@@ -11,6 +11,10 @@ inline constexpr char kPhotoNotAttached[] = "shown earlier in this conversation;
 // Only when the engine has bound the view tool: '; view id=p<ref> shows it again'.
 inline constexpr char kPhotoViewOpen[] = "; view id=p";
 inline constexpr char kPhotoViewClose[] = " shows it again";
+// Lane E2-P-PHOTO (PC-0231): a head without image input, for a photo with no stored description.
+inline constexpr char kPhotoNoSight[] = "this model cannot see photos";
+// Lane E2-P-PHOTO (PC-0232): a photo the provider refused (its format) in this conversation.
+inline constexpr char kPhotoRefused[] = "the provider refused this photo, so it is not attached";
 
 }  // namespace tx
 }  // namespace orch

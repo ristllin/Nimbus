@@ -160,6 +160,9 @@ struct TurnCtx {
   uint64_t startedAt = 0;       // epoch seconds; 0 = clock not set
   uint32_t startedMs = 0;       // monotonic
   bool tainted = false;         // the request carries an outside result whole
+  // Lane E2-P-PHOTO: the head takes no image input (orch::headTakesImages, the binding's call): no
+  // photo is shown as pixels; each renders as its line with the description stored at arrival.
+  bool photosBlind = false;
   uint16_t dayStartMin = kDayStartDefaultMin;   // every message stamp's running-day clause
   const nimbus::orch::Principal* who = nullptr;
 };
