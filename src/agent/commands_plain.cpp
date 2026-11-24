@@ -254,17 +254,19 @@ String updateBack(bool confirm) {
   return String(nimbus::ota::backLine(step, latest.c_str(), NIMBUS_FW_VERSION).c_str());
 }
 
+// /update, /update back, /update back yes.
+String update(const std::string& args) {
+  String arg = String(args.c_str());
+  arg.trim();
+  arg.toLowerCase();
+  if (arg == "back" || arg == "back yes") return updateBack(arg == "back yes");
+  return args.empty() ? otaInstallReply() : String("Send /update on its own to install a pending update.");
+}
+
 void shared(const nimbus::orch::Command& cmd, const String& chatId, bool owner, bool pseudo) {
   const std::string& v = cmd.verb;
   if (v == "help" || v == "start") return help(chatId);
-  if (v == "update") {
-    String arg = String(cmd.args.c_str());
-    arg.trim();
-    arg.toLowerCase();
-    if (arg == "back" || arg == "back yes") return say(chatId, selfTag() + updateBack(arg == "back yes"));
-    say(chatId, selfTag() + (cmd.args.empty() ? otaInstallReply() : String("Send /update on its own to install a pending update.")));
-    return;
-  }
+  if (v == "update") return say(chatId, selfTag() + update(cmd.args));
   if (v == "ota") {
     say(chatId, selfTag() + nimbus::ota::channelCommandReply(cmd.args.data(), cmd.args.size(), otaupd::channelOps()));
     return;
