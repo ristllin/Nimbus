@@ -1401,8 +1401,13 @@ the chat's FoldStore record (`OldFold`: the summary and its two pointers).
   a chat through its `oldEngine` hook, before the engine opens the log. The rows come from the
   episodic store's forward query (`tx::EpisodicRowSource`, `tx/old_engine.h`, pages of 64 rows
   under the card lock), the old summary from `/data/chatsum.txt`, read only. A chat's first
-  start waits until the episodic index is complete (at most 10 minutes after the boot; the
-  person gets one device line meanwhile). Nothing is stored for the chat until the import
+  start waits until the episodic index is complete (at most 10 minutes after the boot). A
+  message that arrives meanwhile is kept, not turned away (lane E2-FIX13, `plain/waiting.h`): it
+  goes into the chat's list on the card (`/mem/tx/<chat>.wait.json`, written before the person
+  is told anything) and the person gets one line per chat saying it is answered when the reading
+  is done. When the wait ends, the poll task answers the kept messages in arrival order, each
+  once: a restart keeps the list, and a message the transcript already holds is not answered
+  again. A later message to that chat joins the end of the list. Nothing is stored for the chat until the import
   answered Done: until then it runs from RAM (the person is told each turn) and the import is
   tried again before each turn; the RAM turns follow the imported history once, in order. A
   transcript an earlier build stored with no marker gets the whole first import after its items
