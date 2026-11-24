@@ -2139,7 +2139,7 @@ static void test_a_server_error_moves_the_round_to_the_next_provider() {
   TEST_ASSERT_EQUAL_STRING("/v1/responses", dev.model.last().req.path.c_str());
   TEST_ASSERT_EQUAL(1, (int)dev.out.switches);
   TEST_ASSERT_EQUAL_STRING("From the second provider.", dev.out.text.c_str());
-  TEST_ASSERT_EQUAL_STRING("Anthropic failed (server); this answer came from gpt-5.6-luna.", dev.out.statusText.c_str());
+  TEST_ASSERT_EQUAL_STRING("Anthropic had a server error (HTTP 500); this answer came from gpt-5.6-luna.", dev.out.statusText.c_str());
   TEST_ASSERT_TRUE(has(dev.sent.back(), "this answer came from gpt-5.6-luna."));
   const nimbus::orch::TurnSpend& u = dev.usage.back();
   TEST_ASSERT_EQUAL(2, (int)u.billedSlots());   // each head its own row: the refused requests no tokens
@@ -2169,7 +2169,7 @@ static void test_a_cut_answer_moves_the_round_to_the_next_provider() {
   TEST_ASSERT_EQUAL_STRING("api.openai.com", dev.model.last().req.host.c_str());
   TEST_ASSERT_EQUAL(1, (int)dev.out.switches);
   TEST_ASSERT_EQUAL_STRING("Whole answer.", dev.out.text.c_str());
-  TEST_ASSERT_EQUAL_STRING("Anthropic failed (cut); this answer came from gpt-5.6-luna.", dev.out.statusText.c_str());
+  TEST_ASSERT_EQUAL_STRING("Anthropic cut its answer; this answer came from gpt-5.6-luna.", dev.out.statusText.c_str());
   TEST_ASSERT_FALSE(has(dev.model.last().body, "half an ans"));
   const nimbus::orch::TurnSpend& u = dev.usage.back();
   TEST_ASSERT_EQUAL(2, (int)u.billedSlots());
@@ -2261,11 +2261,12 @@ static void test_a_usage_limit_refusal_fails_over_with_the_photos_and_the_true_r
   TEST_ASSERT_FALSE(has(dev.model.last().body, "[photo p0123456789abcdef"));
   TEST_ASSERT_FALSE(has(dev.model.last().body, "file_"));   // no Anthropic file id crosses over
   TEST_ASSERT_EQUAL_STRING(
-      "Anthropic failed (out of credit or over its usage limit: You have reached your specified API usage limits. You "
-      "will regain access on 2026-12-01 at 00:00 UTC); this answer came from gpt-5.6-luna.",
+      "Anthropic refused the request (HTTP 400): You have reached your specified API usage limits. You will regain "
+      "access on 2026-12-01 at 00:00 UTC; this answer came from gpt-5.6-luna.",
       dev.out.statusText.c_str());
-  TEST_ASSERT_EQUAL_STRING("Anthropic failed (out of credit or over its usage limit); this answer came from gpt-5.6-luna.",
-                           dev.out.statusStored.c_str());
+  TEST_ASSERT_EQUAL_STRING(
+      "Anthropic refused the key or the account has no credit (HTTP 400); this answer came from gpt-5.6-luna.",
+      dev.out.statusStored.c_str());
   TEST_ASSERT_TRUE(nimbus::orch::providerPark().isParked("anthropic"));
   nimbus::orch::ParkEntry e[nimbus::orch::ProviderPark::kMaxProviders];
   TEST_ASSERT_EQUAL(1, (int)nimbus::orch::providerPark().snapshot(e, nimbus::orch::ProviderPark::kMaxProviders, dev.ms));

@@ -134,7 +134,7 @@ struct FailoverTarget {
   Dialect dialect = Dialect::AnthropicMessages;
   HeadEndpoint head;               // with its own key
   HeadCost cost;                   // its rates (a target with no price row is never named)
-  bool seesPhotos = false;         // the owner chose this provider for vision: pixels; else each photo's line
+  bool seesPhotos = false;         // its row takes images: pixels (E2-CFIX1); else each photo's line
 };
 using FailoverFn = std::function<void(const FailoverAsk& ask, std::vector<FailoverTarget>& out)>;
 // What one head of a switched turn was billed (TurnOutcome::shares), booked to the model that answered.
@@ -228,6 +228,7 @@ struct TurnOutcome {
   bool parkHost = false;         // the head's key or credit was refused: the binding parks it
   int parkStatus = 0;            // that refusal's HTTP status and its body (first 4 KB): the shared park reads
   std::string parkText;          // its kind from them (lane E2-FIX14); never stored, never shown
+  bool parkBilling = false;      // the engine's classifier read it as billing (E2-CFIX1): parked as no credit
   bool modelUnusable = false;    // the provider does not know the head model (E2-R8a: the device marks it)
   bool failOver = false;         // routed: the router said fail over to the next target
   // Lane E2-P-FO: rounds moved to another head (at most kMaxFailovers), and then what each head was
@@ -241,6 +242,7 @@ struct TurnOutcome {
     uint32_t keyFp = 0;
     int status = 0;
     std::string text;
+    bool billing = false;   // as parkBilling (E2-CFIX1)
   };
   std::vector<FallbackRefusal> fallbackRefusals;
   // Effects the turn's tools asked for after the turn (a stored, successful result each): the

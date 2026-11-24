@@ -91,6 +91,20 @@ inline std::string parkedLine(const std::string& provider, const nimbus::orch::P
   return std::string();
 }
 
+// E2-CFIX1: the line of a message the provider's monthly limit holds. Its own dollar limit paused it in the
+// park: the limits store's freeze notice told the pause, so the owner's next message gets the park's short
+// pause line once in the episode and later ones nothing (a dollar limit is never a token budget). A token or
+// call budget keeps engine 1's line.
+inline std::string limitLine(const std::string& provider, bool personWrote) {
+  namespace orch = nimbus::orch;
+  if (!(orch::providerPark().pausedBy(provider.c_str()) & orch::kPauseProviderLimit)) return overBudgetLine(provider);
+  if (!personWrote || !orch::providerPark().shortAnswerDue(provider.c_str())) return std::string();
+  orch::ParkVerdict v;
+  v.open = false;
+  v.paused = orch::kPauseProviderLimit;
+  return "Your message was not answered: " + orch::parkWords(providerLabelOf(provider).c_str(), v) + ".";
+}
+
 // The gates in engine 1's order: the inbound screen, the provider's limit, then the park. `personWrote`:
 // a person sent this message (a routine never takes the short answer). Asks the park as a seam about to
 // send: a due re-check is handed out (probe), and a changed key ends a park at once.
@@ -109,7 +123,7 @@ inline MessageGate gateMessage(const MessageGateDeps& d, const std::string& chat
   if (d.overBudget && d.overBudget(d.provider)) {
     g.verdict = GateVerdict::Held;
     g.why = "limit";
-    g.line = overBudgetLine(d.provider);
+    g.line = limitLine(d.provider, personWrote);
     return g;
   }
   const std::string key = d.key ? d.key() : std::string();
@@ -140,6 +154,16 @@ inline bool headHeld(const std::string& provider, const std::string& key, bool o
   return true;
 }
 
+// E2-CFIX1: a refusal the engine's classifier read as billing (its marker table: a key's own usage limit, an
+// HTTP 400 the shared billing words do not name) is parked as no credit; any other through the park's own rule.
+inline nimbus::orch::ParkKind noteRefusal(const char* provider, uint32_t keyFp, int status, const std::string& text,
+                                          bool billing, uint32_t nowMs) {
+  namespace orch = nimbus::orch;
+  if (!billing) return orch::providerPark().noteAnswer(provider, orch::PaidSeam::Chat, keyFp, status, text, nowMs);
+  orch::providerPark().park(provider, orch::PaidSeam::Chat, keyFp, orch::ParkKind::Billing, status, nowMs);
+  return orch::ParkKind::Billing;
+}
+
 // After a turn on `provider` with `key`: the park learns what the head's answer said. `probe`: the
 // turn was the park's re-check (a turn that sent nothing hands it back). `told`: the turn's own line
 // reached the person (an owner turn's status line); a routine's does not, so the owner's next message
@@ -152,10 +176,10 @@ inline void noteHeadOutcome(const std::string& provider, const std::string& key,
   // E2-REP1: a fallback head that refused its key or credit is parked as the head is (no latch: the
   // turn's line named the switch, not the refusal, so its notice is still due if it becomes the head).
   for (const TurnOutcome::FallbackRefusal& r : out.fallbackRefusals)
-    (void)park.noteAnswer(r.provider.c_str(), orch::PaidSeam::Chat, r.keyFp, r.status, r.text, nowMs);
+    (void)noteRefusal(r.provider.c_str(), r.keyFp, r.status, r.text, r.billing, nowMs);
   if (out.parkHost) {
     const orch::ParkKind k =
-        park.noteAnswer(p, orch::PaidSeam::Chat, orch::parkKeyFingerprint(key), out.parkStatus, out.parkText, nowMs);
+        noteRefusal(p, orch::parkKeyFingerprint(key), out.parkStatus, out.parkText, out.parkBilling, nowMs);
     // The exchange's own line told the person why: that was this episode's notice, so the next
     // message gets the short answer and the ones after it nothing (engine 1's rule).
     if (k != orch::ParkKind::None && told) (void)park.noticeDue(p);

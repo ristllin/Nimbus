@@ -179,9 +179,11 @@ struct Turn {
   std::vector<std::string> tried;
   std::string slot;
   std::string switchLines;
+  std::string switchStored;   // switchLines without a provider's reason (E2-CFIX1): what may be kept
   std::vector<HeadShare> shares;
   HeadShare base;
   int parkStatus = 0;                  // the park's refusal: its status and body (E2-FIX14)
+  bool parkBilling = false;            // and billing by the classifier (E2-CFIX1)
   std::string parkText;
   std::vector<TurnOutcome::FallbackRefusal> fallbackRefusals;   // E2-REP1
   std::string cause;
@@ -1008,7 +1010,10 @@ class TurnRun {
     t_.ex.err = ExchangeErr::Other;
     t_.cause = "paused";
     event("paused:" + slotNow());
-    setStatus(StatusLine::PausedSpend, line);
+    // E2-CFIX1: the provider's own dollar limit paused it in the park: the limits store's freeze notice is the
+    // pause's one line (a dollar limit is not a token budget), so the turn's own line is empty: nothing sent.
+    const bool told = orch::providerPark().pausedBy(slotNow().c_str()) & orch::kPauseProviderLimit;
+    setStatus(StatusLine::PausedSpend, told ? std::string() : line);
     return true;
   }
 
@@ -1051,8 +1056,12 @@ class TurnRun {
   }
   void moveTo(FailoverTarget& tg, uint32_t cap, const FailoverAsk& ask) {
     closeShare(ask.provider, ask.model);
-    if (!t_.switchLines.empty()) t_.switchLines += "\n";
-    t_.switchLines += failoverLine(ask.provider, ask.err, tg.model);
+    if (!t_.switchLines.empty()) {
+      t_.switchLines += "\n";
+      t_.switchStored += "\n";
+    }
+    t_.switchLines += failoverLine(ask.provider, ask.err, ask.httpStatus, t_.ex.reason, tg.model);
+    t_.switchStored += failoverLine(ask.provider, ask.err, ask.httpStatus, std::string(), tg.model);   // no provider words
     event("failover:" + ask.provider + ">" + tg.provider + ":" + exchangeErrSlug(ask.err));
     hlog::logf("plain(%s): %s/%s failed (%s): the round goes to %s/%s", d_.chatKey.c_str(), ask.provider.c_str(),
                ask.model.c_str(), exchangeErrSlug(ask.err), tg.provider.c_str(), tg.model.c_str());
@@ -1167,11 +1176,13 @@ class TurnRun {
       r.keyFp = t_.setup.head.key ? orch::parkKeyFingerprint(t_.setup.head.key()) : 0;
       r.status = ex.httpStatus;
       r.text = ex.parkBody;
+      r.billing = ex.billing;
       t_.fallbackRefusals.push_back(std::move(r));
       return;
     }
     t_.parkHost = true;
     t_.parkStatus = ex.httpStatus;
+    t_.parkBilling = ex.billing;
     t_.parkText = ex.parkBody;
   }
 
@@ -1487,11 +1498,11 @@ class TurnRun {
   void switchedLine() {
     const bool fromFallback = t_.ex.err == ExchangeErr::None || t_.ex.err == ExchangeErr::Cut;
     if (t_.switchLines.empty() || !t_.reply || !fromFallback) return;
-    if (t_.status == StatusLine::None) return setStatus(StatusLine::ProviderError, t_.switchLines);
+    if (t_.status == StatusLine::None) return setStatus(StatusLine::ProviderError, t_.switchLines, &t_.switchStored);
     if (t_.statusRef != &t_.statusText) return;
     if (t_.statusStored.empty()) t_.statusStored = t_.statusText;
     t_.statusText.insert(0, t_.switchLines + "\n");
-    t_.statusStored.insert(0, t_.switchLines + "\n");
+    t_.statusStored.insert(0, t_.switchStored + "\n");
   }
   // A line kept outside the turn (the memory line): taken with no allocation.
   void setStatusRef(StatusLine s, const std::string& kept) noexcept {
@@ -2299,6 +2310,7 @@ Status PlainEngine::runTurn(const TurnInput& in, TurnOutcome& out) {
   out.status = t->status;
   out.parkHost = t->parkHost;
   out.parkStatus = t->parkStatus;
+  out.parkBilling = t->parkBilling;
   out.failOver = t->failOver;
   out.modelUnusable = t->modelUnusable;
   out.switches = t->switches;

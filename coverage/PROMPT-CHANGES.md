@@ -1675,3 +1675,21 @@ PC-0175, PC-0176: not used.
 - lane: E2-CFIX2
 - prd: section 4 (search and view; the device group behind more), rulings 81 and 116, AGENTS.md rule 9
 - why: two bench defects of 24 Nov (lanes/E2-BENCH3/RESULT.md defects 4 and 5). (1) After /clear yes, "what did I say about my library card?" found 0 hits: search read the new conversation's key only. lib/harness/src/plain_history.cpp now reads every stored conversation of the chat, the new one first, then "<chat>_c<g-1>" down to "<chat>" with the earlier engine's rows; a hit from a cleared conversation carries tool_results::kSrcCleared ", before /clear" (15 B) in its line and the id "c<g>r<q>" that view opens (with the same words in its head); a cursor that stops in or between earlier conversations is "c<g>:<cursor>". The new conversation's request is unchanged (it still starts empty). (2) {"type":"config","key":"volume","value":1} was answered "applied: protected-BLOCKED": the field "key" ends in "key", the credential backstop. src/agent/tools_plain_device.h knobForm reads {"key":K,"value":V} as the knob K and "volume" as sfxVol (the speaker volume engine 1's own volume command sets: src/test_console.cpp "volume", the menu's Volume row, store::setSfxVolume), as keyed and typed config; every refused key (protected included) is answered "not applied: <reason>; action keys: " and the declaration's words, as E2-BFIX4 did for an unknown one. The literals counted: "key", "value", "volume", "sfxVol", "config", "type" (30 B, one constant each). Red scenarios: test_plain_history test_search_after_clear_finds_the_cleared_conversations_and_view_opens_the_hit, test_plain_device_tools test_device_control_takes_volume_in_key_value_form_and_a_refusal_names_the_keys.
+### PC-0286: the exchange line's class words end before its next step, so the switch line says them too (engine 2)
+- catalog: e2
+- class: device_notes
+- kind: build
+- bytes: 2046 -> 2046
+- sha8: 2204d611 -> e8bf79b6
+- lane: E2-CFIX1
+- prd: section 7 (fail-over: one true line per switch), rulings 116, AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h kUnreachable and kUnreadable each split in two at the next step (" could not be reached" + ". Send the message again.", " sent an answer the device could not read" + ". Try again."), byte for byte: exchangeLine sends the same lines as before (every route golden unchanged), and failoverLine (lib/harness/src/plain_exchange.cpp) names the class with the first half. Bench 24 Nov on unit F1 (lanes/E2-BENCH3/RESULT.md defect 1): the switch line read "Anthropic failed (other); this answer came from gpt-6-luna." for a key over its usage limit. Red scenario: test_plain_chat_binding test_a_usage_limit_refusal_fails_over_with_the_photos_and_the_true_reason.
+### PC-0287: a switch line names its class in the exchange line's words, and a refusal's reason for the person alone (engine 2)
+- catalog: e2
+- class: stubs
+- kind: build
+- bytes: 503 -> 508
+- sha8: 851ff20b -> 239edbdd
+- lane: E2-CFIX1
+- prd: section 7 (fail-over: one true line per switch), ruling 116, AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h kFailedOver (" failed (", 9 B) dropped, kAnswerFrom "); this answer came from " becomes "; this answer came from " (-1 B), kCutAnswer " cut its answer" (+15 B). failoverLine writes "<provider> had a server error (HTTP 500); this answer came from <model>." with device_notes' class words (PC-0286), and a refusal (Other, or a billing refusal by the marker table) as "<provider> refused the request (HTTP 400): <its reason>; ..." in the sent line only; the stored line (what a model may read) is "<provider> refused the key or the account has no credit (HTTP 400); ..." with no provider words (E2-FIX11's rule). Bench 24 Nov (lanes/E2-BENCH3/RESULT.md defect 1): "Anthropic failed (other); this answer came from gpt-6-luna." where the key had reached its usage limit until 1 December. Red scenario: test_plain_chat_binding test_a_usage_limit_refusal_fails_over_with_the_photos_and_the_true_reason.

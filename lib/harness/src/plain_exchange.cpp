@@ -305,7 +305,10 @@ class Exchange {
     // The reason belongs to this answer only (F7): a later answer of another class clears it, so a
     // line never joins one status to an earlier status's words. From the whole body: a long message
     // still parses.
-    refusedReason_ = verdict_.err == ExchangeErr::Other ? refusalReason(resp.body) : std::string();
+    // E2-CFIX1: a billing refusal's reason too (a key's own usage limit names when it lifts).
+    // (A router's billing reason is read by the park itself, with its cause: not marked here.)
+    billing_ = verdict_.err == ExchangeErr::KeyRefused && verdict_.cls == orch::caps::ErrClass::Billing;
+    refusedReason_ = verdict_.err == ExchangeErr::Other || billing_ ? refusalReason(resp.body) : std::string();
   }
 
   // What the provider's class of an Other answer means (router design section 9): a refusal code is
@@ -449,12 +452,14 @@ class Exchange {
     out_.status = err == ExchangeErr::Cut       ? StatusLine::CutAnswer
                   : err == ExchangeErr::Blocked ? StatusLine::ModerationBlock
                                                 : StatusLine::ProviderError;
-    out_.errorLine = exchangeLine(err, slug_, httpStatus_, err == ExchangeErr::Other ? refusedReason_ : std::string());
+    out_.reason = err == ExchangeErr::Other || (err == ExchangeErr::KeyRefused && billing_) ? refusedReason_ : std::string();
+    out_.errorLine = exchangeLine(err, slug_, httpStatus_, out_.reason);
     out_.errorLineStored = exchangeLine(err, slug_, httpStatus_);   // what may be kept: no provider words (F4)
     if (out_.modelUnusable)   // lane E2-R4b: the provider does not know the model, said as that (PC-0259)
       out_.errorLine = out_.errorLineStored = model_ + texts::stubs::kNotAvailableOn + providerName(capHost_) + ".";
     if (err == ExchangeErr::Other) out_.providerBody = refusedBody_;
     if (out_.parkHost) out_.parkBody = parkBody_;
+    out_.billing = out_.parkHost && billing_;
     return Status::success();
   }
 
@@ -483,6 +488,7 @@ class Exchange {
   bool cutRetried_ = false, refusedClimbed_ = false, routerResent_ = false, refResent_ = false;
   bool contextClimbed_ = false, fieldResent_ = false, refusalAnswer_ = false;
   std::string refusedBody_, refusedReason_, parkBody_;
+  bool billing_ = false;   // a KeyRefused that is a billing refusal (E2-CFIX1)
   uint32_t routerCap_ = 0;
   uint32_t cutSentTokens_ = 0;
   std::string cutSentEffort_;
@@ -663,22 +669,41 @@ std::string exchangeLine(ExchangeErr err, const std::string& slug, int httpStatu
   const std::string code = httpStatus > 0 ? n::kHttp + std::to_string(httpStatus) + ")" : "";
   switch (err) {
     case ExchangeErr::None: return "";
-    case ExchangeErr::Transport: return who + n::kUnreachable;
+    case ExchangeErr::Transport: return who + n::kUnreachable + n::kSendAgain;
     case ExchangeErr::Server: return who + n::kServerError + code + n::kTryLater;
     case ExchangeErr::RateLimited: return who + n::kLimiting + code + n::kTryLater;
     case ExchangeErr::ContextRefused: return std::string(n::kNoReply) + n::kTooLarge;
-    case ExchangeErr::KeyRefused: return who + n::kKeyRefused + code + n::kCheckKey;
+    case ExchangeErr::KeyRefused:   // E2-CFIX1: a billing refusal at 400 with its reason reads as a refusal
+      if (!reason.empty() && httpStatus == 400) break;
+      return who + n::kKeyRefused + code + n::kCheckKey;
     case ExchangeErr::Cut: return n::kCut;
-    case ExchangeErr::Malformed: return who + n::kUnreadable;
+    case ExchangeErr::Malformed: return who + n::kUnreadable + n::kTryAgain;
     case ExchangeErr::Blocked: return n::kBlocked;
     case ExchangeErr::Other: break;
   }
   return refusedLine(who, code, reason);
 }
 
-std::string failoverLine(const std::string& fromSlug, ExchangeErr err, const std::string& toModel) {
-  return std::string(providerName(fromSlug)) + texts::stubs::kFailedOver + exchangeErrSlug(err) + texts::stubs::kAnswerFrom +
-         toModel + ".";
+std::string failoverLine(const std::string& fromSlug, ExchangeErr err, int httpStatus, const std::string& reason,
+                         const std::string& toModel) {
+  namespace n = texts::device_notes;
+  const std::string code = httpStatus > 0 ? n::kHttp + std::to_string(httpStatus) + ")" : "";
+  std::string s = providerName(fromSlug);
+  switch (err) {
+    case ExchangeErr::Transport: s += n::kUnreachable; break;
+    case ExchangeErr::Server: s += n::kServerError + code; break;
+    case ExchangeErr::RateLimited: s += n::kLimiting + code; break;
+    case ExchangeErr::KeyRefused: s += (reason.empty() ? n::kKeyRefused : n::kRefused) + code; break;
+    case ExchangeErr::Cut: s += texts::stubs::kCutAnswer; break;
+    case ExchangeErr::Malformed: s += n::kUnreadable; break;
+    default: s += n::kRefused + code;
+  }
+  if (!reason.empty()) {
+    std::string r = reason;
+    while (!r.empty() && (r.back() == '.' || r.back() == ' ')) r.pop_back();
+    s += n::kReasonSep + r;
+  }
+  return s + texts::stubs::kAnswerFrom + toModel + ".";
 }
 
 bool switchesHost(ExchangeErr err, int httpStatus, const std::string& body) {

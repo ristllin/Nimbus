@@ -658,7 +658,7 @@ kind = "text"
 text = "reached your specified api usage limits"
 status = 400
 class = "billing"
-src = "lib/core/include/nimbus/orch/billing_refusal.h:42"
+src = "test/support/fixtures/anthropic_wire_synthetic/errors/cases.json:87"
 read = "2026-11-24"
 ver = "recorded"
 

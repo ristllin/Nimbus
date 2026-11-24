@@ -822,7 +822,8 @@ void logTurn(const plain::ChatBinding& b, const plain::TurnOutcome& out, const p
   const nimbus::orch::tx::CardHolds& h = txdev::cardTxFiles().holds();
   alogf("e2: turn chat=%s model=%s %s@%s cause=%s ms=%u rounds=%u tools=%u req=%u maxReqB=%u prompt=%u out=%u "
         "cacheR=%u cacheW=%u lastPrompt=%u uUSD=%u parts=%u/%u cacheW1h=%u",
-        b.config().chatId.c_str(), b.config().model.c_str(), nimbus::orch::tx::errSlug(st.err), (st.where ? st.where : ""),
+        b.config().chatId.c_str(), plain::answeringModel(out, b.config().model).c_str(),   // E2-CFIX1: who answered
+        nimbus::orch::tx::errSlug(st.err), (st.where ? st.where : ""),
         e.cause.c_str(), (unsigned)ms, (unsigned)out.rounds, (unsigned)out.toolCalls, (unsigned)out.headRequests,
         (unsigned)reqBytes, (unsigned)e.promptTokens, (unsigned)e.outputTokens, (unsigned)e.cacheReadTokens,
         (unsigned)e.cacheWriteTokens, (unsigned)e.lastPromptTokens, (unsigned)e.microUsd, (unsigned)b.sentParts(),

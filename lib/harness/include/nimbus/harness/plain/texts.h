@@ -249,14 +249,17 @@ namespace device_notes {
 // One exchange's status line per error class (lane RB-EX, plain_exchange.cpp exchangeLine):
 // what happened, then the one next step. A refused request (class Other) adds the provider's own reason after the status, for the person only (E2-FIX11).
 inline constexpr char kNoReply[] = "No reply: ";
-inline constexpr char kUnreachable[] = " could not be reached. Send the message again.";
+// E2-CFIX1: the class's words end before the next step, so a switch line says them too (PC-0286).
+inline constexpr char kUnreachable[] = " could not be reached";
+inline constexpr char kSendAgain[] = ". Send the message again.";
 inline constexpr char kServerError[] = " had a server error";
 inline constexpr char kLimiting[] = " is limiting requests";
 inline constexpr char kTryLater[] = ". Try again in a minute.";
 inline constexpr char kTooLarge[] = "the conversation is too large for this model. Try a shorter message.";
 inline constexpr char kKeyRefused[] = " refused the key or the account has no credit";
 inline constexpr char kCheckKey[] = ". Check the key and credit.";
-inline constexpr char kUnreadable[] = " sent an answer the device could not read. Try again.";
+inline constexpr char kUnreadable[] = " sent an answer the device could not read";
+inline constexpr char kTryAgain[] = ". Try again.";
 inline constexpr char kRefused[] = " refused the request";
 inline constexpr char kHttp[] = " (HTTP ";
 inline constexpr char kReasonSep[] = ": ";   // before the provider's own reason (E2-FIX11)
@@ -338,10 +341,12 @@ inline constexpr char kEarlierRan[] = "[device] earlier I ran ";   // then the t
 // A model the provider does not know (lane E2-R4b; PC-0259): "<model> is not available on <provider>.", the
 // exchange's line in place of the refusal (here, not in device_notes, whose ceiling it would pass).
 inline constexpr char kNotAvailableOn[] = " is not available on ";
-// A round that moved to another head (lane E2-P-FO; PC-0263): one line per switch for the person,
-// "<provider A> failed (<class slug>); this answer came from <model B>." (exchangeErrSlug).
-inline constexpr char kFailedOver[] = " failed (";
-inline constexpr char kAnswerFrom[] = "); this answer came from ";
+// A round that moved to another head (lane E2-P-FO; PC-0263): one line per switch for the person. E2-CFIX1
+// (PC-0287): the class in the exchange line's own words (device_notes), "<provider A> had a server error
+// (HTTP 500); this answer came from <model B>.", a refusal with the provider's reason for the person alone
+// (exchange.h failoverLine); a cut answer says kCutAnswer.
+inline constexpr char kCutAnswer[] = " cut its answer";
+inline constexpr char kAnswerFrom[] = "; this answer came from ";
 }  // namespace stubs
 namespace tool_results {
 // The results the loop itself gives a call that did not run (lane RB-E1a, plain_engine.cpp).

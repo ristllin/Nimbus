@@ -2,8 +2,8 @@
 # Regenerate with --write. Gate: tools/release_gate/check_no_prompt_patch.py (coverage/PROMPT-CHANGES.md).
 # One entry per line: class, source, sha8, bytes, the text as a JSON string.
 # class core bytes=2089 ceiling=3072 entries=44 sha8=b5a5c3a7
-# class device_notes bytes=2046 ceiling=2048 entries=78 sha8=2204d611
-# class stubs bytes=503 ceiling=512 entries=23 sha8=851ff20b
+# class device_notes bytes=2046 ceiling=2048 entries=80 sha8=e8bf79b6
+# class stubs bytes=508 ceiling=512 entries=23 sha8=239edbdd
 # class tool_results bytes=9093 ceiling=9216 entries=657 sha8=38bc4ee7
 # class probe bytes=1344 ceiling=1536 entries=6 sha8=f4dd133a
 # class summarizer bytes=1021 ceiling=1024 entries=17 sha8=a9622cfe
@@ -84,14 +84,16 @@ device_notes	lib/core/include/nimbus/orch/tx/migrate.h	5cf62227	42	" [the earlie
 device_notes	lib/core/include/nimbus/orch/tx/migrate.h	cfae0d42	1	"]"
 device_notes	lib/core/include/nimbus/orch/tx/migrate.h	887e9d2c	43	" [the earlier engine's summary is cut here]"
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	c6ce8486	10	"No reply: "
-device_notes	lib/harness/include/nimbus/harness/plain/texts.h	29769472	46	" could not be reached. Send the message again."
+device_notes	lib/harness/include/nimbus/harness/plain/texts.h	aeb0422e	21	" could not be reached"
+device_notes	lib/harness/include/nimbus/harness/plain/texts.h	b89ed3a8	25	". Send the message again."
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	efc69d8c	19	" had a server error"
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	791b499a	21	" is limiting requests"
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	b2d98554	24	". Try again in a minute."
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	135d49c4	68	"the conversation is too large for this model. Try a shorter message."
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	ebc26ddb	45	" refused the key or the account has no credit"
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	7771854d	27	". Check the key and credit."
-device_notes	lib/harness/include/nimbus/harness/plain/texts.h	a86142b5	53	" sent an answer the device could not read. Try again."
+device_notes	lib/harness/include/nimbus/harness/plain/texts.h	7a98d84d	41	" sent an answer the device could not read"
+device_notes	lib/harness/include/nimbus/harness/plain/texts.h	cc61c395	12	". Try again."
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	c633c8a7	20	" refused the request"
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	a53978b8	7	" (HTTP "
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	45822f54	2	": "
@@ -151,8 +153,8 @@ stubs	lib/harness/include/nimbus/harness/plain/texts.h	f2f92ba5	7	" failed"
 stubs	lib/harness/include/nimbus/harness/plain/texts.h	7ab2b6a4	16	" saved whole as "
 stubs	lib/harness/include/nimbus/harness/plain/texts.h	91a9fc57	23	"[device] earlier I ran "
 stubs	lib/harness/include/nimbus/harness/plain/texts.h	62807298	21	" is not available on "
-stubs	lib/harness/include/nimbus/harness/plain/texts.h	251df868	9	" failed ("
-stubs	lib/harness/include/nimbus/harness/plain/texts.h	43d5ce8e	25	"); this answer came from "
+stubs	lib/harness/include/nimbus/harness/plain/texts.h	e99bc84b	15	" cut its answer"
+stubs	lib/harness/include/nimbus/harness/plain/texts.h	6b685b82	24	"; this answer came from "
 tool_results	lib/core/include/nimbus/orch/file_aids.h	b489aa02	48	"not enough memory for this call; nothing changed"
 tool_results	lib/core/include/nimbus/orch/file_aids.h	cba06b57	3	"old"
 tool_results	lib/core/include/nimbus/orch/file_aids.h	cba06b57	3	"old"

@@ -1232,7 +1232,10 @@ static void test_a_refusal_line_names_the_providers_reason() {
   rig.model.push(sp::httpError(400, anthropicError("invalid_request_error", limit)));
   expectOk(rig.run());
   TEST_ASSERT_EQUAL_STRING(reasonLine(limit).c_str(), rig.out.errorLine.c_str());
-  TEST_ASSERT_EQUAL_STRING(kRefused400, rig.out.errorLineStored.c_str());
+  // E2-CFIX1: the key's usage limit is a billing refusal (parked); the kept form is the billing line.
+  TEST_ASSERT_TRUE(rig.out.parkHost);
+  TEST_ASSERT_EQUAL_STRING("No reply: Anthropic refused the key or the account has no credit (HTTP 400). Check the key and credit.",
+                           rig.out.errorLineStored.c_str());
 }
 
 // F2, F6: only printable ASCII reaches the line. Line separators, NEL and C1 controls are a space;
@@ -1418,10 +1421,16 @@ static void test_a_reason_rides_no_other_class_and_every_body_shape_yields_it() 
   }
   const ExchangeErr classes[] = {ExchangeErr::Transport, ExchangeErr::Server, ExchangeErr::RateLimited, ExchangeErr::ContextRefused,
                                  ExchangeErr::KeyRefused, ExchangeErr::Cut, ExchangeErr::Malformed, ExchangeErr::Blocked};
-  for (ExchangeErr e : classes)
+  // E2-CFIX1: a billing refusal at 400 carries its reason (ExchangeResult::reason is set only for one); at any
+  // other status the key line stays as it was.
+  TEST_ASSERT_EQUAL_STRING(plain::exchangeLine(ExchangeErr::KeyRefused, "anthropic", 401).c_str(),
+                           plain::exchangeLine(ExchangeErr::KeyRefused, "anthropic", 401, "Distinct provider words").c_str());
+  for (ExchangeErr e : classes) {
+    if (e == ExchangeErr::KeyRefused) continue;
     TEST_ASSERT_EQUAL_STRING_MESSAGE(plain::exchangeLine(e, "anthropic", 400).c_str(),
                                      plain::exchangeLine(e, "anthropic", 400, "Distinct provider words").c_str(),
                                      plain::exchangeErrSlug(e));
+  }
   const char* shapes[] = {
       R"({"type":"error","error":{"type":"invalid_request_error","message":"Distinct provider words"}})",   // Anthropic
       R"({"error":{"message":"Distinct provider words","type":"invalid_request_error","code":null}})",     // OpenAI

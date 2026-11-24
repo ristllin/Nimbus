@@ -31,6 +31,7 @@
 #include "nimbus/orch/model_price_defaults.h"
 #include "nimbus/orch/rbac.h"
 #include "nimbus/orch/seen_index.h"
+#include "nimbus/orch/turn_images.h"   // headTakesImages: a fall-back head sees photos by its row (E2-CFIX1)
 #include "nimbus/orch/spend_guard.h"
 #include "nimbus/orch/tool_registry.h"
 #include "nimbus/orch/tx/arena.h"
@@ -146,8 +147,6 @@ struct ChatBindingDeps {
   // Lane E2-P-FO: the heads a failed round may move to, in the owner's fallback order (fallbackSlots);
   // the device leaves it null with midTurnFailover off. Null: no fail-over.
   std::function<void(const FailoverAsk& ask, std::vector<HeadSlot>& out)> fallbacks;
-  // The owner chose `provider` for vision: a fallback head there sees photos as pixels. Null: none did.
-  std::function<bool(const std::string& provider)> visionChosen;
   // Lane E2-REP1 (review F): EngineDeps::pendingSpend (here in the ledger's counts, as the turn's own booking)
   // and EngineDeps::paidHeld. Null: the limits are read between turns only.
   std::function<void(const std::string& provider, const std::string& model, const nimbus::orch::TokenUsage& u)> pendingSpend;
@@ -1136,7 +1135,9 @@ class ChatBinding {
       t.head = std::move(h.endpoint);
       t.head.effort = headEffortFor(h.provider, h.model);
       t.cost = guardCostFor(b, r);
-      t.seesPhotos = d_.visionChosen && d_.visionChosen(h.provider);
+      // E2-CFIX1: the owner named this provider in his fall-back rules, so a head whose row takes images
+      // sees what the head may see (the route's row rules still bound them; a file id never crosses).
+      t.seesPhotos = nimbus::orch::headTakesImages(h.provider, h.model);
       out.push_back(std::move(t));
     }
   }

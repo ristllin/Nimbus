@@ -167,11 +167,13 @@ struct ExchangeResult {
   bool cutRetried = false;     // a cut answer was asked again with the retry cap
   bool failOver = false;       // the router said fail over: the ladder's next target
   bool parkHost = false;       // billing or key refused: the caller parks the host
+  bool billing = false;        // that refusal is billing by the classifier's markers (E2-CFIX1: the park's kind)
   bool modelUnusable = false;  // the provider does not know the model: the caller marks it unusable
   uint16_t dropped = 0;        // what the last request's pre-flight left out (plain/route.h dropped::)
   StatusLine status = StatusLine::None;   // CutAnswer or ProviderError when err != None
   std::string errorLine;       // the one plain line for the owner when err != None
   std::string errorLineStored; // errorLine as it may be stored or reach a model: without the provider's reason
+  std::string reason;          // refusalReason of a refusal (Other, or a billing KeyRefused): the person's line only (E2-CFIX1)
   std::string providerBody;    // the provider's own refusal body (first 4 KB) when err is Other (lane E2-FIX7)
   std::string parkBody;        // the refusal body (first 4 KB) when parkHost: the park reads its kind (E2-FIX14)
   nimbus::orch::tx::ExchangeFacts ref;   // the last request sent, by reference (RB-E3, recordRequest)
@@ -235,11 +237,15 @@ std::string providerSlugOf(const TurnCtx& turn, const HeadEndpoint& head);
 // message, is over 16 KB, or the text looks like it carries a key or token (then no reason at all).
 std::string refusalReason(const std::string& body);
 // The owner's plain line for an exchange that ended with `err` (empty for None). `reason` is read only
-// for ExchangeErr::Other with a status: "<who> refused the request (HTTP n): <reason>".
+// for ExchangeErr::Other with a status, and for a billing refusal at HTTP 400 (E2-CFIX1: Anthropic's key usage
+// limit and empty credit, where the key line names no cause): "<who> refused the request (HTTP n): <reason>".
 std::string exchangeLine(ExchangeErr err, const std::string& providerSlug, int httpStatus,
                          const std::string& reason = std::string());
-// Lane E2-P-FO: the person's line for one switch: "<provider A> failed (<class>); this answer came from <model B>."
-std::string failoverLine(const std::string& fromSlug, ExchangeErr err, const std::string& toModel);
+// Lane E2-P-FO: the person's line for one switch. E2-CFIX1: the class in the exchange line's words, "<provider A>
+// had a server error (HTTP 500); this answer came from <model B>.", and a refusal's `reason` (ExchangeResult::reason;
+// "" for the stored form) after them: "<provider A> refused the request (HTTP 400): <reason>; this answer came from <model B>."
+std::string failoverLine(const std::string& fromSlug, ExchangeErr err, int httpStatus, const std::string& reason,
+                         const std::string& toModel);
 // Lane E2-P-FO: does engine 1 move a round that failed this way to another host (fabricRuleFor's switch
 // classes)? Transport, server, rate limit, a refused key or credit, a cut, an unreadable answer, and a
 // refusal of this request by this host (`httpStatus` and `body` say which: one the same body gets on every
