@@ -81,8 +81,9 @@ void queueCrashNotice();
 // called by the engine-2 seam's begin() (before queueCrashNotice), keeps the crash notice planned
 // for a cut owner request instead of sending it at boot. lostOwnerTurn() names that request's chat
 // and kind (the journal collectTurnJournal() found). The seam then either sends the kept notice
-// (releaseOwnerNotice: the chat could not boot, so nothing else answers the person) or drops it
-// (dropOwnerNotice: the engine's boot took the turn).
+// (releaseOwnerNotice: the chat could not boot, or its boot sent the person nothing) or drops it
+// (dropOwnerNotice: the engine sent the person a line). Either may come before queueCrashNotice:
+// the outcome is kept and applied there (a release sends at boot, a drop sends nothing).
 void ownerTurnsResumed();
 bool lostOwnerTurn(std::string& chat, std::string& kind);
 void releaseOwnerNotice();

@@ -297,7 +297,8 @@ class ChatBinding {
     }
     // The seam runs after the chat is loaded: its failure (a send the channel refused, a resumed
     // run that failed) leaves the turn open for a later boot and never keeps the chat from starting.
-    if (!st.ok() && resumeRan_ && engine_) st = Status::success();
+    if (!st.ok() && resumeRan_ && engine_ && st.err == resume_.status.err && st.where == resume_.status.where)
+      st = Status::success();
     if (!st.ok()) return fail(st);
     if (resumeRan_) afterResume();
     if (engine_->unloaded()) say("e2: the stored conversation could not be loaded: held in RAM, retried before each turn");

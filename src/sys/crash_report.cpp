@@ -110,7 +110,11 @@ portMUX_TYPE g_noticeMux = portMUX_INITIALIZER_UNLOCKED;
 // Engine 2 (lane E2-FIX12): the engine answers a person's cut turn itself (plain/resume.h), so
 // the crash notice planned for it is kept here and sent only if the engine could not take the
 // turn (releaseOwnerNotice). Loop task at boot, tg_poll after: moved under g_noticeMux.
+// The seam may settle the turn (release or drop) before queueCrashNotice ran (tg_poll starts in
+// the orchestrator boot): the outcome is recorded either way and applied by whichever comes second.
+enum class OwnerTurn : uint8_t { Open = 0, Released = 1, Dropped = 2 };
 bool        g_ownerTurnsResumed = false;
+OwnerTurn   g_ownerTurn = OwnerTurn::Open;
 std::string g_keptOwnerNotice;
 
 void sendRestartNotice(std::string text, const char* when) {
@@ -460,10 +464,14 @@ void queueCrashNotice() {
   std::string now;
   // Engine 2: a person's cut request is the engine's to answer (one resume, else its own plain
   // notice); this notice is kept and sent only if the engine cannot take the turn.
-  const bool kept = timing == nimbus::orch::NoticeTiming::Now && j && nimbus::orch::isOwnerRequestKind(j->kind);
+  // Only a journal that names the chat: the seam can boot no other (lostOwnerTurn).
+  const bool kept = timing == nimbus::orch::NoticeTiming::Now && j && !j->chat.empty() &&
+                    nimbus::orch::isOwnerRequestKind(j->kind);
+  std::string dropped;
   portENTER_CRITICAL(&g_noticeMux);
-  const bool toEngine = kept && g_ownerTurnsResumed;
+  const bool toEngine = kept && g_ownerTurnsResumed && g_ownerTurn != OwnerTurn::Released;
   if (toEngine) g_keptOwnerNotice.swap(plan.text);
+  if (toEngine && g_ownerTurn == OwnerTurn::Dropped) dropped.swap(g_keptOwnerNotice);   // the engine told the person
   now = g_notices.atBoot(std::move(plan));
   portEXIT_CRITICAL(&g_noticeMux);
   agent::alogcf(errlog::cat::kBoot, "crash: owner notice %s (turn=%s)",
@@ -491,6 +499,7 @@ bool lostOwnerTurn(std::string& chat, std::string& kind) {
 void releaseOwnerNotice() {
   std::string text;
   portENTER_CRITICAL(&g_noticeMux);
+  g_ownerTurn = OwnerTurn::Released;
   text.swap(g_keptOwnerNotice);
   portEXIT_CRITICAL(&g_noticeMux);
   sendRestartNotice(std::move(text), "the engine could not resume the turn");
@@ -499,6 +508,7 @@ void releaseOwnerNotice() {
 void dropOwnerNotice() {
   std::string text;
   portENTER_CRITICAL(&g_noticeMux);
+  g_ownerTurn = OwnerTurn::Dropped;
   text.swap(g_keptOwnerNotice);
   portEXIT_CRITICAL(&g_noticeMux);
 }

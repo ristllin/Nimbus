@@ -881,7 +881,14 @@ void bootLostChat() {
   plain::ChatBinding* b = chatFor(chatId, std::string(store::orchModel(host).c_str()), roleOfChat(chatId));
   s_inTurn.store(false, std::memory_order_relaxed);
   nimbus::crash::turnEnded();
-  if (b) nimbus::crash::dropOwnerNotice();
+  // Dropped only when the engine sent the person a line (the answer, the stored answer or its
+  // notice); a boot that found no open turn, or whose send was refused, leaves the person the
+  // device's own notice (a crash only).
+  using BootAction = nimbus::orch::intents::BootAction;
+  const plain::ResumeReport* r = b ? &b->lastResume() : nullptr;
+  const bool told = r && r->status.ok() &&
+                    (r->action == BootAction::Resume || r->action == BootAction::SendStored || r->action == BootAction::Notice);
+  if (told) nimbus::crash::dropOwnerNotice();
   else nimbus::crash::releaseOwnerNotice();
 }
 
