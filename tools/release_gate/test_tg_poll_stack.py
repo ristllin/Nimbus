@@ -455,3 +455,52 @@ def test_the_built_image_keeps_the_floor_on_every_tg_poll_path(env):
 
 def test_report_shape_is_json_safe():
     json.dumps(config())
+
+
+# ---- the engine-2 target (lane E2-GATE) ---------------------------------------------------
+
+
+def _verdict(frame, target):
+    funcs = {1: fn(1, 4, "root", 100), 2: fn(2, 4, "deep_parse", frame - 100)}
+    funcs[1].calls = [(10, 2)]
+    m = model(funcs, config(target_free_bytes=target))
+    m.elf, m.tools = "x", {"addr2line": "true"}
+    return st.verdict(m)
+
+
+def test_a_path_under_the_target_warns_and_prints_the_deepest_chain():
+    v = _verdict(500, 600)  # 1000 B stack: 500 free, floor 200, target 600
+    assert v["ok"] and v["rows"][0]["warn"]
+    lines = st.verdict_lines(v)
+    assert lines[0].startswith("WARN tg_poll worst case (any path): 500 B used, 500 B free (floor 200 B, target 600 B)")
+    assert any(ln.startswith("deepest chain (worst case (any path), 500 B free)") for ln in lines)
+    assert any("deep_parse" in ln for ln in lines if ln.startswith("  "))
+    assert "largest frames on it: deep_parse 400 B" in lines[-1]
+    assert "UNDER TARGET" in st.render(v, "x")
+
+
+def test_counter_at_the_target_there_is_no_warning_and_no_chain():
+    v = _verdict(400, 600)  # exactly 600 free
+    assert v["ok"] and not v["rows"][0]["warn"]
+    assert st.verdict_lines(v) == [
+        "PASS tg_poll worst case (any path): 400 B used, 600 B free (floor 200 B, target 600 B)"
+    ]
+
+
+def test_counter_under_the_floor_fails_and_prints_the_chain_too():
+    v = _verdict(801, 600)
+    assert not v["ok"] and not v["rows"][0]["warn"]
+    lines = st.verdict_lines(v)
+    assert lines[0].startswith("FAIL tg_poll worst case (any path)") and any("deep_parse" in ln for ln in lines)
+
+
+def test_no_target_no_warning():
+    v = _verdict(700, None)
+    assert v["ok"] and not v["rows"][0]["warn"]
+    assert st.verdict_lines(v)[0].endswith("(floor 200 B)")
+
+
+def test_the_engine2_target_is_6000_and_engine1_has_none():
+    cfg = st.load_config()
+    assert st.for_engine(cfg, 2)["target_free_bytes"] == 6000
+    assert st.for_engine(cfg, 1)["target_free_bytes"] is None

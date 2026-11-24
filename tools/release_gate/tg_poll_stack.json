@@ -9,6 +9,8 @@
   ],
   "stack_bytes": 24576,
   "min_free_bytes": 4096,
+  "target_free_bytes_by_engine": {"2": 6000},
+  "_target_why": "The PRD's target for engine 2 (section 10: at least 4,096 B free on engine 2, target 6,000 B). A path under it passes with a WARN line and the deepest chain printed (lane E2-GATE, 24 Nov 2026): parity paths (MCP, other wires, sub-agents) run on this task, and the margin is seen before it is gone. Engine 1 has no target: its image is frozen at 4,400 to 5,952 B free.",
   "fixed_overhead": {
     "_why": "Bytes on the task stack no frame shows. The FreeRTOS Xtensa port (port.c pxPortInitialiseStack) puts the coprocessor save area (XT_CP_SIZE 316 B on the S3, rounded to 16) and the GCC TLS block (9 B of .tdata/.tbss, rounded to 16) at the top of every task stack. An interrupt at the deepest point pushes one exception frame (XT_STK_FRMSZ 192 B) plus the interrupted frame's 16 B base save area before switching to the ISR stack.",
     "coprocessor_save_area": 320,
