@@ -193,6 +193,40 @@ struct Case {
 
 inline constexpr const char* kDirect = "messages-anthropic-direct";
 inline constexpr const char* kRouted = "messages-anthropic-routed";
+// The chat rows (lane E2-R6): Mistral and Z.ai direct and routed, a custom endpoint (text mode).
+inline constexpr const char* kMistral = "chat-mistral-direct";
+inline constexpr const char* kMistralRouted = "chat-mistral-routed";
+inline constexpr const char* kZai = "chat-zai-direct";
+inline constexpr const char* kZaiRouted = "chat-zai-routed";
+inline constexpr const char* kCustomChat = "chat-custom_chat-direct";
+
+// The head a signature names: the dialect, the turn's host (a provider slug) and model, the
+// endpoint host, and whether the render goes through the route and pre-flight (every chat row; the
+// Messages goldens render as they did before the route, byte for byte).
+struct RowFacts {
+  plain::Dialect dialect = plain::Dialect::AnthropicMessages;
+  const char* turnHost = "anthropic";
+  const char* model = "claude-sonnet-5-5";
+  const char* headHost = "api.anthropic.com";
+  bool routed = false;
+  bool route = false;
+};
+
+inline RowFacts rowOf(const std::string& sig, bool routedFact) {
+  const plain::Dialect chat = plain::Dialect::ChatCompletions;
+  if (sig == kMistral) return {chat, "mistral", "mistral-large-4-0", "api.mistral.ai", false, true};
+  if (sig == kMistralRouted) return {chat, "cumulo", "mistral/mistral-large-4-0", "router.cumulo.test", true, true};
+  if (sig == kZai) return {chat, "zai", "glm-5.3", "api.z.ai", false, true};
+  if (sig == kZaiRouted) return {chat, "cumulo", "zai/glm-5.3", "router.cumulo.test", true, true};
+  if (sig == kCustomChat) return {chat, "custom", "local-model", "llm.example.test", false, true};
+  RowFacts r;
+  if (routedFact) {
+    r.turnHost = "cumulo";
+    r.headHost = "router.cumulo.test";
+    r.routed = true;
+  }
+  return r;
+}
 
 // The fixed inputs around every transcript.
 inline constexpr const char* kCore = "You are a test assistant for the route goldens. Answer briefly.";

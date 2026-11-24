@@ -1,0 +1,8 @@
+# route golden request chat-custom_chat-direct/text_only
+preflight dropped 8
+POST https://llm.example.test:443/v1/chat/completions
+header content-type: application/json
+header authorization: Bearer fixture-key-not-a-secret
+splices 0
+body 304
+{"model":"local-model","messages":[{"role":"system","content":"You are a test assistant for the route goldens. Answer briefly.\n\nPinned: the test garden has three beds.\n\nMon 16 Nov: planned the spring beds."},{"role":"user","content":"[2026-11-17 Tue 13:02] Hello. What can you help me with today?"}]}

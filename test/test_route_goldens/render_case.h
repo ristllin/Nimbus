@@ -6,6 +6,7 @@
 
 #include "golden_io.h"
 #include "nimbus/harness/http.h"
+#include "nimbus/harness/plain/route.h"
 #include "nimbus/harness/plain/wire.h"
 #include "nimbus/orch/tx/arena.h"
 #include "transcripts.h"
@@ -40,11 +41,15 @@ struct World {
   std::map<std::string, std::string> photos = photoStore();
   tx::TxArena arena;
   plain::RenderInput in;
+  RowFacts row;
+  plain::Route route;              // a chat row's route and pre-flight (lane E2-R6)
+  plain::PreflightState own;
 
   tx::Status load(const Case& c) {
     tx::Status st = arena.init(1 << 22, [](size_t n) { return std::malloc(n); }, [](void* p) { std::free(p); });
     for (size_t i = 0; st.ok() && i < c.tx.items.size(); ++i) st = arena.append(c.tx.items[i]);
     if (!st.ok()) return st;
+    row = rowOf(c.signature, c.facts.routed);
     setTurn(c);
     setHead(c.facts);
     setSystem(c.facts);
@@ -57,15 +62,15 @@ struct World {
     turn.chatKey = "2002";
     turn.chatId = "2002";
     turn.turn = c.facts.openTurn ? c.facts.openTurn : c.tx.turn;
-    turn.host = c.facts.routed ? "cumulo" : "anthropic";
-    turn.model = "claude-sonnet-5-5";
-    turn.dialect = plain::Dialect::AnthropicMessages;
+    turn.host = row.turnHost;
+    turn.model = row.model;
+    turn.dialect = row.dialect;
     turn.dayStartMin = c.facts.dayStartMin;
   }
   void setHead(const Facts& f) {
-    head.host = f.routed ? "router.cumulo.test" : "api.anthropic.com";
+    head.host = row.headHost;
     head.effort = f.effort;
-    head.routed = f.routed;
+    head.routed = row.routed;
     head.key = [] { return std::string(kFixtureKey); };
   }
   void setSystem(const Facts& f) {
@@ -136,7 +141,11 @@ inline std::string renderCase(const Case& c) {
   tx::Status st = w.load(c);
   if (!st.ok()) return head + "fixture refused by the arena: " + tx::errSlug(st.err) + " at " + st.where + "\n";
   const plain::WireCodec* wire = nullptr;
-  if (!(st = plain::wireFor(plain::Dialect::AnthropicMessages, wire)).ok() || !wire) return head + refusedLine(st);
+  if (!(st = plain::wireFor(w.row.dialect, wire)).ok() || !wire) return head + refusedLine(st);
+  if (w.row.route) {   // as the exchange renders it: the route, then the pre-flight (its dropped bits pinned)
+    if (!(st = plain::resolveRoute(w.head, w.turn, w.route)).ok()) return head + refusedLine(st);
+    head += "preflight dropped " + std::to_string(plain::preflight(w.route, 0, w.own, w.in)) + "\n";
+  }
   agent::HttpRequest req;
   if (!(st = wire->render(w.in, req)).ok()) return head + refusedLine(st);
   return head + requestText(req);

@@ -1,0 +1,20 @@
+# route golden parse chat-mistral-direct/thinking_chunks.txt served at HTTP 200
+parse ok
+parse stop end
+parse text 27 B fnv64=fe251ae020aab0fa head="Your boat is the Nereid II."
+parse refusal ""
+parse calls 0
+parse meta 1
+parse   meta 0 beforeCall=0 110 B fnv64=95b0ef39c498b0f0 head="{\"type\":\"thinking\",\"thinking\":[{\"type\":\"text\",\"t"
+parse usage prompt=176 completion=40 cacheRead=1024 cacheWrite=0 cacheWrite1h=0 responses=1 maxRequestIn=1200 served="mistral-large-4-0"
+exchange err=ok http=200 requests=1 retries=0 climbs=0 cutRetried=0 failOver=0 parkHost=0 maxTokens=2192 requestBytes=817 ms=0 waitedMs=0 statusLine=0
+exchange line ""
+exchange line stored ""
+exchange request 0 817 B fnv64=c1f5c67edb0ee48b
+exchange step stop end
+exchange step text 27 B fnv64=fe251ae020aab0fa head="Your boat is the Nereid II."
+exchange step refusal ""
+exchange step calls 0
+exchange step meta 1
+exchange step   meta 0 beforeCall=0 110 B fnv64=95b0ef39c498b0f0 head="{\"type\":\"thinking\",\"thinking\":[{\"type\":\"text\",\"t"
+exchange step usage prompt=176 completion=40 cacheRead=1024 cacheWrite=0 cacheWrite1h=0 responses=1 maxRequestIn=1200 served="mistral-large-4-0"

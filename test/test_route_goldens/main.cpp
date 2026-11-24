@@ -48,7 +48,7 @@ void failOn(const std::vector<std::string>& reports) {
 std::vector<std::string> goldenNames() {
   std::vector<std::string> out;
   for (const rg::Case& c : rg::requestCases()) out.push_back(c.signature + "/" + c.name + ".req");
-  for (const rg::Answer& a : rg::answers()) out.push_back(std::string(rg::kDirect) + "/" + rg::stem(a.file) + ".parse");
+  for (const rg::Answer& a : rg::answers()) out.push_back(std::string(a.sig) + "/" + rg::stem(a.file) + ".parse");
   std::sort(out.begin(), out.end());
   return out;
 }

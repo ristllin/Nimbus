@@ -1,0 +1,8 @@
+# route golden request chat-mistral-direct/summarizer_structured
+preflight dropped 0
+POST https://api.mistral.ai:443/v1/chat/completions
+header content-type: application/json
+header authorization: Bearer fixture-key-not-a-secret
+splices 0
+body 644
+{"model":"mistral-large-4-0","max_tokens":4096,"reasoning_effort":"medium","response_format":{"type":"json_schema","json_schema":{"name":"answer","schema":{"type":"object","properties":{"changes":{"type":"array","items":{"type":"string"}}},"required":["changes"],"additionalProperties":false},"strict":true}},"prompt_cache_key":"nimbus-8fefae20ef9b4bcb","messages":[{"role":"system","content":"Summary so far: the owner plans three garden beds.\n\nFold the slice below into the summary. Answer with the changes only."},{"role":"user","content":"[2026-11-17 Tue 13:02] [slice] Tue 17 Nov: the owner asked about beds 1 to 3; bed 3 gets chard."}]}

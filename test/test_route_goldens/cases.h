@@ -311,6 +311,61 @@ inline Tx restartMidTurn() {
   return t;
 }
 
+// Lane E2-R6: reasoning as the chat rows store it, in the open turn: a Mistral thinking chunk before the
+// round's text, and Z.ai's reasoning_content (each row replays only its own kind).
+inline Tx chatReasoning(const char* meta) {
+  Tx t;
+  t.open();
+  t.owner("Which bed gets the most sun? Check the note.");
+  t.meta(meta);
+  t.say("Reading the note.", false);
+  t.call("toolu_12A", "read_note", R"({"path":"notes/bed2.md"})");
+  t.receipt("toolu_12A", "read_note", "bed 2: empty, full sun");
+  t.next();
+  return t;
+}
+inline constexpr const char* kMistralThinking =
+    R"({"type":"thinking","thinking":[{"type":"text","text":"The note says which bed."}]})";
+inline constexpr const char* kZaiReasoning = R"({"reasoning_content":"The note says which bed."})";
+
+// The chat rows' requests (lane E2-R6): the common fixtures on each direct row, two on each routed
+// row, and the tool-free ones on a custom endpoint (text mode).
+inline void chatCases(std::vector<Case>& out) {
+  for (const char* sig : {kMistral, kZai}) {
+    Facts f;
+    out.push_back(make("text_only", firstMessage(), f, sig));
+    out.push_back(make("one_call", oneCall(), f, sig));
+    out.push_back(make("two_parallel_calls", twoParallelCalls(), f, sig));
+    out.push_back(make("three_rounds", threeRounds(), f, sig));
+    out.push_back(make("second_turn_after_tools", secondTurnAfterTools(), f, sig));
+    out.push_back(make("stub_and_bulk_result", stubAndBulk(), f, sig));
+    out.push_back(make("foreign_k_item", foreignMeta(), f, sig));
+    out.push_back(make("open_turn_thinking", openTurnThinking(), f, sig));
+    out.push_back(make("mistral_thinking_chunk", chatReasoning(kMistralThinking), f, sig));
+    out.push_back(make("zai_reasoning_content", chatReasoning(kZaiReasoning), f, sig));
+    f.toolChoiceNone = true;
+    out.push_back(make("guard_round", guardRound(), f, sig));
+    f = Facts();
+    f.photos = Photos::Inline;
+    out.push_back(make("photo_in_view_inline", photoInView(), f, sig));
+    f = Facts();
+    f.system = Sys::Summarizer;
+    f.noTools = true;
+    f.schema = true;
+    out.push_back(make("summarizer_structured", summarizerSlice(), f, sig));
+  }
+  for (const char* sig : {kMistralRouted, kZaiRouted}) {
+    out.push_back(make("text_only", firstMessage(), Facts(), sig));
+    out.push_back(make("one_call", oneCall(), Facts(), sig));
+  }
+  Facts f;
+  f.effort = "";
+  out.push_back(make("text_only", firstMessage(), f, kCustomChat));
+  f.system = Sys::Summarizer;
+  f.noTools = true;
+  out.push_back(make("summarizer_lines", summarizerSlice(), f, kCustomChat));
+}
+
 inline std::vector<Case> requestCases() {
   std::vector<Case> out;
   Facts f;
@@ -373,6 +428,7 @@ inline std::vector<Case> requestCases() {
   f.routed = true;
   out.push_back(make("text_only", firstMessage(), f, kRouted));
   out.push_back(make("one_call", oneCall(), f, kRouted));
+  chatCases(out);
   return out;
 }
 

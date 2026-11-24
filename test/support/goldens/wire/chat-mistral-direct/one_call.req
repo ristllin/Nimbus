@@ -1,0 +1,8 @@
+# route golden request chat-mistral-direct/one_call
+preflight dropped 0
+POST https://api.mistral.ai:443/v1/chat/completions
+header content-type: application/json
+header authorization: Bearer fixture-key-not-a-secret
+splices 0
+body 1055
+{"model":"mistral-large-4-0","max_tokens":4096,"reasoning_effort":"medium","prompt_cache_key":"nimbus-8fefae20ef9b4bcb","tools":[{"type":"function","function":{"name":"read_note","description":"Read one note by its path.","parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}},{"type":"function","function":{"name":"view","description":"Show an earlier result or photo again by its id.","parameters":{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}}}],"tool_choice":"auto","messages":[{"role":"system","content":"You are a test assistant for the route goldens. Answer briefly.\n\nPinned: the test garden has three beds.\n\nMon 16 Nov: planned the spring beds."},{"role":"user","content":"[2026-11-17 Tue 13:02] What is in notes/beds.md?"},{"role":"assistant","tool_calls":[{"id":"toolu_01A","type":"function","function":{"name":"read_note","arguments":"{\"path\":\"notes/beds.md\"}"}}]},{"role":"tool","tool_call_id":"toolu_01A","content":"# Beds\nbed 1: beans\nbed 2: leeks\nbed 3: empty"}]}

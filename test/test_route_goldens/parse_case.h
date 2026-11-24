@@ -18,12 +18,16 @@
 // clock, around the text_only request; no provider is called.
 namespace route_goldens {
 
-struct Answer {
-  const char* file;   // under kAnswers
-  int status;         // the HTTP status it is served with
-};
-
 inline constexpr const char* kAnswers = "test/support/fixtures/anthropic_wire_2026-11/";
+inline constexpr const char* kMistralAnswers = "test/support/fixtures/mistral_wire_synthetic/";
+inline constexpr const char* kZaiAnswers = "test/support/fixtures/zai_wire_synthetic/";
+
+struct Answer {
+  const char* file;   // under dir
+  int status;         // the HTTP status it is served with
+  const char* sig = kDirect;     // the row signature it is read on
+  const char* dir = kAnswers;    // a synthetic fixture's header lines (source, status, expect) are not the body
+};
 
 // Every recorded Anthropic answer of the wire's parse suite, at the status it came with.
 inline std::vector<Answer> answers() {
@@ -33,12 +37,29 @@ inline std::vector<Answer> answers() {
           {"input_transformations_dropped.json", 200}, {"synthetic_refusal.json", 200},
           {"synthetic_interleaved.json", 200},   {"synthetic_empty_content.json", 200},
           {"thinking_near_the_line_call.json", 200},   {"thinking_over_the_line_cut.json", 200},
-          {"error_not_found.json", 404}};
+          {"error_not_found.json", 404},
+          // Lane E2-R6: the chat rows' synthetic answers (written from the providers' documentation).
+          {"tool_calls.txt", 200, kMistral, kMistralAnswers},
+          {"thinking_chunks.txt", 200, kMistral, kMistralAnswers},
+          {"length_cut_call.txt", 200, kMistral, kMistralAnswers},
+          {"model_length.txt", 200, kMistral, kMistralAnswers},
+          {"error_3051_effort_refused.txt", 400, kMistral, kMistralAnswers},
+          {"error_invalid_model.txt", 400, kMistral, kMistralAnswers},
+          {"reasoning_content_text.txt", 200, kZai, kZaiAnswers},
+          {"tool_call_args_object.txt", 200, kZai, kZaiAnswers},
+          {"tool_call_args_string.txt", 200, kZai, kZaiAnswers},
+          {"length_cut.txt", 200, kZai, kZaiAnswers},
+          {"sensitive.txt", 200, kZai, kZaiAnswers},
+          {"model_context_window_exceeded.txt", 200, kZai, kZaiAnswers},
+          {"error_1113_no_balance.txt", 429, kZai, kZaiAnswers},
+          {"error_1301_unsafe_content.txt", 400, kZai, kZaiAnswers}};
 }
 
 // The answer as the transport serves it (the parse suite's own reading: trailing newlines off).
 inline bool answerBody(const Answer& a, std::string& body) {
-  if (!readFile(std::string(kAnswers) + a.file, body)) return false;
+  if (!readFile(std::string(a.dir) + a.file, body)) return false;
+  const size_t json = body.find("\n{");   // a synthetic fixture: the body follows its header lines
+  if (a.dir != kAnswers && json != std::string::npos) body.erase(0, json + 1);
   while (!body.empty() && (body.back() == '\n' || body.back() == '\r')) body.pop_back();
   return true;
 }
@@ -47,7 +68,7 @@ inline std::string stem(const char* file) {
   std::string s = file;
   return s.substr(0, s.rfind('.'));
 }
-inline std::string parsePath(const Answer& a) { return std::string(kRoot) + kDirect + "/" + stem(a.file) + ".parse"; }
+inline std::string parsePath(const Answer& a) { return std::string(kRoot) + a.sig + "/" + stem(a.file) + ".parse"; }
 
 inline std::string usageText(const nimbus::orch::TokenUsage& u) {
   return "prompt=" + std::to_string(u.promptTokens) + " completion=" + std::to_string(u.completionTokens) +
@@ -108,12 +129,12 @@ inline std::string exchangeText(const plain::ExchangeResult& r, const Serve& s) 
 }
 
 // The exchange around the text_only request, answered by `a` on every request.
-inline std::string runExchangeOn(int status, const std::string& body) {
-  const Case c = make("text_only", firstMessage());
+inline std::string runExchangeOn(const char* sig, int status, const std::string& body) {
+  const Case c = make("text_only", firstMessage(), Facts(), sig);
   World w;
   tx::Status st = w.load(c);
   const plain::WireCodec* wire = nullptr;
-  if (st.ok()) st = plain::wireFor(plain::Dialect::AnthropicMessages, wire);
+  if (st.ok()) st = plain::wireFor(w.row.dialect, wire);
   if (!st.ok()) return refusedLine(st);
   Serve serve;
   serve.status = status;
@@ -139,7 +160,7 @@ inline std::string runExchangeOn(int status, const std::string& body) {
 
 // The golden text of one answer: the parse, then the exchange.
 inline std::string parseCase(const Answer& a) {
-  std::string o = "# route golden parse " + std::string(kDirect) + "/" + a.file + " served at HTTP " +
+  std::string o = "# route golden parse " + std::string(a.sig) + "/" + a.file + " served at HTTP " +
                   std::to_string(a.status) + "\n";
   std::string body;
   if (!answerBody(a, body)) return o + "answer fixture missing\n";
@@ -148,11 +169,11 @@ inline std::string parseCase(const Answer& a) {
   resp.body = body;
   plain::ParsedStep step;
   const plain::WireCodec* wire = nullptr;
-  if (!plain::wireFor(plain::Dialect::AnthropicMessages, wire).ok() || !wire) return o + "no wire\n";
+  if (!plain::wireFor(rowOf(a.sig, false).dialect, wire).ok() || !wire) return o + "no wire\n";
   const tx::Status ps = wire->parse(resp, step);
   o += std::string("parse ") + tx::errSlug(ps.err) + (ps.ok() ? "" : std::string(" at ") + ps.where) + "\n";
   o += stepText(step, "parse ");
-  return o + runExchangeOn(a.status, body);
+  return o + runExchangeOn(a.sig, a.status, body);
 }
 
 }  // namespace route_goldens
