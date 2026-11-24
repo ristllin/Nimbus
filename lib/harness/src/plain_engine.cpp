@@ -835,7 +835,7 @@ class TurnRun {
   bool ownNotes(const std::string& now) const {
     if (now == c_.prefix.seenNotes) return false;
     const bool own = !t_.longArgs && ownNotesAddition(c_.prefix.blocks.notes, c_.prefix.seenNotes, now, t_.ownTexts,
-                                                       {texts::core::kNotes, texts::core::kSkills});
+                                                       {texts::core::kNotes, texts::core::kRules, texts::core::kSkills});
     if (!own)
       hlog::logf("plain(%s): the notes changed beyond this turn's own additions: rendered at the next open", d_.chatKey.c_str());
     return own;

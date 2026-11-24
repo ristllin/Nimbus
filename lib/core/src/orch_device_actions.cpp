@@ -225,6 +225,24 @@ void readConfigKnobs(ArduinoJson::JsonVariantConst c, ValidatedAction& a) {
 
 }  // namespace
 
+// The knobs readConfigKnobs reads, and the typed shape's discriminator.
+const char* const kConfigKnobKeys[] = {
+    "type",     "ledBrightness", "priority", "posture",  "profile", "theme",  "attnHoldMs", "ttsVoice",
+    "ttsProv",  "ttsOn",         "sleepOvr", "brightOvr", "sttProv", "sfxLvlN", "sfxLvlO",   "sfxVol",
+    "sfxTheme", "devName",
+};
+
+std::string unknownConfigKeys(ArduinoJson::JsonVariantConst action) {
+  const ArduinoJson::JsonVariantConst keyed = action["config"];
+  std::string out;
+  for (ArduinoJson::JsonPairConst kv : (keyed.isNull() ? action : keyed).as<ArduinoJson::JsonObjectConst>()) {
+    bool known = false;
+    for (const char* k : kConfigKnobKeys) known = known || std::strcmp(k, kv.key().c_str()) == 0;
+    if (!known) out += (out.empty() ? "" : ", ") + std::string(kv.key().c_str());
+  }
+  return out;
+}
+
 // orch_model: the agent switching its OWN host+model is a DELIBERATE exception to
 // the protected-key rule (host/model only; keys + priority stay owner-only). The
 // device re-validates model-in-choices before applying (choices live device-side);

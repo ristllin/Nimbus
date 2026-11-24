@@ -54,6 +54,20 @@ inline constexpr char kRecall[] =
 inline constexpr char kModel[] = "Model: ";
 inline constexpr char kToolsIndex[] =
     "Tools behind more (more with group lists them; more with name and args calls one):";
+// E2-BFIX4 (PC-0283): the few words of a group in the tools index ("skills: save, list and delete skills"),
+// in place of its tools, so a small model sees what more holds (bench: Haiku said it had no skill tool when
+// the index's 512 B ran out before the skills group). A group not named here shows the table's own words.
+struct GroupWords {
+  const char* group;
+  const char* words;
+};
+inline constexpr GroupWords kGroupWords[] = {
+    {"device", "device state, settings such as volume, light, updates, self test, health, log"},
+    {"agents", "list and stop sub-agent jobs"},
+    {"files_admin", "delete, move, download and share files, file details, read and write PDFs"},
+    {"media", "make images, speak aloud, play music"},
+    {"skills", "save, list and delete skills (how-tos)"},
+};
 // The owner's tool servers that wait for his approval (E2-REP2; engine 1's "[DEVICE MCP SERVERS]" line): the
 // names follow, then the way to answer. Only the owner's turn carries it.
 inline constexpr char kServersWaiting[] = "Tool servers waiting for the owner's approval, not usable yet:";
@@ -61,6 +75,9 @@ inline constexpr char kServersApprove[] = "The owner answers with /mcp approve o
 inline constexpr char kSkills[] = "Skills (read_file to open):";
 inline constexpr char kSkillsMore[] = " more: skill_list through more";
 inline constexpr char kNotes[] = "Pinned notes:";
+// E2-BFIX4 (PC-0283): the pinned notes of kind rule, ahead of the other notes under their own header, so a
+// standing rule (/prefs, the Rules page, note kind rule) reads as one; under "Pinned notes:" Haiku took it as a fact.
+inline constexpr char kRules[] = "Standing rules, to follow in every reply:";
 inline constexpr char kDigests[] = "Summary of the earlier conversation:";
 inline constexpr char kRecentFiles[] = "Recent files:";
 }  // namespace core
@@ -130,9 +147,11 @@ inline constexpr ToolDecl kTools[] = {
      R"({"type":"object","properties":{"kind":{"type":"string","enum":["text","file","photo","voice"]},"path":{"type":"string"},"ref":{"type":"string"},"text":{"type":"string"},"caption":{"type":"string"},"chat":{"type":"string"}},"required":["kind"]})",
      nullptr},
     {"schedule",
-     "Create, update, delete or list reminders, routines, wakeups. A reminder sends its text at 'when' "
-     "(YYYY-MM-DD HH:MM local); a wakeup runs text once at 'when' as your own run, without this chat, able to "
-     "read files. Returns the entry.",
+     // E2-BFIX4 (PC-0284): a fixed text the person asked to be told is a reminder (engine 1: /remind against
+     // wakeup.set); a wakeup is a task the assistant runs, whose answer reaches this chat.
+     "Reminders, routines, wakeups. A reminder sends its text as written at 'when' (YYYY-MM-DD HH:MM local): what "
+     "the person asked to be told. A wakeup runs text then as your own task, able to read files, and sends what it "
+     "finds here.",
      R"({"type":"object","properties":{"op":{"type":"string","enum":["create","update","delete","list"]},"kind":{"type":"string","enum":["reminder","routine","wakeup"]},"id":{"type":"string"},"when":{"type":"string"},"text":{"type":"string"},"every":{"type":"string","description":"routine cadence, e.g. daily 07:00"}},"required":["op"]})",
      nullptr},
     // RB-REC8's declaration (lib/core/include/nimbus/orch/calc.h, phase 1 header 8a41d5e1).
@@ -195,7 +214,7 @@ inline constexpr ToolDecl kBehindMore[] = {
     {"system.health", "Live health of the ring, display, mic, speaker, card, memory, Wi-Fi and Telegram.",
      R"({"type":"object","properties":{}})", nullptr},
     {"device.control",
-     "Change the device now, one action: config (settings, e.g. sfxVol 0-100), led, lights, tts. reboot and "
+     "Change the device now, one action: config (settings, e.g. volume sfxVol 0-100), led, lights, tts. reboot and "
      "orch_model (switch the main model) run after this reply.",
      R"({"type":"object","properties":{"action":{"type":"object","description":"type config: sfxVol, ledBrightness, sfxTheme, posture dark|calm|full, theme; led: mode solid|spinner|pulse|flash|rainbow|off, r, g, b, brightness; lights: value full|off; tts: text; reboot; orch_model: provider, model"}},"required":["action"]})",
      nullptr},
@@ -421,6 +440,9 @@ inline constexpr char kControlApplied[] = "applied: ";
 inline constexpr char kControlNotApplied[] = "not applied: ";
 inline constexpr char kControlNoAction[] = "action must be an object";
 inline constexpr char kControlAfterReply[] = " (runs after this reply is sent)";
+// E2-BFIX4 (PC-0285): an unknown key's answer, "not applied: unsupported; action keys: " and the action
+// argument's own description (the declaration's words).
+inline constexpr char kControlKeys[] = "; action keys: ";
 }  // namespace tool_results
 namespace probe {
 // Lane E2-R8a (router design section 3.3): the custom endpoint's verify asks once whether it takes a tool

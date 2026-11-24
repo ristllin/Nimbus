@@ -1621,3 +1621,30 @@ PC-0175, PC-0176: not used.
 - lane: RB-R4 (lane E2-REP7; the router leftovers file their entries under RB-R4 as PC-0275 did)
 - prd: PRD section 4 (the always-on tools and the groups behind more, each description at most 240 B under the class ceiling); AGENTS.md rule 9
 - why: lib/harness/include/nimbus/harness/plain/texts.h. PC-0275 left the class at 10,255 B against its 10,240 B ceiling, so test_plain_ceilings failed on the tip. Wording only, meaning kept, longest first: read_file ("if more remains"), edit_file ("No match ... is an error listing the match lines", "the count replaced"), append_file (drops "It only appends.", which "Add text to the end" already says), search ("this chat", "text files"), view (articles dropped), schedule ("its text"), skill_list, skill_save ("a how-to in"), device.status, device.log, ota.status, device.selftest ("skipped while silent"), device.control ("run after this reply"), tenant.list, tenant.set_quota, models.list ("A provider's models", "refresh fetches after this turn") and the three docs tools ("the device's documentation"). 143 B removed, 128 B of room left under the unchanged ceiling for the next addition. No text added; kind spec because each shortened string is a new text to the gate.
+### PC-0283: the standing rules under their own header, and the groups behind more by their few words (engine 2)
+- catalog: e2
+- class: core
+- kind: build
+- bytes: 1706 -> 2033
+- sha8: 51b7732e -> 078dd6de
+- lane: E2-BFIX4
+- prd: section 4 (the system core: pinned notes and the tools index behind more), AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h core kRules and kGroupWords, lib/harness/src/plain_request.cpp notesSection and coreText, lib/core/src/orch_tool_groups.cpp groupsIndex. Bench 24 Nov on unit F1 (CUM-1012): "/prefs add End every reply with the word Roger." reached the next request as one more line under "Pinned notes:" among facts, and Haiku answered "4" and "Red." twice; the pinned notes of kind rule now come first under "Standing rules, to follow in every reply:" (engine 1 framed them as standing rules in its never-dropped band). The tools index named each tool with its arguments and ran out of its 512 B at models ("also behind more: docs, skills"), so Haiku said it had no skill tool; each group is now one line of its few words ("skills: save, list and delete skills (how-tos)"), the connectors group still lists its servers' tools. Red scenarios: test_plain_chat_binding test_a_rule_added_by_prefs_rides_the_next_request_under_the_standing_rules_header, test_plain_request test_the_tools_index_names_every_group_with_its_words_and_skills_fits.
+### PC-0284: schedule tells a reminder from a wakeup as its handler runs them; device_control names volume (engine 2)
+- catalog: e2
+- class: tool_descriptions
+- kind: build
+- bytes: 10112 -> 10116
+- sha8: de644435 -> 45cd801b
+- lane: E2-BFIX4
+- prd: section 4 (the always-on tools and the groups behind more, each description at most 240 B), AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h. Bench 24 Nov (CUM-1012): "Set a wake-up for 2 minutes from now with the message: bench wake-up check" became a wakeup, ran as a task on the small model, opened a skill and asked what to check. Engine 1 makes a fixed text the person asked to be told a reminder (/remind, delivered as written) and wakeup.set a follow-up the assistant does itself; the schedule description now says a reminder sends its text as written, "what the person asked to be told", and a wakeup is the assistant's own task whose findings it sends here (the fire's answer goes to the chat's outbox), 231 -> 228 B ("Returns the entry." and the op list, which the schema enum gives, dropped). device.control's description says "volume sfxVol" (+7 B): Haiku sent {"speaker_volume":1}. Red scenario: test_plain_request test_the_schedule_description_tells_a_reminder_from_a_wakeup_as_the_handler_runs_them.
+### PC-0285: device_control answers an unknown key with the keys it takes (engine 2)
+- catalog: e2
+- class: tool_results
+- kind: build
+- bytes: 9025 -> 9048
+- sha8: 0010cad5 -> 2d815249
+- lane: E2-BFIX4
+- prd: section 4 (the device group behind more), AGENTS.md rule 9
+- why: src/agent/tools_plain_device.h deviceControl and lib/harness/include/nimbus/harness/plain/texts.h kControlKeys. Bench 24 Nov (CUM-1012): {"speaker_volume":1} was answered "applied: unsupported" (it said applied, and gave no hint that the key is sfxVol). An action no branch reads is now refused "not applied: unsupported; action keys: " followed by the declaration's own words for the action argument (no new sentence), and a config action's keys no knob reads (lib/core unknownConfigKeys) get the same line after what was applied. The JSON keys that read the declaration ("properties", "description") count here as every literal of the file does; the three "device.control" literals fold into one constant. Red scenario: test_plain_device_tools test_an_unknown_device_control_key_is_not_applied_and_the_answer_names_the_keys.

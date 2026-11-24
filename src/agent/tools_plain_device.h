@@ -85,6 +85,17 @@ inline bool bindDeclared(nimbus::orch::ToolRegistry& reg, const char* name, Hand
   return true;
 }
 
+// The keys device_control's action takes: its declaration's own words for the action argument
+// (texts.h kBehindMore), so an unknown key's answer names them (E2-BFIX4, bench 24 Nov: Haiku
+// sent {"speaker_volume":1} and read "applied: unsupported").
+inline constexpr char kControlName[] = "device.control";
+inline std::string controlKeys() {
+  const auto* d = plain::toolDecl(kControlName);
+  ArduinoJson::JsonDocument s;
+  if (!d || deserializeJson(s, d->schema)) return std::string();
+  return s["properties"]["action"]["description"] | "";
+}
+
 // One device action now, by the shared applier (engine 1's device.control, the same caller rules
 // and summary); a restart or a model switch it accepts is recorded and asked of the turn instead.
 inline nimbus::orch::ToolResult deviceControl(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who,
@@ -92,9 +103,16 @@ inline nimbus::orch::ToolResult deviceControl(ArduinoJson::JsonObjectConst a, co
   namespace tr = plain::texts::tool_results;
   using nimbus::orch::ToolResult;
   const std::string refused =
-      nimbus::orch::actionRefusal("device.control", nimbus::orch::actionCaller(who, unattended));
+      nimbus::orch::actionRefusal(kControlName, nimbus::orch::actionCaller(who, unattended));
   if (!refused.empty()) return ToolResult::fail(refused);
-  if (!a["action"].is<ArduinoJson::JsonObjectConst>()) return ToolResult::fail(tr::kControlNoAction);
+  const ArduinoJson::JsonVariantConst action = a["action"];
+  if (!action.is<ArduinoJson::JsonObjectConst>()) return ToolResult::fail(tr::kControlNoAction);
+  // A key no action reads is never "applied": the answer names what the tool takes (E2-BFIX4).
+  const nimbus::orch::ValidatedAction va = nimbus::orch::validateAction(action);
+  if (va.kind == nimbus::orch::ActionKind::Unknown)
+    return ToolResult::fail(tr::kControlNotApplied + va.reason + tr::kControlKeys + controlKeys());
+  const std::string unknown =
+      va.kind == nimbus::orch::ActionKind::Config && va.allowed ? nimbus::orch::unknownConfigKeys(action) : std::string();
   bool restart = false;
   std::string head;   // provider/model of an accepted switch
   const auto stage = d.stageDevice;
@@ -107,11 +125,12 @@ inline nimbus::orch::ToolResult deviceControl(ArduinoJson::JsonObjectConst a, co
     return true;   // deferred: written after the reply (switchHead)
   };
   std::string json, risk;
-  serializeJson(a["action"], json);
+  serializeJson(action, json);
   const DeviceOutcome dev = applyDeviceAction(json, who, unattended, chat, d, &risk);
   if (dev.refusedWhole) return ToolResult::fail(tr::kControlNotApplied + dev.refusals);
   std::string out = tr::kControlApplied + dev.summary;
   if (!dev.refusals.empty()) out += "\n" + std::string(tr::kControlNotApplied) + dev.refusals;
+  if (!unknown.empty()) out += "\n" + std::string(tr::kControlNotApplied) + unknown + tr::kControlKeys + controlKeys();
   out += risk + dev.replyNote;
   ToolResult r = ToolResult::ok(out);
   if (restart || !head.empty()) {
@@ -137,7 +156,7 @@ inline void registerDeviceFamilies(nimbus::orch::ToolRegistry& reg, const Handle
     if (bindDeclared(reg, t.first, t.second)) reg.setAdminOnly(t.first);
   bindDeclared(reg, "models.list", h.modelsList);
   if (!c.apply) return;
-  bindDeclared(reg, "device.control", [c](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) {
+  bindDeclared(reg, kControlName, [c](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) {
     return deviceControl(a, who, c.unattended && c.unattended(), c.chat ? c.chat() : std::string(), c.apply());
   });
 }

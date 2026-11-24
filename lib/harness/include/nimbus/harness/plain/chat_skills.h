@@ -101,5 +101,30 @@ inline bool skillBody(const std::vector<SkillFile>& files, const std::string& id
   return false;
 }
 
+// The context skills the owner was told are too large for the pinned block, one "<id>@<bytes>" line
+// each, kept on flash by the device so a restart does not tell him again (lane E2-BFIX4, bench 24 Nov:
+// the notice went out once per boot, and the bench's console resets the board). A skill whose size
+// changed is told again. True when `id` at `bytes` is due: `told` then holds it, newest last, at most
+// kSkillToldMax lines (the oldest go first).
+inline constexpr size_t kSkillToldMax = 32;
+inline bool skillNoticeDue(std::string& told, const std::string& id, size_t bytes) {
+  const std::string key = id + "@" + std::to_string(bytes);
+  std::vector<std::string> lines;
+  size_t at = 0;
+  while (at < told.size()) {
+    size_t nl = told.find('\n', at);
+    if (nl == std::string::npos) nl = told.size();
+    const std::string l = told.substr(at, nl - at);
+    if (l == key) return false;
+    if (!l.empty()) lines.push_back(l);
+    at = nl + 1;
+  }
+  lines.push_back(key);
+  if (lines.size() > kSkillToldMax) lines.erase(lines.begin(), lines.end() - kSkillToldMax);
+  told.clear();
+  for (const std::string& l : lines) told += l + "\n";
+  return true;
+}
+
 }  // namespace plain
 }  // namespace agent

@@ -430,14 +430,26 @@ plain::Status photoFor(const std::string& ref, plain::PhotoBytes& out) {
   return st;
 }
 
-// ---- a context skill too large for the pinned block: told once per boot --------------
-std::vector<std::string> s_skillTold;   // "<id>@<bytes>" already told (tg_poll only)
+// ---- a context skill too large for the pinned block: told once per file and size -------
+// E2-BFIX4: the told list is on flash, so a restart does not tell the owner again (it went out
+// once per boot, and every console open resets the board).
+constexpr char kSkillToldPath[] = "/data/skill-told.txt";
+std::string s_skillTold;                // plain::skillNoticeDue's list (tg_poll only)
+bool s_skillToldRead = false;
 std::vector<std::string> s_skillTell;   // to tell after the running turn
 void noteSkillRefused(const std::string& id, size_t bytes) {
-  const std::string key = id + "@" + std::to_string(bytes);
-  for (const std::string& k : s_skillTold)
-    if (k == key) return;
-  s_skillTold.push_back(key);
+  if (!s_skillToldRead) {
+    s_skillToldRead = true;
+    File f = LittleFS.open(kSkillToldPath, "r");
+    if (f) {
+      while (f.available() && s_skillTold.size() < 4096) s_skillTold += (char)f.read();
+      f.close();
+    }
+  }
+  if (!plain::skillNoticeDue(s_skillTold, id, bytes)) return;
+  LittleFS.mkdir("/data");
+  if (!agent::writeFileAtomic(kSkillToldPath, s_skillTold, "skill_told", false))
+    alogf("e2: the told list of large skills was not saved: the next boot may tell %s again", id.c_str());
   char line[320];
   snprintf(line, sizeof(line), kSkillTooLargeLine, id.c_str(), (unsigned)bytes);
   alogf("e2: skill %s (%u B) does not fit the pinned block: listed instead", id.c_str(), (unsigned)bytes);

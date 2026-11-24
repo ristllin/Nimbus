@@ -889,6 +889,42 @@ bool readAll(const std::string& path, std::string& out) {
 }
 }  // namespace
 
+// E2-BFIX4 (bench 24 Nov, defect 6): "save a skill" on Haiku: "I have no skill tool". The index named each
+// tool with its arguments, ran out of its 512 B at models and named the rest "also behind more: docs, skills".
+// Each group now shows its few words, every group fits, and skills says what it holds.
+static void test_the_tools_index_names_every_group_with_its_words_and_skills_fits() {
+  for (bool shortHost : {false, true}) {
+    Rig rig(shortHost);
+    auto s = lumiState(rig, Who::Owner);
+    const Composed c = compose(s->facts);
+    const size_t at = c.sys.core.find(agent::plain::texts::core::kToolsIndex);
+    TEST_ASSERT_TRUE(at != std::string::npos);
+    const std::string idx = c.sys.core.substr(at);
+    auto has = [](const std::string& t, const char* w) { return t.find(w) != std::string::npos; };
+    TEST_ASSERT_TRUE_MESSAGE(has(idx, "\nskills: save, list and delete skills"), idx.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(has(idx, "\ndevice: device state, settings such as volume"), idx.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(has(idx, "\ndocs: "), idx.c_str());
+    TEST_ASSERT_FALSE_MESSAGE(has(idx, "also behind more"), idx.c_str());
+    TEST_ASSERT_TRUE(idx.size() - std::strlen(agent::plain::texts::core::kToolsIndex) - 1 <= kToolsIndexMax);
+  }
+}
+
+// E2-BFIX4 (bench 24 Nov, defect 4): "Set a wake-up for 2 minutes with the message: bench wake-up check" became a
+// wakeup; it ran as a task, opened a skill and asked what to check. The description said a wakeup "runs text ...
+// without this chat"; it now says, as the handler does, that a reminder delivers the person's words as written and
+// a wakeup is the assistant's own task whose findings come to this chat.
+static void test_the_schedule_description_tells_a_reminder_from_a_wakeup_as_the_handler_runs_them() {
+  const td::ToolDecl* d = plain::toolDecl("schedule");
+  TEST_ASSERT_NOT_NULL(d);
+  const std::string text = d->description;
+  TEST_ASSERT_TRUE_MESSAGE(text.find("A reminder sends its text as written") != std::string::npos, text.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(text.find("what the person asked to be told") != std::string::npos, text.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(text.find("as your own task") != std::string::npos, text.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(text.find("sends what it finds here") != std::string::npos, text.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(text.find("without this chat") == std::string::npos, text.c_str());
+  TEST_ASSERT_TRUE(text.size() <= 240);
+}
+
 static void test_golden_records_every_role_and_host() {
   std::string g =
       "# Engine-2 request composition on the synthetic Lumi-state fixture (test/test_plain_request).\n"
@@ -1091,6 +1127,8 @@ int main(int, char**) {
   RUN_TEST(test_tools_bytes_is_the_rendered_array);
   RUN_TEST(test_same_facts_same_bytes);
   RUN_TEST(test_a_clock_in_the_core_would_be_caught);
+  RUN_TEST(test_the_tools_index_names_every_group_with_its_words_and_skills_fits);
+  RUN_TEST(test_the_schedule_description_tells_a_reminder_from_a_wakeup_as_the_handler_runs_them);
   RUN_TEST(test_golden_records_every_role_and_host);
   return UNITY_END();
 }

@@ -278,6 +278,21 @@ static void test_device_control_applies_now_and_defers_restart_and_switch() {
   TEST_ASSERT_EQUAL(0, (int)dev.out.deferred.mask);
 }
 
+// E2-BFIX4 (bench 24 Nov, defect 7): Haiku sent {"speaker_volume":1} and read "applied: unsupported", with no hint
+// that the key is sfxVol. A key no action reads is not applied, and the answer names the keys the tool takes.
+static void test_an_unknown_device_control_key_is_not_applied_and_the_answer_names_the_keys() {
+  Device dev;
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  const std::string r = moreCall(dev, R"({"name":"device_control","args":{"action":{"speaker_volume":1}}})");
+  TEST_ASSERT_TRUE_MESSAGE(has(r, "not applied: unsupported; action keys: type config: sfxVol"), r.c_str());
+  TEST_ASSERT_FALSE_MESSAGE(has(r, "\"applied: unsupported"), r.c_str());
+  const std::string c = moreCall(dev, R"({"name":"device_control","args":{"action":{"type":"config","speaker_volume":1}}})");
+  TEST_ASSERT_TRUE_MESSAGE(has(c, "not applied: speaker_volume; action keys: type config: sfxVol"), c.c_str());
+  TEST_ASSERT_EQUAL(-1, dev.exec.sfxVol);   // nothing set
+  const std::string ok = moreCall(dev, R"({"name":"device_control","args":{"action":{"type":"config","sfxVol":10}}})");
+  TEST_ASSERT_FALSE_MESSAGE(has(ok.substr(ok.rfind("\"tool_result\"")), "action keys"), ok.c_str());   // its own result
+}
+
 // E2-REP1 (E2-INT1's finding): the switch after the turn reports what the store did. A refused write
 // is not a switch, so the chat is never told a model answers now that does not.
 static void test_a_head_switch_the_store_refuses_is_not_reported_done() {
@@ -356,6 +371,7 @@ int main(int, char**) {
   RUN_TEST(test_device_family_is_behind_more);
   RUN_TEST(test_device_control_applies_now_and_defers_restart_and_switch);
   RUN_TEST(test_device_control_refuses_a_member);
+  RUN_TEST(test_an_unknown_device_control_key_is_not_applied_and_the_answer_names_the_keys);
   RUN_TEST(test_people_family_is_admin_only);
   RUN_TEST(test_models_family_reaches_models_list);
   RUN_TEST(test_docs_family_reaches_search_and_read);

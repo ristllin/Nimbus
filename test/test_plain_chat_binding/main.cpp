@@ -216,7 +216,10 @@ struct Device {
     if (!skillFiles.empty()) d.skills = [this](const nimbus::orch::Principal&) { return plain::chatSkillsOf(skillFiles); };
     if (skills) d.skills = [this](const nimbus::orch::Principal&) { return skills(); };   // E2-P-SKILL: the store
     if (pinnedNotes) d.pinnedNotes = pinnedNotes;                                         // E2-P-SKILL: the notebook
-    d.skillRefused = [this](const std::string& id, size_t) { refused.push_back(id); };
+    d.skillRefused = [this](const std::string& id, size_t n) {
+      refused.push_back(id);
+      if (skillTold && plain::skillNoticeDue(*skillTold, id, n)) ++skillTells;   // the device's notice (E2-BFIX4)
+    };
     d.usage = [this](const plain::TurnOutcome& o) {
       usage.push_back(plain::turnSpendOf(o, binding->config().provider, binding->config().model));
     };
@@ -304,6 +307,8 @@ struct Device {
   std::function<plain::ChatSkills()> skills;
   std::function<std::string(const nimbus::orch::Principal&)> pinnedNotes;
   std::vector<std::string> refused;
+  std::string* skillTold = nullptr;   // the device's told list on flash: outlives a boot (E2-BFIX4)
+  int skillTells = 0;
   std::vector<nimbus::orch::TurnSpend> usage;
   std::vector<nimbus::orch::TurnSpend> compactUsage;   // lane E2-CMP: the summarizer's requests
   bool progress = false;
@@ -1041,6 +1046,33 @@ static void test_a_context_skill_rides_the_fixed_part_and_a_too_large_one_is_ref
   TEST_ASSERT_FALSE(has(body, "Read only when asked."));
   TEST_ASSERT_EQUAL(1, (int)dev.refused.size());
   TEST_ASSERT_EQUAL_STRING("bench-big", dev.refused[0].c_str());
+}
+
+// E2-BFIX4 (bench 24 Nov, defect 9): the too-large notice went to the chat on two boots in a row (the bench's
+// console open resets the board). Told once per file and size: a restart does not tell it again; a new size does.
+static void test_a_too_large_skill_is_told_once_across_a_restart_and_again_when_its_size_changes() {
+  std::string flash;
+  int tells = 0;
+  for (int boot = 0; boot < 2; ++boot) {
+    Device dev;
+    dev.skillTold = &flash;
+    dev.skillFiles.push_back({"bench-big", skillMd("context", std::string(5000, 'w'))});
+    TEST_ASSERT_TRUE(dev.boot().ok());
+    for (int turn = 0; turn < 2; ++turn) {
+      dev.model.push(sp::say("ok"));
+      TEST_ASSERT_TRUE(dev.say("hello").ok());
+    }
+    TEST_ASSERT_TRUE(dev.refused.size() >= 1);   // listed instead on every boot
+    tells += dev.skillTells;
+  }
+  TEST_ASSERT_EQUAL_MESSAGE(1, tells, "one notice for one file over two boots");
+  Device grown;
+  grown.skillTold = &flash;
+  grown.skillFiles.push_back({"bench-big", skillMd("context", std::string(6000, 'w'))});
+  TEST_ASSERT_TRUE(grown.boot().ok());
+  grown.model.push(sp::say("ok"));
+  TEST_ASSERT_TRUE(grown.say("hello").ok());
+  TEST_ASSERT_EQUAL_MESSAGE(1, grown.skillTells, "a changed size is told again");
 }
 
 static void test_a_turns_usage_is_handed_over_once() {
@@ -1892,6 +1924,30 @@ static void test_a_rule_added_or_removed_by_prefs_applies_to_the_next_turn() {
   TEST_ASSERT_TRUE(has(o.prefsCmd("restore p9"), "Not changed"));
 }
 
+// E2-BFIX4 (bench 24 Nov, defect 5): "/prefs add End every reply with the word Roger." reached the next request
+// as one more line under "Pinned notes:", among facts, and Haiku answered "4" without it. The rules ride ahead of
+// the other notes under their own header, the new one with them.
+static void test_a_rule_added_by_prefs_rides_the_next_request_under_the_standing_rules_header() {
+  Device dev;
+  Owner o;
+  o.bind(dev);
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  ArduinoJson::JsonDocument a;
+  a["op"] = "set";
+  a["key"] = "bench3-parcel";
+  a["value"] = "4417";
+  a["pin"] = true;
+  TEST_ASSERT_TRUE(o.nb.call(a.as<ArduinoJson::JsonObjectConst>(), o.who, nimbus::orch::notes::Origin::Attended).success);
+  o.prefsCmd("add Call me Sam.");
+  TEST_ASSERT_TRUE(has(o.prefsCmd("add End every reply with the word Roger."), "p2"));
+  dev.model.push(sp::say("4 Roger"));
+  TEST_ASSERT_TRUE(dev.say("What is 2 plus 2?").ok());
+  const std::string& body = dev.model.last().body;
+  TEST_ASSERT_TRUE_MESSAGE(has(body, "Standing rules, to follow in every reply:\\nrule-p1 [rule]: Call me Sam.\\nrule-p2 "
+                                     "[rule]: End every reply with the word Roger.\\nPinned notes:\\nbench3-parcel: 4417"),
+                           body.c_str());
+}
+
 // D3: a note held after outside content is listed by /prefs and approved (it reaches the next
 // request) or denied (it never does).
 static void test_a_held_note_is_listed_and_approved_or_denied_by_the_owner() {
@@ -2414,6 +2470,7 @@ int main(int, char**) {
   RUN_TEST(test_only_a_head_that_takes_images_gets_the_part);
   RUN_TEST(test_a_blind_head_reads_one_stored_description_and_a_seeing_head_costs_none);
   RUN_TEST(test_a_context_skill_rides_the_fixed_part_and_a_too_large_one_is_refused_once);
+  RUN_TEST(test_a_too_large_skill_is_told_once_across_a_restart_and_again_when_its_size_changes);
   RUN_TEST(test_a_turns_usage_is_handed_over_once);
   RUN_TEST(test_compact_now_answers_on_the_chat_and_the_budget_view_is_in_tokens);
   RUN_TEST(test_a_compaction_files_its_summarizer_spend_like_a_turn);
@@ -2444,6 +2501,7 @@ int main(int, char**) {
   RUN_TEST(test_a_skill_save_after_outside_content_is_kept_waiting_even_with_the_switch_on);
   RUN_TEST(test_a_skill_past_the_size_limit_is_told_what_to_do_with_engine_twos_tools);
   RUN_TEST(test_a_rule_added_or_removed_by_prefs_applies_to_the_next_turn);
+  RUN_TEST(test_a_rule_added_by_prefs_rides_the_next_request_under_the_standing_rules_header);
   RUN_TEST(test_a_held_note_is_listed_and_approved_or_denied_by_the_owner);
   RUN_TEST(test_every_slot_runs_a_turn_a_summary_and_a_routine);
   RUN_TEST(test_spend_is_booked_in_each_providers_counts);
