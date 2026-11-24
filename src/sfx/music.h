@@ -84,6 +84,8 @@ void registerTools();
 nimbus::orch::ToolResult playTool(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who);
 nimbus::orch::ToolResult pauseTool(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who);
 nimbus::orch::ToolResult stopTool(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who);
+// media.list: the tracks in /music and the player state (engine 2: media_list).
+nimbus::orch::ToolResult listTool(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who);
 
 // List the /music directory (validated names only), sorted. Device-side (SD).
 std::vector<std::string> listMusicDir();

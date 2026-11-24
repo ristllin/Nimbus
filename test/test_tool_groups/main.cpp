@@ -107,7 +107,7 @@ const std::map<std::string, std::string> kPlan = {
     {"delete_file", "files_admin"}, {"move_file", "files_admin"}, {"fetch_url", "files_admin"},
     {"share_file", "files_admin"},  {"file_stat", "files_admin"}, {"read_pdf", "files_admin"},
     {"pdf_write", "files_admin"},   {"image_generate", "media"},  {"speak", "media"},
-    {"media_play", "media"},       {"media_pause", "media"},     {"media_stop", "media"},   // E2-P-OUT2 (parity)
+    {"media_play", "media"},       {"media_pause", "media"},     {"media_stop", "media"}, {"media_list", "media"},   // E2-P-OUT2 (parity)
     {"skill_list", "skills"},
     {"skill_save", "skills"},       {"skill_delete", "skills"}};
 

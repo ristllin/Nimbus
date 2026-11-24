@@ -62,6 +62,7 @@ struct Fakes {
     o.play = h("media.play");
     o.pause = h("media.pause");
     o.stop = h("media.stop");
+    o.list = h("media.list");
     return o;
   }
 };
@@ -193,6 +194,15 @@ void test_media_stop_reaches_media_stop() {
   TEST_ASSERT_TRUE(has(r.resultBody(), "stopped"));
 }
 
+void test_media_list_reaches_media_list() {
+  behindMore("media_list", "media");
+  Rig r;
+  r.fakes.answer["media.list"] = R"({"available":["song.wav"],"player":{"state":"idle"}})";
+  r.callThroughMore("media_list", "{}");
+  TEST_ASSERT_EQUAL_STRING("{}", r.fakes.got["media.list"].c_str());
+  TEST_ASSERT_TRUE(has(r.resultBody(), "song.wav"));
+}
+
 // The two lanes meet (E2-P-OUT1): the path image_generate returns is the path `send` kind file takes; the
 // image reaches the person only through send's own delivery (sendFile), never through this lane.
 void test_a_generated_image_path_is_accepted_by_send() {
@@ -234,6 +244,7 @@ int main() {
   RUN_TEST(test_media_play_reaches_media_play);
   RUN_TEST(test_media_pause_reaches_media_pause);
   RUN_TEST(test_media_stop_reaches_media_stop);
+  RUN_TEST(test_media_list_reaches_media_list);
   RUN_TEST(test_a_generated_image_path_is_accepted_by_send);
   return UNITY_END();
 }

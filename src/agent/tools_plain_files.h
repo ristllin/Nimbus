@@ -25,6 +25,7 @@ struct OldHandlers {
   nimbus::orch::ToolHandler play;    // media.play {path, queue}
   nimbus::orch::ToolHandler pause;   // media.pause {}
   nimbus::orch::ToolHandler stop;    // media.stop {}
+  nimbus::orch::ToolHandler list;    // media.list {}
 };
 
 // Register the engine-2 tools on `reg` over `old`. Their groups are the class table's

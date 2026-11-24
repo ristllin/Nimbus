@@ -537,6 +537,14 @@ nimbus::orch::ToolResult stopTool(ArduinoJson::JsonObjectConst, const nimbus::or
   return nimbus::orch::ToolResult::ok(std::string(statusJson().c_str()));
 }
 
+nimbus::orch::ToolResult listTool(ArduinoJson::JsonObjectConst, const nimbus::orch::Principal&) {
+  String j = "{\"available\":[";
+  auto tracks = listMusicDir();
+  for (size_t i = 0; i < tracks.size(); i++) { if (i) j += ","; j += "\""; j += tracks[i].c_str(); j += "\""; }
+  j += "],\"player\":"; j += statusJson(); j += "}";
+  return nimbus::orch::ToolResult::ok(std::string(j.c_str()));
+}
+
 #if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: no old-engine tool registers on engine 2 (RB-I0)
 void registerTools() {
   auto& reg = agent::memory::registry();
@@ -554,15 +562,8 @@ void registerTools() {
   reg.add("media.stop", "Stop music playback and clear the queue.", stopTool,
           R"({"type":"object","properties":{}})");
 
-  reg.add("media.list",
-          "List the tracks in SD /music and the current playback state.",
-          [](ArduinoJson::JsonObjectConst, const nimbus::orch::Principal&) -> nimbus::orch::ToolResult {
-            String j = "{\"available\":[";
-            auto tracks = listMusicDir();
-            for (size_t i = 0; i < tracks.size(); i++) { if (i) j += ","; j += "\""; j += tracks[i].c_str(); j += "\""; }
-            j += "],\"player\":"; j += statusJson(); j += "}";
-            return nimbus::orch::ToolResult::ok(std::string(j.c_str()));
-          }, R"({"type":"object","properties":{}})");
+  reg.add("media.list", "List the tracks in SD /music and the current playback state.", listTool,
+          R"({"type":"object","properties":{}})");
 }
 #endif
 

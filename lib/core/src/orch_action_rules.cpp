@@ -121,6 +121,7 @@ const ActionRuleRow kRows[] = {
     {"media_play", R::Owner, "play music on the speaker"},
     {"media_pause", R::Owner, "pause the music"},
     {"media_stop", R::Owner, "stop the music"},
+    {"media_list", R::Open, "list the music"},
 #endif
     // ---- docs, routines, replies, skills, people (src/agent/memory_subsystem.cpp) ----
     {"docs.list", R::Open, "browse the docs"},

@@ -202,6 +202,7 @@ const Expect kExpect[] = {
     {"media_play", kOwner},
     {"media_pause", kOwner},
     {"media_stop", kOwner},
+    {"media_list", kOpen},
     // docs, routines, replies, skills, people
     {"docs.list", kOpen},
     {"docs.read", kOpen},

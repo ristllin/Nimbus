@@ -5,7 +5,6 @@
 
 #include <ArduinoJson.h>
 
-#include <mutex>
 #include <vector>
 
 #include "../net/web_prefs.h"                     // setPrefsPageRows - the held notes on the Rules page
@@ -28,53 +27,40 @@ namespace {
 
 namespace notes = nimbus::orch::notes;
 
-constexpr char kNotePrefix[] = "note-";   // a held note's id on the Rules page ("note-p1")
-
 nimbus::orch::Principal owner() { return nimbus::orch::principalForRole("owner", nimbus::orch::Role::Admin); }
 
 plain::SkillToolDeps s_deps;
 
-// The Rules page's answers, run on tg_poll (the notes' only writer).
-struct Answer {
-  bool approve;
-  std::string id;
-};
-std::mutex s_mu;
-std::vector<Answer> s_answers;
+plain::HeldNoteWeb s_web;   // the Rules page's rows and answers, run on tg_poll (the notes' only writer)
 
 void tellOwner(const std::string& text) {
   const String chat = orchestrator::firstAllowedChat();
   if (chat.length()) agent::telegram::send(chat, String(text.c_str()), /*block=*/false);
 }
 
-// GET /api/prefs: each held note as a pending row the page approves or removes.
+// GET /api/prefs: each held note, the owner's and the members', as a pending row the page approves or removes.
 void addRows(ArduinoJson::JsonArray items) {
-  std::vector<notes::PendingNote> held;
-  if (!notesdev::notebook().pending(owner(), held)) return;
-  for (const notes::PendingNote& p : held) {
+  std::vector<plain::HeldMember> members;
+  for (const nimbus::orch::Tenant& t : orchestrator::tenantSnapshot())
+    if (t.role != nimbus::orch::Role::Admin) members.push_back({t.chatId, t.label});
+  for (const plain::HeldRow& r : s_web.rows(notesdev::notebook(), owner(), members)) {
     ArduinoJson::JsonObject o = items.add<ArduinoJson::JsonObject>();
-    o["id"] = std::string(kNotePrefix) + p.id;
-    o["text"] = "Note " + plain::heldNoteLine(p);
+    o["id"] = r.id;
+    o["text"] = r.text;
     o["state"] = "pending";
     o["origin"] = "note";
   }
 }
 
 bool actOnRow(const std::string& action, const std::string& id, std::string& message) {
-  if (id.rfind(kNotePrefix, 0) != 0) return false;
+  if (!plain::HeldNoteWeb::isRow(id)) return false;
   if (action != "approve" && action != "remove") {
     message = "A held note can be approved or removed.";
     return true;
   }
-  {
-    std::lock_guard<std::mutex> g(s_mu);
-    if (s_answers.size() >= 16) {
-      message = "Too many answers are waiting. Try again in a moment.";
-      return true;
-    }
-    s_answers.push_back(Answer{action == "approve", id.substr(sizeof(kNotePrefix) - 1)});
-  }
-  message = action == "approve" ? "Approved. It applies from the next reply." : "Removed.";
+  message = s_web.queue(action == "approve", id)
+                ? "Sent. The device applies it on its next turn; the row shows its answer."
+                : "Too many answers are waiting. Try again in a moment.";
   return true;
 }
 
@@ -119,17 +105,9 @@ String command(const std::string& verb, const std::string& args) {
 }
 
 void pump() {
-  std::vector<Answer> todo;
-  {
-    std::lock_guard<std::mutex> g(s_mu);
-    todo.swap(s_answers);
-  }
-  for (const Answer& a : todo) {
-    std::string reply;
-    const PsramFirstScope psram;
-    (void)plain::heldNoteAnswer(notesdev::notebook(), owner(), (a.approve ? "approve note " : "deny note ") + a.id, reply);
-    alogf("e2: held note %s from the Rules page: %s", a.id.c_str(), reply.c_str());
-    if (reply.rfind("Not changed", 0) == 0) tellOwner(reply);   // the page said done: a refusal is told
+  for (const std::string& line : s_web.pump(notesdev::notebook(), owner())) {
+    alogf("e2: a held note answer from the Rules page was refused: %s", line.c_str());
+    tellOwner(line);   // the page showed it sent: a refusal is told too
   }
 }
 

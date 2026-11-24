@@ -72,6 +72,7 @@ const ToolClassRow kRows[] = {
     {"media_play", "media", EC::Effect},    // E2-P-OUT2: the music player (src/sfx/music.cpp)
     {"media_pause", "media", EC::Effect},
     {"media_stop", "media", EC::Effect},
+    {"media_list", "media", EC::Read},
     {"skill_list", "skills", EC::Read},
     {"skill_save", "skills", EC::Effect},
     {"skill_delete", "skills", EC::Effect},

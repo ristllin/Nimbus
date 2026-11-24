@@ -4,6 +4,7 @@
 // route here fails the walk.
 #include <unity.h>
 
+#include <map>
 #include <string>
 
 #include "../support/tx_battery/mem_files.h"
@@ -282,6 +283,66 @@ static void test_the_grants_and_erase_memory_lines_are_true_on_engine_2() {
   TEST_ASSERT_TRUE(mem.find("nothing was erased") != std::string::npos);
 }
 
+namespace {
+// One person's three shelves each, in memory (a member's notes are not the owner's).
+class PerPersonNotes : public nimbus::orch::notes::NotesIo {
+ public:
+  std::map<std::string, std::string> files;
+  bool available(const std::string& person) override { return !person.empty(); }
+  bool read(const std::string& p, nimbus::orch::notes::Shelf s, std::string& out) override {
+    out = files[p + "/" + std::to_string((int)s)];
+    return true;
+  }
+  bool write(const std::string& p, nimbus::orch::notes::Shelf s, const std::string& b) override {
+    files[p + "/" + std::to_string((int)s)] = b;
+    return true;
+  }
+  nimbus::orch::notes::Caps caps(const std::string&) override { return nimbus::orch::notes::kOwnerCaps; }
+};
+bool held(nimbus::orch::notes::Notebook& nb, const nimbus::orch::Principal& who, const char* key) {
+  ArduinoJson::JsonDocument a;
+  a["op"] = "set";
+  a["key"] = key;
+  a["value"] = "something held";
+  return nb.keep(a.as<ArduinoJson::JsonObjectConst>(), who, nimbus::orch::notes::Origin::Tainted).success;
+}
+bool listed(const std::vector<plain::HeldRow>& rows, const std::string& id, const char* word) {
+  for (const auto& r : rows)
+    if (r.id == id) return r.text.find(word) != std::string::npos;
+  return false;
+}
+}  // namespace
+
+// E2-REP2: the Rules page lists members' held notes, and shows an answer as sent until the device has
+// applied it (the note leaves the list), keeping a refusal's reason on the row.
+static void test_the_rules_page_lists_members_notes_and_never_says_approved_before_the_device_did() {
+  PerPersonNotes io;
+  nimbus::orch::notes::Notebook nb(io);
+  const nimbus::orch::Principal owner = nimbus::orch::principalForRole("1001", nimbus::orch::Role::Admin);
+  const nimbus::orch::Principal member = nimbus::orch::principalForRole("2002", nimbus::orch::Role::User);
+  TEST_ASSERT_TRUE(held(nb, owner, "tea"));
+  TEST_ASSERT_TRUE(held(nb, member, "cake"));
+  plain::HeldNoteWeb web;
+  const std::vector<plain::HeldMember> members = {{"2002", "Ann"}};
+  auto rows = web.rows(nb, owner, members);
+  TEST_ASSERT_EQUAL(2, (int)rows.size());
+  TEST_ASSERT_TRUE(listed(rows, "note-p1", "set tea"));
+  TEST_ASSERT_TRUE(listed(rows, "note-2002/p1", "from Ann"));
+  // Answered on the page: still listed, and says only that the answer was sent.
+  TEST_ASSERT_TRUE(web.queue(true, "note-2002/p1"));
+  rows = web.rows(nb, owner, members);
+  TEST_ASSERT_TRUE(listed(rows, "note-2002/p1", "has not applied it yet"));
+  TEST_ASSERT_TRUE(web.pump(nb, owner).empty());
+  rows = web.rows(nb, owner, members);
+  TEST_ASSERT_EQUAL(1, (int)rows.size());   // applied: the member's note left the shelf
+  // A refused answer is returned (the owner is told); a denied one leaves the list.
+  TEST_ASSERT_TRUE(web.queue(true, "note-p9"));
+  TEST_ASSERT_EQUAL(1, (int)web.pump(nb, owner).size());
+  TEST_ASSERT_TRUE(web.queue(false, "note-p1"));
+  TEST_ASSERT_TRUE(web.pump(nb, owner).empty());
+  TEST_ASSERT_EQUAL(0, (int)web.rows(nb, owner, members).size());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_every_verb_of_the_table_has_its_route);
@@ -293,5 +354,6 @@ int main(int, char**) {
   RUN_TEST(test_a_refused_clear_write_keeps_the_number);
   RUN_TEST(test_the_newest_whole_generation_wins_after_any_cut_of_the_next_clear);
   RUN_TEST(test_the_grants_and_erase_memory_lines_are_true_on_engine_2);
+  RUN_TEST(test_the_rules_page_lists_members_notes_and_never_says_approved_before_the_device_did);
   return UNITY_END();
 }

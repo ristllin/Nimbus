@@ -48,6 +48,8 @@ const Decl kPlay = {
     R"({"type":"object","properties":{"track":{"type":"string"},"queue":{"type":"boolean"}}})"};
 const Decl kPause = {"Pause the music.", R"({"type":"object","properties":{}})"};
 const Decl kStop = {"Stop the music and clear the queue.", R"({"type":"object","properties":{}})"};
+const Decl kList = {"List the tracks in the card's /music folder and the player's state.",
+                    R"({"type":"object","properties":{}})"};
 }  // namespace tool_descriptions
 
 namespace tool_results {
@@ -163,6 +165,7 @@ void registerTools(orch::ToolRegistry& reg, const OldHandlers& old) {
   if (old.play) reg.add("media_play", td::kPlay.description, bound(old.play, mapPlay), td::kPlay.schema);
   if (old.pause) reg.add("media_pause", td::kPause.description, bound(old.pause, mapNone), td::kPause.schema);
   if (old.stop) reg.add("media_stop", td::kStop.description, bound(old.stop, mapNone), td::kStop.schema);
+  if (old.list) reg.add("media_list", td::kList.description, bound(old.list, mapNone), td::kList.schema);
 }
 
 #ifdef ARDUINO
@@ -176,6 +179,7 @@ void registerDevice(orch::ToolRegistry& reg) {
   h.play = music::playTool;
   h.pause = music::pauseTool;
   h.stop = music::stopTool;
+  h.list = music::listTool;
   registerTools(reg, h);
 }
 #endif

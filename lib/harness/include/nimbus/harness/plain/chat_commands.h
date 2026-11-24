@@ -1,6 +1,8 @@
 #pragma once
 #include <algorithm>
 #include <cstdint>
+#include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -230,6 +232,102 @@ inline std::string prefsCommandPlain(const nimbus::orch::PrefsToolContext& ctx, 
   const std::string held = heldNotesText(nb, owner);
   return held.empty() ? reply : reply + "\n\n" + held;
 }
+
+// ---- the held notes on the Rules page (lane E2-REP2) ------------------------------------------
+// The page's rows for the notes held for the owner, the owner's own and each member's, and the owner's
+// answers to them. An answer is queued (the page runs on another task) and applied by pump() on the
+// notes' only writer; until then the row says the answer was sent, and a refusal stays on the row with
+// the device's reason, so the page never says "Approved" before the device has applied it.
+struct HeldMember {
+  std::string chatId;
+  std::string label;
+};
+struct HeldRow {
+  std::string id;     // "note-p1" (the owner's), "note-<chat>/p1" (a member's)
+  std::string text;
+};
+
+class HeldNoteWeb {
+ public:
+  static constexpr const char* kPrefix = "note-";
+  static bool isRow(const std::string& id) { return id.rfind(kPrefix, 0) == 0; }
+
+  std::vector<HeldRow> rows(nimbus::orch::notes::Notebook& nb, const nimbus::orch::Principal& owner,
+                            const std::vector<HeldMember>& members) {
+    std::vector<HeldRow> out;
+    add(out, nb, owner, "", "");
+    for (const HeldMember& m : members)
+      add(out, nb, nimbus::orch::principalForRole(m.chatId, nimbus::orch::Role::User), m.chatId,
+          m.label.empty() ? m.chatId : m.label);
+    return out;
+  }
+
+  // Queue the owner's answer; false when too many wait.
+  bool queue(bool approve, const std::string& rowId) {
+    std::lock_guard<std::mutex> g(mu_);
+    if (todo_.size() >= 16) return false;
+    todo_.push_back({approve, rowId});
+    sent_[rowId] = std::string();
+    return true;
+  }
+
+  // Run the queued answers. Returns the refusals, one line each (the owner is told them).
+  std::vector<std::string> pump(nimbus::orch::notes::Notebook& nb, const nimbus::orch::Principal& owner) {
+    std::vector<Answer> run;
+    {
+      std::lock_guard<std::mutex> g(mu_);
+      run.swap(todo_);
+    }
+    std::vector<std::string> refused;
+    for (const Answer& a : run) {
+      std::string chat, id;
+      split(a.row, chat, id);
+      const nimbus::orch::Principal who =
+          chat.empty() ? owner : nimbus::orch::principalForRole(chat, nimbus::orch::Role::User);
+      std::string reply;
+      (void)heldNoteAnswer(nb, who, (a.approve ? "approve note " : "deny note ") + id, reply);
+      std::lock_guard<std::mutex> g(mu_);
+      if (reply.rfind("Not changed", 0) == 0) {
+        sent_[a.row] = reply;   // the row stays and says why
+        refused.push_back(reply);
+      } else {
+        sent_.erase(a.row);     // applied: the note left the shelf
+      }
+    }
+    return refused;
+  }
+
+ private:
+  struct Answer {
+    bool approve;
+    std::string row;
+  };
+  static void split(const std::string& row, std::string& chat, std::string& id) {
+    const std::string rest = row.substr(std::string(kPrefix).size());
+    const size_t slash = rest.find('/');
+    chat = slash == std::string::npos ? std::string() : rest.substr(0, slash);
+    id = slash == std::string::npos ? rest : rest.substr(slash + 1);
+  }
+  void add(std::vector<HeldRow>& out, nimbus::orch::notes::Notebook& nb, const nimbus::orch::Principal& who,
+           const std::string& chat, const std::string& label) {
+    std::vector<nimbus::orch::notes::PendingNote> held;
+    if (!nb.pending(who, held)) return;
+    for (const auto& p : held) {
+      HeldRow r;
+      r.id = std::string(kPrefix) + (chat.empty() ? "" : chat + "/") + p.id;
+      r.text = "Note " + (label.empty() ? std::string() : "from " + label + " ") + heldNoteLine(p);
+      std::lock_guard<std::mutex> g(mu_);
+      auto it = sent_.find(r.id);
+      if (it != sent_.end())
+        r.text += it->second.empty() ? " (your answer is sent; the device has not applied it yet)"
+                                     : " (" + it->second + ")";
+      out.push_back(r);
+    }
+  }
+  std::mutex mu_;
+  std::vector<Answer> todo_;
+  std::map<std::string, std::string> sent_;   // row id -> "" (sent) or the device's refusal
+};
 
 }  // namespace plain
 }  // namespace agent
