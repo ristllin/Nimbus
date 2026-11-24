@@ -18,7 +18,9 @@
 //
 // Recorded shapes (status, then the text or code that names billing):
 //   - Anthropic: 400 invalid_request_error "Your credit balance is too low to
-//     access the Anthropic API. Please go to Plans & Billing ...";
+//     access the Anthropic API. Please go to Plans & Billing ...", and the key's own
+//     spend limit, 400 "You have reached your specified API usage limits. You will
+//     regain access on <date>." (bench 24 Nov 2026, lane E2-CFIX1);
 //   - OpenAI: 429 code "insufficient_quota" ("You exceeded your current quota,
 //     please check your plan and billing details.") and the newer message
 //     "You have no credits remaining. Add credits to continue ...";
@@ -37,6 +39,7 @@ namespace orch {
 // reasons are not here: its table decides them first (router_refusals.h).
 inline constexpr const char* kBillingTokens[] = {
     "credit balance is too low",
+    "reached your specified api usage limits",
     "insufficient_quota",
     "exceeded your current quota",
     "no credits remaining",

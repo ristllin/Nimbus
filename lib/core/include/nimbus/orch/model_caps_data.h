@@ -8,7 +8,7 @@ namespace nimbus {
 namespace orch {
 namespace caps {
 
-inline constexpr size_t kCapsDataBytes = 2587;   // rows and pool, as gen_caps.py counts them
+inline constexpr size_t kCapsDataBytes = 2635;   // rows and pool, as gen_caps.py counts them
 
 // The string pool (offset 0 is the empty string).
 inline constexpr char kCapsPool[] =
@@ -55,6 +55,7 @@ inline constexpr char kCapsPool[] =
     "permission_error\0"
     "billing_error\0"
     "credit balance is too low\0"
+    "reached your specified api usage limits\0"
     "rate_limit_error\0"
     "overloaded_error\0"
     "api_error\0"
@@ -149,44 +150,45 @@ inline constexpr MarkerRow kCapsMarkers[] = {
     {0, MarkerKind::Type, ErrClass::KeyForbidden, 0, 403, 542},  // anthropic type permission_error
     {0, MarkerKind::Type, ErrClass::Billing, 0, 402, 559},  // anthropic type billing_error
     {0, MarkerKind::Text, ErrClass::Billing, 0, 0, 573},  // anthropic text credit balance is too low
-    {0, MarkerKind::Type, ErrClass::RateLimited, 0, 429, 599},  // anthropic type rate_limit_error
-    {0, MarkerKind::Type, ErrClass::Server, 0, 529, 616},  // anthropic type overloaded_error
-    {0, MarkerKind::Type, ErrClass::Server, 0, 500, 633},  // anthropic type api_error
-    {0, MarkerKind::Type, ErrClass::Server, 0, 504, 643},  // anthropic type timeout_error
-    {0, MarkerKind::Type, ErrClass::Context, 0, 413, 657},  // anthropic type request_too_large
-    {0, MarkerKind::Text, ErrClass::Context, 0, 400, 675},  // anthropic text prompt is too long
-    {0, MarkerKind::Type, ErrClass::UnknownModel, 0, 404, 694},  // anthropic type not_found_error
-    {0, MarkerKind::Text, ErrClass::BadRequest, 0, 400, 710},  // anthropic text not valid json
-    {1, MarkerKind::Code, ErrClass::Billing, 0, 429, 725},  // openai code insufficient_quota
-    {1, MarkerKind::Code, ErrClass::Billing, 0, 429, 744},  // openai code credit_balance_exhausted
-    {1, MarkerKind::Code, ErrClass::Billing, 0, 429, 769},  // openai code organization_spend_limit_exceeded
-    {1, MarkerKind::Code, ErrClass::Billing, 0, 429, 803},  // openai code project_spend_limit_exceeded
-    {1, MarkerKind::Code, ErrClass::Billing, 0, 429, 832},  // openai code organization_usage_limit_exceeded
-    {1, MarkerKind::Code, ErrClass::Billing, 0, 0, 866},  // openai code billing_hard_limit_reached
-    {1, MarkerKind::Text, ErrClass::Billing, 0, 429, 893},  // openai text exceeded your current quota
-    {1, MarkerKind::Type, ErrClass::RateLimited, 0, 429, 599},  // openai type rate_limit_error
-    {1, MarkerKind::Code, ErrClass::RateLimited, 0, 429, 921},  // openai code slow_down
-    {1, MarkerKind::Code, ErrClass::Server, 0, 503, 931},  // openai code server_is_overloaded
-    {1, MarkerKind::Code, ErrClass::Context, 0, 400, 952},  // openai code context_length_exceeded
-    {1, MarkerKind::Code, ErrClass::UnknownModel, 0, 404, 976},  // openai code model_not_found
-    {1, MarkerKind::Code, ErrClass::BadRequest, 0, 400, 992},  // openai code invalid_json
-    {2, MarkerKind::Type, ErrClass::UnknownModel, 0, 400, 1005},  // mistral type invalid_model
-    {2, MarkerKind::Code, ErrClass::RefusedField, 0, 400, 1019},  // mistral code 3051
-    {2, MarkerKind::Text, ErrClass::BadRequest, 0, 0, 1024},  // mistral text there was an error parsing the body
-    {3, MarkerKind::Code, ErrClass::KeyAuth, 0, 401, 1060},  // zai code 1000
-    {3, MarkerKind::Code, ErrClass::KeyAuth, 0, 401, 1065},  // zai code 1001
-    {3, MarkerKind::Code, ErrClass::KeyAuth, 0, 401, 1070},  // zai code 1003
-    {3, MarkerKind::Code, ErrClass::Billing, 0, 429, 1075},  // zai code 1113
-    {3, MarkerKind::Code, ErrClass::UnknownModel, 0, 400, 1080},  // zai code 1211
-    {3, MarkerKind::Code, ErrClass::KeyForbidden, 0, 403, 1085},  // zai code 1220
-    {3, MarkerKind::Code, ErrClass::Server, 0, 500, 1090},  // zai code 1200
-    {3, MarkerKind::Code, ErrClass::Server, 0, 500, 1095},  // zai code 1230
-    {3, MarkerKind::Code, ErrClass::Server, 0, 500, 1100},  // zai code 1234
-    {3, MarkerKind::Code, ErrClass::Context, 0, 400, 1105},  // zai code 1261
-    {3, MarkerKind::Code, ErrClass::Refusal, 0, 400, 1110},  // zai code 1301
-    {3, MarkerKind::Code, ErrClass::RateLimited, 0, 429, 1115},  // zai code 1302
-    {3, MarkerKind::Code, ErrClass::Server, 0, 429, 1120},  // zai code 1305
-    {3, MarkerKind::Text, ErrClass::BadRequest, 0, 0, 1125},  // zai text json parse error
+    {0, MarkerKind::Text, ErrClass::Billing, 0, 400, 599},  // anthropic text reached your specified api usage limits
+    {0, MarkerKind::Type, ErrClass::RateLimited, 0, 429, 639},  // anthropic type rate_limit_error
+    {0, MarkerKind::Type, ErrClass::Server, 0, 529, 656},  // anthropic type overloaded_error
+    {0, MarkerKind::Type, ErrClass::Server, 0, 500, 673},  // anthropic type api_error
+    {0, MarkerKind::Type, ErrClass::Server, 0, 504, 683},  // anthropic type timeout_error
+    {0, MarkerKind::Type, ErrClass::Context, 0, 413, 697},  // anthropic type request_too_large
+    {0, MarkerKind::Text, ErrClass::Context, 0, 400, 715},  // anthropic text prompt is too long
+    {0, MarkerKind::Type, ErrClass::UnknownModel, 0, 404, 734},  // anthropic type not_found_error
+    {0, MarkerKind::Text, ErrClass::BadRequest, 0, 400, 750},  // anthropic text not valid json
+    {1, MarkerKind::Code, ErrClass::Billing, 0, 429, 765},  // openai code insufficient_quota
+    {1, MarkerKind::Code, ErrClass::Billing, 0, 429, 784},  // openai code credit_balance_exhausted
+    {1, MarkerKind::Code, ErrClass::Billing, 0, 429, 809},  // openai code organization_spend_limit_exceeded
+    {1, MarkerKind::Code, ErrClass::Billing, 0, 429, 843},  // openai code project_spend_limit_exceeded
+    {1, MarkerKind::Code, ErrClass::Billing, 0, 429, 872},  // openai code organization_usage_limit_exceeded
+    {1, MarkerKind::Code, ErrClass::Billing, 0, 0, 906},  // openai code billing_hard_limit_reached
+    {1, MarkerKind::Text, ErrClass::Billing, 0, 429, 933},  // openai text exceeded your current quota
+    {1, MarkerKind::Type, ErrClass::RateLimited, 0, 429, 639},  // openai type rate_limit_error
+    {1, MarkerKind::Code, ErrClass::RateLimited, 0, 429, 961},  // openai code slow_down
+    {1, MarkerKind::Code, ErrClass::Server, 0, 503, 971},  // openai code server_is_overloaded
+    {1, MarkerKind::Code, ErrClass::Context, 0, 400, 992},  // openai code context_length_exceeded
+    {1, MarkerKind::Code, ErrClass::UnknownModel, 0, 404, 1016},  // openai code model_not_found
+    {1, MarkerKind::Code, ErrClass::BadRequest, 0, 400, 1032},  // openai code invalid_json
+    {2, MarkerKind::Type, ErrClass::UnknownModel, 0, 400, 1045},  // mistral type invalid_model
+    {2, MarkerKind::Code, ErrClass::RefusedField, 0, 400, 1059},  // mistral code 3051
+    {2, MarkerKind::Text, ErrClass::BadRequest, 0, 0, 1064},  // mistral text there was an error parsing the body
+    {3, MarkerKind::Code, ErrClass::KeyAuth, 0, 401, 1100},  // zai code 1000
+    {3, MarkerKind::Code, ErrClass::KeyAuth, 0, 401, 1105},  // zai code 1001
+    {3, MarkerKind::Code, ErrClass::KeyAuth, 0, 401, 1110},  // zai code 1003
+    {3, MarkerKind::Code, ErrClass::Billing, 0, 429, 1115},  // zai code 1113
+    {3, MarkerKind::Code, ErrClass::UnknownModel, 0, 400, 1120},  // zai code 1211
+    {3, MarkerKind::Code, ErrClass::KeyForbidden, 0, 403, 1125},  // zai code 1220
+    {3, MarkerKind::Code, ErrClass::Server, 0, 500, 1130},  // zai code 1200
+    {3, MarkerKind::Code, ErrClass::Server, 0, 500, 1135},  // zai code 1230
+    {3, MarkerKind::Code, ErrClass::Server, 0, 500, 1140},  // zai code 1234
+    {3, MarkerKind::Code, ErrClass::Context, 0, 400, 1145},  // zai code 1261
+    {3, MarkerKind::Code, ErrClass::Refusal, 0, 400, 1150},  // zai code 1301
+    {3, MarkerKind::Code, ErrClass::RateLimited, 0, 429, 1155},  // zai code 1302
+    {3, MarkerKind::Code, ErrClass::Server, 0, 429, 1160},  // zai code 1305
+    {3, MarkerKind::Text, ErrClass::BadRequest, 0, 0, 1165},  // zai text json parse error
 };
 
 }  // namespace caps

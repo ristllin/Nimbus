@@ -82,6 +82,13 @@
    "source": "lib/core/include/nimbus/orch/billing_refusal.h:39 (recorded 13 Oct 2026)"
   },
   {
+   "row": "billing",
+   "status": 400,
+   "body": "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"You have reached your specified API usage limits. You will regain access on 2026-12-01 at 00:00 UTC.\"}}",
+   "expect": "billing",
+   "source": "program-2026-10-18/lanes/E2-BENCH3/RESULT.md defect 1 (bench 24 Nov 2026, the key's own usage limit)"
+  },
+  {
    "row": "context",
    "status": 413,
    "body": "{\"type\":\"error\",\"error\":{\"type\":\"request_too_large\",\"message\":\"Request exceeds the maximum allowed number of bytes.\"}}",
