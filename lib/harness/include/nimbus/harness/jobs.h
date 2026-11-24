@@ -443,6 +443,8 @@ class JobEngine {
            (dispatching_ ? 1 : 0);
   }
   int  pendingCount() const { return (int)pending_.size(); }  // queued-not-yet-dispatched (W5)
+  // The journal it runs on (read only): engine 2's agent tools read a job's tag and provider id.
+  const nimbus::orch::Journal* journal() const { return d_.journal; }
 
   // CUM-538: spawns that never started (queue full, no provider, the provider
   // refused) - the owner hears each at once, but the head used to learn nothing

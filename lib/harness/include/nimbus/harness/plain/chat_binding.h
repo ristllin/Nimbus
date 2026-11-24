@@ -384,6 +384,37 @@ class ChatBinding {
     return st;
   }
 
+  // Lane E2-P-SUB: one sub-agent report turn (plain/agents.h deliverReports). `note` is stored as
+  // the turn's agent device note (Trigger::AgentResult: outside content, so the rails gate its
+  // writes), then the head answers in this chat. Busy, with nothing stored, when the binding cannot
+  // take a turn now (not booted, a turn running, the breaker holding turns no person started).
+  Status reportTurn(const std::string& note, TurnOutcome& out) {
+    namespace tx = nimbus::orch::tx;
+    if (!engine_ || moved_ || busy_) return Status::fail(tx::Err::Busy, "plain::ChatBinding::reportTurn");
+    const uint32_t now = d_.platform->nowMs();
+    if (!breaker_.admit(/*person=*/false, now).run) return Status::fail(tx::Err::Busy, "plain::ChatBinding::reportTurn.breaker");
+    busy_ = true;
+    struct Idle {
+      bool& busy;
+      ~Idle() { busy = false; }
+    } idle{busy_};
+    sent_ = refused_ = 0;
+    TurnInput in;
+    in.ctx = turnCtx();
+    in.ctx.trigger = Trigger::AgentResult;
+    in.text = note;
+    if (movedTo_.empty()) reload();
+    Status st;
+    try {
+      st = engine_->runTurn(in, out);
+    } catch (const std::bad_alloc&) {
+      st = Status::fail(tx::Err::TooLarge, "plain::ChatBinding::reportTurn.memory");
+    }
+    breaker_.spent(/*person=*/false, out.end.microUsd, d_.platform->nowMs());
+    if (d_.usage) d_.usage(out);
+    return st.err == tx::Err::Busy ? Status::fail(tx::Err::Io, st.where) : st;   // Busy means "not run" to the caller
+  }
+
   // A compaction of this chat now (/compact): the driver's manual run, stepped here until it has
   // answered (the driver tells the chat its one line through sendPart). Busy while one is queued.
   Status compactNow() {
