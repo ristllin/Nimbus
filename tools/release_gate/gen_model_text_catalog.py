@@ -194,6 +194,10 @@ NON_MODEL_FILES: dict = {
     "provenance by the engine-2 device seam before any turn, never stored in a transcript or shown to a model",
     "src/agent/migrate_device.cpp": "E2-MIG: the earlier engine's import; its literals are log lines and the test "
     "console's TXASIDE answers (test builds), never sent to a model",
+    "nimbusd/src/engine2_parity.h": "E2-P-HOST2: the hosted daemon's engine-2 parts: the owner-facing binding lines "
+    "in the instance's words (sent to the owner's chat, never stored or shown to a model) and the JobEngine's "
+    "persist outcome markers '[saved: ...]' and '[persist FAILED: ...]', byte for byte the device's "
+    "(src/agent/orchestrator_plain.cpp jobFileDeps), parsed by jobs.cpp savedPathOf",
     "lib/core/src/orch_wire_errors.cpp": "E2-R5: the engine-2 error classifier; its literals are field names and "
     "refusal words matched against provider error bodies, never sent to a model or a person",
 }
