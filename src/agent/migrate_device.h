@@ -33,8 +33,9 @@ void importRulesOnce();
 // episodic index is still being built after the boot: the store's forward query is only
 // trustworthy over the whole history once the index is complete, and a first start that read
 // part of it would never read the rest (the next start is a re-entry). At most 10 minutes after
-// the boot: an index that stopped at its cap never completes.
-bool historyReady(const std::string& chatKey);
+// the boot: an index that stopped at its cap never completes. `quiet`: no log line (lane E2-FIX13:
+// the poll task looks every few seconds while messages are kept for the read-in).
+bool historyReady(const std::string& chatKey, bool quiet = false);
 
 #ifdef NIMBUS_TEST
 // Test builds (the TXASIDE console verb): /mem/tx/<chat> renamed to /mem/tx-aside/<chat>-<epoch>,

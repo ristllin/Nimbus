@@ -162,17 +162,17 @@ bool fill(tx::MigrateDeps& m) {
   return true;
 }
 
-bool historyReady(const std::string& chatKey) {
+bool historyReady(const std::string& chatKey, bool quiet) {
   if (memory::episodicIndexComplete()) return true;
   // An index that stopped (its row cap, read errors) never completes: after kIndexWaitMs the import
   // runs over what the store answers, named in the log.
   if (millis() > kIndexWaitMs) {
-    alogf("e2: import of chat %s runs over an episodic index that is not complete", chatKey.c_str());
+    if (!quiet) alogf("e2: import of chat %s runs over an episodic index that is not complete", chatKey.c_str());
     return true;
   }
   bool reentry = false;
   if (!tx::isReentry(txdev::cardTxFiles(), chatKey, reentry).ok()) return true;   // no card: nothing to import
-  if (!reentry) alogf("e2: import of chat %s waits for the episodic index", chatKey.c_str());
+  if (!reentry && !quiet) alogf("e2: import of chat %s waits for the episodic index", chatKey.c_str());
   return reentry;
 }
 

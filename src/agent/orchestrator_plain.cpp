@@ -71,6 +71,7 @@
 #include "nimbus/harness/plain/chat_commands.h"   // readGeneration, writeGeneration - /clear (P7)
 #include "nimbus/harness/plain/chat_photos.h"
 #include "nimbus/harness/plain/schedule_binding.h"   // reminder and routine fires (lane E2-SCHED)
+#include "nimbus/harness/plain/waiting.h"            // the messages kept during the read-in (E2-FIX13)
 #include "nimbus/orch/turn_journal.h"              // kTurnSourceOwner - the crash journal (E2-FIX12)
 #include "nimbus/orch/spend_ceiling.h"               // kSpendFrozenError - a routine waits while frozen
 #include "nimbus/harness/turn_memory.h"   // PsramFirstScope
@@ -98,8 +99,22 @@ constexpr const char* kNotClaudeLine =
     "provider in Settings, then send the message again.";
 constexpr const char* kNoKeyLine = "No Anthropic key is set. Add one in Settings, then send the message again.";
 constexpr const char* kFrozenLine = "The monthly spend limit is reached. Raise it in Settings to continue.";
+// Lane E2-FIX13: a message that arrives while the earlier conversation is read in is kept and answered
+// by itself when the reading is done. The person is told once per chat (the first message kept).
 constexpr const char* kReadingLine =
-    "The new engine is still reading the earlier conversation. Send the message again in a minute.";
+    "The device is reading the earlier conversation in. It answers your messages by itself when that is done, "
+    "in the order they came.";
+// The card did not store the kept message: it is still answered, unless the device restarts before.
+constexpr const char* kReadingRamLine =
+    "The device is reading the earlier conversation in. Your message could not be stored on the card: it is "
+    "answered when the reading is done, unless the device restarts before then.";
+// Not kept (ruling 116: the true cause and the way out): the list is full, or the card did not read it.
+constexpr const char* kReadingFullLine =
+    "The device is still reading the earlier conversation in, and 32 messages are waiting for it already. This "
+    "one is not kept: send it again once those are answered.";
+constexpr const char* kReadingUnreadLine =
+    "The device is reading the earlier conversation in, and its list of waiting messages could not be read from "
+    "the card. This message is not kept: send it again in a few minutes.";
 constexpr const char* kNoStartLine = "The new engine could not start for this chat. Restart the device and try again.";
 // Lane E2-FIX3 (ruling 116): the true cause and the owner's way out of each refusal below.
 constexpr const char* kNumberUnreadLine =
@@ -618,11 +633,16 @@ bool sayInstead(const String& chatId, const char* line) {
 }
 
 // E2-MIG: a chat's first engine-2 start waits until the earlier engine's history is indexed (the
-// chat's own key only: a conversation /clear started takes no import).
-bool waitsForHistory(const String& chatId) {
+// chat's own key only: a conversation /clear started takes no import). `quiet`: no log line (the
+// poll task's check of the kept messages, every few seconds).
+bool waitsForHistory(const String& chatId, bool quiet = false) {
   const bool resident = s_chat && s_chat->config().chatId == chatId.c_str();
   const bool baseKey = txKeyFor(chatId) == chatId.c_str();
-  return !resident && baseKey && !migratedev::historyReady(chatId.c_str());
+  return !resident && baseKey && !migratedev::historyReady(chatId.c_str(), quiet);
+}
+
+const char* channelOf(const String& chatId) {
+  return chatId == "web" ? "web" : chatId == "voice" ? "voice" : chatId == "serial" ? "console" : "tg";
 }
 
 // The crash journal of a person's turn (E2-FIX12): its chat and kind for the next boot.
@@ -630,6 +650,178 @@ void journalTurn(const String& chatId, const plain::ChatMessage& msg) {
   const char* head = !msg.parts.empty() ? "[image]" : !msg.stored.empty() ? "[file]" : "";
   nimbus::crash::turnStarted(chatId == "serial" ? nimbus::orch::kTurnSourceSerial : nimbus::orch::kTurnSourceOwner,
                              chatId.c_str(), head);
+}
+
+// One turn of `b` for `msg` (its day-stream row already written) and what follows it: the figures,
+// the answer's history row, the deferred effects, the skill lines. Returns whether a part went out.
+bool turnFor(plain::ChatBinding& b, const String& chatId, const plain::ChatMessage& msg) {
+  txdev::cardTxFiles().resetHolds();
+  s_transport.reset();
+  plain::TurnOutcome out;
+  plain::Status st;
+  const uint32_t t0 = millis();
+  // The crash journal (E2-FIX12): a restart inside this turn (a kept message's too) names its chat at the
+  // next boot, where the engine resumes it once (bootLostChat).
+  journalTurn(chatId, msg);
+  {
+    PsramFirstScope psramFirst;
+    st = b.turn(msg, out);
+  }
+  nimbus::crash::turnEnded();
+  logTurn(b, out, st, millis() - t0);
+  if (!msg.parts.empty())
+    alogf("e2: photos=%u bytes=%u psramFree=%u psramLargest=%u", (unsigned)msg.parts.size(),
+          (unsigned)(s_photos ? s_photos->bytes() : 0), (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+          (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+  if (out.delivered && !out.text.empty())
+    memory::captureMessage(chatId.c_str(), "assistant", nimbus::orch::MsgKind::Message,
+                           String(out.text.c_str()), "", "e2");
+  else if (!out.statusStored.empty())   // the line without a provider's reason (E2-FIX11): a model may read this row
+    memory::captureMessage(chatId.c_str(), "system", nimbus::orch::MsgKind::Message,
+                           String(out.statusStored.c_str()), "", "e2");
+  runDeferred(out.deferred);
+  const bool sent = b.sentParts() > 0;
+  for (const std::string& line : s_skillTell) sayInstead(chatId, line.c_str());
+  s_skillTell.clear();
+  return sent;
+}
+
+// ---- messages kept while the earlier conversation is read in (lane E2-FIX13) -------------------
+// A chat's list (plain/waiting.h) is on the card at /mem/tx/<chat>.wait.json. Each kept message has
+// its day-stream row at once, tagged e2 (its turn stores it later, so the import never takes it).
+static_assert(plain::kWaitingMax == 32, "kReadingFullLine names the bound");
+std::vector<std::unique_ptr<plain::WaitingInbox>> s_waiting;   // one list per chat (tg_poll only)
+
+// The chat's list, read from the card (a list not read yet is read again on each call).
+plain::WaitingInbox* waitingFor(const std::string& chat) {
+  plain::WaitingInbox* in = nullptr;
+  for (auto& w : s_waiting)
+    if (w->chatId() == chat) in = w.get();
+  if (!in) {
+    std::unique_ptr<plain::WaitingInbox> w(
+        new (std::nothrow) plain::WaitingInbox(memory::haveSd() ? &txdev::cardTxFiles() : nullptr, chat));
+    if (!w) return nullptr;
+    s_waiting.push_back(std::move(w));
+    in = s_waiting.back().get();
+  }
+  if (!in->loaded() && !in->load().ok()) alogf("e2: the waiting messages of %s could not be read: read again later", chat.c_str());
+  return in;
+}
+
+// The lists a restart left on the card, read once (a listing that fails is tried again in 30 s).
+void loadWaitingLists() {
+  static bool done = false;
+  static uint32_t lastTry = 0;
+  if (done || !memory::haveSd() || (lastTry && (uint32_t)(millis() - lastTry) < 30000)) return;
+  lastTry = millis() | 1;
+  std::vector<std::string> names;
+  if (!txdev::cardTxFiles().list(nimbus::orch::tx::kTxRoot, names)) return;
+  done = true;
+  const std::string ext = ".wait.json";
+  for (const std::string& n : names)
+    if (n.size() > ext.size() && n.compare(n.size() - ext.size(), ext.size(), ext) == 0) {
+      const std::string chat = n.substr(0, n.size() - ext.size());
+      if (nimbus::orch::tx::chatKeyOk(chat)) (void)waitingFor(chat);
+    }
+}
+
+// The message, kept until the read-in ends (or joined to the chat's earlier kept messages, so they
+// are answered in the order they came). The person is told once: with the first message kept.
+bool keepMessage(const String& text, const String& fromName, const String& chatId) {
+  plain::WaitingInbox* in = waitingFor(chatId.c_str());
+  plain::WaitingMessage w;
+  w.ch = channelOf(chatId);
+  if (!localChat(chatId)) {
+    w.src = telegram::turnUpdateIds(chatId);
+    w.stored = telegram::turnStoredPaths(chatId);
+  }
+  if (in && !w.src.empty() && in->holds(w.src)) {
+    alogf("e2: message to %s kept already (served again): not kept twice", chatId.c_str());
+    return true;
+  }
+  const char* refused = !in || !in->loaded() ? kReadingUnreadLine
+                        : in->messages().size() >= plain::kWaitingMax ? kReadingFullLine : nullptr;
+  if (refused) {   // not kept: the import brings its row into the conversation (P10)
+    captureOwnerRow(text, fromName, chatId, false);
+    return sayInstead(chatId, refused);
+  }
+  const bool first = in->empty();
+  const String host = store::resolvedOrchHost();
+  w.text = std::string(text.c_str(), text.length());
+  w.from = std::string(fromName.c_str(), fromName.length());
+  w.parts = plain::photoParts(s_photos.get(), host.c_str(), std::string(store::orchModel(host).c_str()));
+  w.tzMinutes = (int16_t)(utcOffsetAt((uint32_t)time(nullptr)));
+  w.m = rowNumber(captureOwnerRow(text, fromName, chatId, true));
+  const plain::HoldVerdict v = in->hold(w);
+  const char* line = v == plain::HoldVerdict::KeptInRam ? kReadingRamLine : first ? kReadingLine : nullptr;
+  alogf("e2: message to %s kept until the earlier conversation is read in (%s, %u waiting, %u photos, told=%d)",
+        chatId.c_str(), v == plain::HoldVerdict::Kept ? "stored" : "RAM only", (unsigned)in->messages().size(),
+        (unsigned)w.parts.size(), line ? 1 : 0);
+  return line ? sayInstead(chatId, line) : true;
+}
+
+// The binding a kept message is answered on (null: no turn can run; `line` is the person's line).
+plain::ChatBinding* keptBinding(const String& chatId, const char*& line) {
+  const String host = store::resolvedOrchHost();
+  line = refusalFor(host);
+  if (line) return nullptr;
+  plain::ChatBinding* b = chatFor(chatId, std::string(store::orchModel(host).c_str()), roleOfChat(chatId));
+  if (!b) line = s_noStartWhy ? s_noStartWhy : kNoStartLine;
+  return b;
+}
+
+// One kept message, answered once the read-in ended: its turn, or one true line instead.
+plain::WaitingAnswer answerKept(const plain::WaitingMessage& w, const String& chatId) {
+  const char* line = nullptr;
+  plain::ChatBinding* b = keptBinding(chatId, line);
+  if (!b) {
+    sayInstead(chatId, line);
+    return plain::WaitingAnswer::Done;
+  }
+  plain::ChatMessage msg;
+  msg.text = w.text;
+  msg.ch = w.ch;
+  msg.src = w.src;
+  msg.stored = w.stored;
+  msg.parts = w.parts;   // the photos' bytes come from the card's copy (the photo hook)
+  msg.tzMinutes = w.tzMinutes;
+  msg.m = w.m;
+  alogf("e2: a message to %s kept during the read-in is answered now", chatId.c_str());
+  (void)turnFor(*b, chatId, msg);
+  dropCarried();   // the earlier photos this turn read from the card, freed with it (as handleMessage does)
+  s_turns.fetch_add(1, std::memory_order_relaxed);
+  return plain::WaitingAnswer::Done;
+}
+
+// Did a turn take this message before a restart (its row or update ids are in the conversation)?
+bool keptTaken(const plain::WaitingMessage& w, const String& chatId) {
+  const char* line = nullptr;
+  plain::ChatBinding* b = keptBinding(chatId, line);
+  return b && b->holdsMessage(w.src, w.m);
+}
+
+// Every chat's kept messages, answered in order once its read-in ended (tg_poll, between turns;
+// looked at every 5 s while any wait).
+void answerKeptMessages() {
+  static uint32_t last = 0;
+  if ((uint32_t)(millis() - last) < 5000) return;
+  last = millis();
+  for (size_t i = 0; i < s_waiting.size(); ++i) {
+    plain::WaitingInbox* in = s_waiting[i].get();
+    const String chatId(in->chatId().c_str());
+    if (!in->loaded()) (void)waitingFor(in->chatId());
+    if (!in->loaded() || in->empty() || waitsForHistory(chatId, /*quiet=*/true)) continue;
+    plain::WaitingDrainFns f;
+    f.taken = [&chatId](const plain::WaitingMessage& w) { return keptTaken(w, chatId); };
+    f.answer = [&chatId](const plain::WaitingMessage& w) { return answerKept(w, chatId); };
+    s_inTurn.store(true, std::memory_order_relaxed);
+    s_turnChat = chatId;
+    const size_t n = plain::answerWaiting(*in, f);
+    s_turnChat = String();
+    s_inTurn.store(false, std::memory_order_relaxed);
+    alogf("e2: %u kept message(s) of %s answered after the read-in, %u still waiting", (unsigned)n, chatId.c_str(),
+          (unsigned)in->messages().size());
+  }
 }
 
 // One person's message as one engine-2 turn (tg_poll). Returns whether a reply went out.
@@ -640,10 +832,10 @@ bool runOne(const String& text, const String& fromName, const String& chatId) {
     leaveToImport(chatId);
     return sayInstead(chatId, line);
   }
-  if (waitsForHistory(chatId)) {
-    captureOwnerRow(text, fromName, chatId, false);
-    return sayInstead(chatId, kReadingLine);
-  }
+  // E2-FIX13: kept while the earlier conversation is read in, and after it behind the messages kept
+  // before (answered in order on this task's next pass).
+  plain::WaitingInbox* kept = waitingFor(chatId.c_str());
+  if (waitsForHistory(chatId) || (kept && !kept->empty())) return keepMessage(text, fromName, chatId);
   const std::string model(store::orchModel(host).c_str());
   plain::ChatBinding* b = chatFor(chatId, model, roleOfChat(chatId));
   if (!b) {
@@ -651,7 +843,7 @@ bool runOne(const String& text, const String& fromName, const String& chatId) {
     return sayInstead(chatId, s_noStartWhy ? s_noStartWhy : kNoStartLine);
   }
   plain::ChatMessage msg;
-  msg.ch = chatId == "web" ? "web" : chatId == "voice" ? "voice" : chatId == "serial" ? "console" : "tg";
+  msg.ch = channelOf(chatId);
   if (!localChat(chatId)) {
     msg.src = telegram::turnUpdateIds(chatId);
     msg.stored = telegram::turnStoredPaths(chatId);   // E2-FIX10: the files stored for this message
@@ -667,35 +859,7 @@ bool runOne(const String& text, const String& fromName, const String& chatId) {
   msg.parts = plain::photoParts(s_photos.get(), host.c_str(), model);
   msg.tzMinutes = (int16_t)(utcOffsetAt((uint32_t)time(nullptr)));
   msg.m = rowNumber(row);
-  txdev::cardTxFiles().resetHolds();
-  s_transport.reset();
-  plain::TurnOutcome out;
-  plain::Status st;
-  const uint32_t t0 = millis();
-  // The crash journal (E2-FIX12): a restart inside this turn names its chat at the next boot, where
-  // the engine resumes it once (bootLostChat).
-  journalTurn(chatId, msg);
-  {
-    PsramFirstScope psramFirst;
-    st = b->turn(msg, out);
-  }
-  nimbus::crash::turnEnded();
-  logTurn(*b, out, st, millis() - t0);
-  if (!msg.parts.empty())
-    alogf("e2: photos=%u bytes=%u psramFree=%u psramLargest=%u", (unsigned)msg.parts.size(),
-          (unsigned)s_photos->bytes(), (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-          (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
-  if (out.delivered && !out.text.empty())
-    memory::captureMessage(chatId.c_str(), "assistant", nimbus::orch::MsgKind::Message,
-                           String(out.text.c_str()), "", "e2");
-  else if (!out.statusStored.empty())   // the line without a provider's reason (E2-FIX11): a model may read this row
-    memory::captureMessage(chatId.c_str(), "system", nimbus::orch::MsgKind::Message,
-                           String(out.statusStored.c_str()), "", "e2");
-  runDeferred(out.deferred);
-  const bool sent = b->sentParts() > 0;
-  for (const std::string& line : s_skillTell) sayInstead(chatId, line.c_str());
-  s_skillTell.clear();
-  return sent;
+  return turnFor(*b, chatId, msg);
 }
 
 // ---- what the owner's commands ask of engine 2 -----------------------------------------
@@ -1134,7 +1298,9 @@ int pollJobs() {
   migratedev::importRulesOnce();   // once: the earlier engine's standing rules as pinned notes
   bootLostChat();         // once: a person's message a restart cut is resumed (E2-FIX12)
   bootOwnerChat();        // once: the owner chat's transcript and seen index before its next message
-  drainTerminates();      // the journal's staged terminates (none can exist without jobs)
+  loadWaitingLists();     // E2-FIX13: the messages a restart left kept for the read-in
+  answerKeptMessages();   // and those kept, answered in order once their chat's read-in ended
+  drainTerminates();     // the journal's staged terminates (none can exist without jobs)
   drainUpdateNotice();    // the fixed post-update notice - tg_poll only
   // Lane E2-SCHED: the loops tick (at most one due entry; 20 s-gated, heap and Wi-Fi guarded inside)
   // and the outboxes of routine notes. tg_poll, between turns.
