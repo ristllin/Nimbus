@@ -1,6 +1,7 @@
 #pragma once
 #include <ArduinoJson.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -281,33 +282,36 @@ inline nimbus::orch::ErrorClass fallbackClassOf(ExchangeErr e) {
     default: return ErrorClass::None;
   }
 }
-inline void fallbackSlots(const SlotSettings& set, const FallbackPlan& plan, const FailoverAsk& ask, std::vector<HeadSlot>& out) {
+// The rule set's providers for `ctx`, up to three, each `usable`; none by the rules: the priority walk.
+inline std::vector<nimbus::orch::FallbackTarget> fallbackPicks(const FallbackPlan& plan, const nimbus::orch::TurnContext& ctx) {
   namespace orch = nimbus::orch;
   orch::FallbackRuleSet rs;
   if (!plan.rulesJson.empty()) orch::parseFallbackRules(plan.rulesJson, rs);
   if (rs.rules.empty()) rs = orch::defaultRuleSet(plan.priority);
+  std::vector<orch::FallbackTarget> picks;
+  auto usable = [&](const std::string& p, const std::string&) {
+    if (p == ctx.provider || (plan.open && !plan.open(p))) return false;
+    return std::none_of(picks.begin(), picks.end(), [&p](const orch::FallbackTarget& t) { return t.provider == p; });
+  };
+  for (int i = 0; i < 3; ++i) {
+    const orch::FallbackChoice ch = orch::selectFallback(rs, ctx, usable);
+    if (!ch.found) break;
+    picks.push_back(ch.target);
+  }
+  if (picks.empty())   // never below the priority walk (engine 1's rawAlternates)
+    for (const std::string& p : plan.priority)
+      if (usable(p, "")) picks.push_back(orch::FallbackTarget{p, ""});
+  return picks;
+}
+inline void fallbackSlots(const SlotSettings& set, const FallbackPlan& plan, const FailoverAsk& ask, std::vector<HeadSlot>& out) {
+  namespace orch = nimbus::orch;
   orch::TurnContext ctx;
   ctx.provider = ask.provider;
   ctx.model = ask.model;
   ctx.sizeClass = orch::sizeClassWord(orch::modelSizeClass(ask.provider, ask.model));
   ctx.capability = "chat";
   ctx.errorClass = fallbackClassOf(ask.err);
-  std::vector<orch::FallbackTarget> picks;
-  auto usable = [&](const std::string& p) {
-    if (p == ask.provider || (plan.open && !plan.open(p))) return false;
-    for (const orch::FallbackTarget& t : picks)
-      if (t.provider == p) return false;
-    return true;
-  };
-  for (int i = 0; i < 3; ++i) {
-    const orch::FallbackChoice ch = orch::selectFallback(rs, ctx, [&](const std::string& p, const std::string&) { return usable(p); });
-    if (!ch.found) break;
-    picks.push_back(ch.target);
-  }
-  if (picks.empty())   // never below the priority walk (engine 1's rawAlternates)
-    for (const std::string& p : plan.priority)
-      if (usable(p)) picks.push_back(orch::FallbackTarget{p, ""});
-  for (const orch::FallbackTarget& t : picks) {
+  for (const orch::FallbackTarget& t : fallbackPicks(plan, ctx)) {
     HeadSlot h;
     const std::string model = t.model.empty() && plan.model ? plan.model(t.provider) : t.model;
     if (!model.empty() && headSlotFor(set, t.provider, model, h).ok()) out.push_back(std::move(h));

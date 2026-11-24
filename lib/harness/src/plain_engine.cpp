@@ -1108,14 +1108,19 @@ class TurnRun {
     const uint64_t size = (uint64_t)t_.sizeTokens + rt.prompt + rt.cacheRead + rt.cacheWrite;
     t_.sizeTokens = (uint32_t)std::min<uint64_t>(size, UINT32_MAX);
     t_.end.microUsd = (uint32_t)std::min<uint64_t>((uint64_t)t_.end.microUsd + requestMicroUsd(t_.setup.cost, rt), UINT32_MAX);
-    if (ex.parkHost && t_.switches) event("park:fallback");   // E2-P-FO: the binding parks the first head only
-    t_.parkHost |= ex.parkHost && !t_.switches;
-    if (ex.parkHost && !t_.switches) {   // E2-FIX14: the refusal the binding hands the shared park
-      t_.parkStatus = ex.httpStatus;
-      t_.parkText = ex.parkBody;
-    }
+    takePark(ex);
     t_.failOver |= ex.failOver;
     t_.modelUnusable |= ex.modelUnusable;
+  }
+
+  // E2-FIX14: the refusal the binding hands the shared park. E2-P-FO: the first head's only (the binding
+  // parks its own provider); a fallback head's refusal is an event.
+  void takePark(const ExchangeResult& ex) {
+    if (!ex.parkHost) return;
+    if (t_.switches) return event("park:fallback");
+    t_.parkHost = true;
+    t_.parkStatus = ex.httpStatus;
+    t_.parkText = ex.parkBody;
   }
 
   // Nothing came from the model: the exchange's one plain line ends the turn.
@@ -1420,6 +1425,14 @@ class TurnRun {
     t_.status = s;
     t_.statusRef = &t_.statusText;
   }
+  // E2-P-FO: the answering head's share, once; a reply from it carries the switch lines (a failed last
+  // head: the plain failure line alone).
+  void settleSwitches() {
+    if (!t_.switches || t_.shares.size() != t_.switches) return;
+    closeShare(slotNow(), t_.ctx.model);
+    const bool fromFallback = t_.ex.err == ExchangeErr::None || t_.ex.err == ExchangeErr::Cut;
+    if (t_.reply && fromFallback) switchedLine();
+  }
   // E2-P-FO: a reply that came from a fallback head carries one line per switch, before any other line
   // of the turn (a cut's): the status line is one message.
   void switchedLine() {
@@ -1452,11 +1465,7 @@ class TurnRun {
   void settle() {
     t_.replyText = replyOf();
     t_.reply = t_.replyText != nullptr;   // a pointer: the reply is never copied to go out
-    if (t_.switches && t_.shares.size() == t_.switches) {   // E2-P-FO: the answering head's share, once
-      closeShare(slotNow(), t_.ctx.model);
-      const bool fromFallback = t_.ex.err == ExchangeErr::None || t_.ex.err == ExchangeErr::Cut;
-      if (t_.reply && fromFallback) switchedLine();   // a failed last head: the plain failure line alone
-    }
+    settleSwitches();
     if (t_.reply && t_.trip != GuardTrip::None && personTrigger(t_.ctx.trigger))   // the guard that stopped it
       setStatus(StatusLine::LimitReached, std::string(texts::device_notes::kLimitStopped) + guardTripSlug(t_.trip) +
                                               texts::device_notes::kLimitStoppedEnd);

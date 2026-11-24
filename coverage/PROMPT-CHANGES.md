@@ -1530,3 +1530,12 @@ PC-0175, PC-0176: not used.
 - lane: RB-R4 (lane E2-R8a, router design lane R8; the router lanes file their entries under RB-R4 as PC-0257 did)
 - prd: router design (P/analysis-2026-11-24/ROUTER-DESIGN.md) section 3.3 (tools only after the verify step accepted a tool call and a window is known), section 14 lane R8; AGENTS.md rule 9
 - why: lib/harness/include/nimbus/harness/plain/texts.h probe. kToolProbeAsk, kToolProbeName and kToolProbeDescription (PC-0260): the one request the device's custom endpoint verify sends (src/agent/provider_verify.cpp through plain::toolProbeBody), the word "ping" with one tool "ping" ("Answers pong.") and tool_choice required, read only by the owner's own endpoint at verify, never in a turn. PC-0261, PC-0262: not used (the text-mode line and the no-key line are owner-facing device copy, never sent to a model). Planned work, not a fix (CUM-1001).
+### PC-0263: the line for a round that moved to another head (engine 2)
+- catalog: e2
+- class: stubs
+- kind: spec
+- bytes: 458 -> 492
+- sha8: 887cd2b2 -> 33dccf84
+- lane: RB-R4 (lane E2-P-FO, router design lane P-FO)
+- prd: router design (P/analysis-2026-11-24/ROUTER-DESIGN.md) section 9 "Fail-over" (one line per switch: "<Provider A> failed (<class>); this answer came from <model B>"), section 6 item 7; AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h stubs. kFailedOver and kAnswerFrom (PC-0263): the person's status line when a round failed on one provider and another head answered (plain::failoverLine; the class is the frozen exchangeErrSlug). It is the turn's status line, so its stored copy is the chat's history row; no request text, tool result or device note changes. Kept in stubs because device_notes is at its ceiling. PC-0264: not used. Planned work, not a fix (CUM-1001).

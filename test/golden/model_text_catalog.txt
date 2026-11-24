@@ -3,7 +3,7 @@
 # One entry per line: class, source, sha8, bytes, the text as a JSON string.
 # class core bytes=1595 ceiling=3072 entries=30 sha8=6bf20834
 # class device_notes bytes=2046 ceiling=2048 entries=78 sha8=2204d611
-# class stubs bytes=458 ceiling=512 entries=20 sha8=887cd2b2
+# class stubs bytes=492 ceiling=512 entries=22 sha8=33dccf84
 # class tool_results bytes=8941 ceiling=9216 entries=634 sha8=127b32e3
 # class probe bytes=1344 ceiling=1536 entries=6 sha8=f4dd133a
 # class summarizer bytes=1021 ceiling=1024 entries=17 sha8=a9622cfe
@@ -136,6 +136,8 @@ stubs	lib/harness/include/nimbus/harness/plain/texts.h	f2f92ba5	7	" failed"
 stubs	lib/harness/include/nimbus/harness/plain/texts.h	7ab2b6a4	16	" saved whole as "
 stubs	lib/harness/include/nimbus/harness/plain/texts.h	91a9fc57	23	"[device] earlier I ran "
 stubs	lib/harness/include/nimbus/harness/plain/texts.h	62807298	21	" is not available on "
+stubs	lib/harness/include/nimbus/harness/plain/texts.h	251df868	9	" failed ("
+stubs	lib/harness/include/nimbus/harness/plain/texts.h	43d5ce8e	25	"); this answer came from "
 tool_results	lib/core/include/nimbus/orch/file_aids.h	b489aa02	48	"not enough memory for this call; nothing changed"
 tool_results	lib/core/include/nimbus/orch/file_aids.h	cba06b57	3	"old"
 tool_results	lib/core/include/nimbus/orch/file_aids.h	cba06b57	3	"old"

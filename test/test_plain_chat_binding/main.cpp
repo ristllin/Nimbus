@@ -1762,9 +1762,12 @@ static void test_a_server_error_moves_the_round_to_the_next_provider() {
   TEST_ASSERT_EQUAL_STRING("Anthropic failed (server); this answer came from gpt-5.6-luna.", dev.out.statusText.c_str());
   TEST_ASSERT_TRUE(has(dev.sent.back(), "this answer came from gpt-5.6-luna."));
   const nimbus::orch::TurnSpend& u = dev.usage.back();
-  TEST_ASSERT_EQUAL(1, (int)u.billedSlots());   // the refused requests billed nothing
-  TEST_ASSERT_EQUAL_STRING("openai", u.slot[0].host);
-  TEST_ASSERT_TRUE(has(u.slot[0].model, "gpt-5.6-luna"));
+  TEST_ASSERT_EQUAL(2, (int)u.billedSlots());   // each head its own row: the refused requests no tokens
+  TEST_ASSERT_EQUAL_STRING("anthropic", u.slot[0].host);
+  TEST_ASSERT_EQUAL(0, (int)(u.slot[0].in + u.slot[0].out));
+  TEST_ASSERT_EQUAL_STRING("openai", u.slot[1].host);
+  TEST_ASSERT_TRUE(has(u.slot[1].model, "gpt-5.6-luna"));
+  TEST_ASSERT_EQUAL(940, (int)(u.slot[1].in + u.slot[1].out));
   TEST_ASSERT_EQUAL(2, (int)dev.out.shares.size());
   TEST_ASSERT_EQUAL(3, (int)dev.out.shares[0].requests);
 }
@@ -1817,6 +1820,12 @@ static void test_no_switch_to_a_smaller_body() {
   Device dev;
   dev.fallbacks = {{"cumulo", "anthropic/claude-sonnet-5-5"}};
   TEST_ASSERT_TRUE(dev.boot("claude-sonnet-5-5").ok());
+  // A small request does move there: the routed head is a qualified, priced target.
+  answerByHost(dev, {{"api.anthropic.com", sp::httpError(500)}, {"app.cumulo-nimbus.ai", sp::say("Routed.")}});
+  TEST_ASSERT_TRUE(dev.say("Short.").ok());
+  TEST_ASSERT_EQUAL(1, (int)dev.out.switches);
+  TEST_ASSERT_EQUAL_STRING("app.cumulo-nimbus.ai", dev.model.last().req.host.c_str());
+  const size_t before = dev.model.requests().size();
   const std::string longReply(9000, 'w');
   for (int i = 0; i < 11; ++i) {
     dev.model.push(sp::say(longReply + " " + std::to_string(i)));
@@ -1825,7 +1834,8 @@ static void test_no_switch_to_a_smaller_body() {
   answerByHost(dev, {{"api.anthropic.com", sp::httpError(500)}, {"app.cumulo-nimbus.ai", sp::say("Routed.")}});
   (void)dev.say("And now?");
   TEST_ASSERT_TRUE(dev.model.last().body.size() > 85000u);
-  for (const std::string& h : hostsAsked(dev)) TEST_ASSERT_EQUAL_STRING("api.anthropic.com", h.c_str());
+  const std::vector<std::string> h = hostsAsked(dev);
+  for (size_t i = before; i < h.size(); ++i) TEST_ASSERT_EQUAL_STRING("api.anthropic.com", h[i].c_str());
   TEST_ASSERT_EQUAL(0, (int)dev.out.switches);
   TEST_ASSERT_TRUE(has(dev.out.statusText, "server error"));
 }
