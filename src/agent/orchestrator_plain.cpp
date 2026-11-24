@@ -1104,7 +1104,6 @@ plain::WaitingAnswer answerKept(const plain::WaitingMessage& w, const String& ch
   msg.stored = w.stored;
   msg.parts = w.parts;   // the photos' bytes come from the card's copy (the photo hook)
   // E2-REP4: a head that takes no images reads each photo's kept description and the true text.
-  const String host = store::resolvedOrchHost();
   msg.photosBlind = !msg.parts.empty() && !nimbus::orch::headTakesImages(host.c_str(), store::orchModel(host).c_str());
   if (msg.photosBlind && !w.blindText.empty()) msg.text = w.blindText;
   msg.tzMinutes = w.tzMinutes;
