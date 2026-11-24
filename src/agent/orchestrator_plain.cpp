@@ -914,8 +914,8 @@ bool turnFor(plain::ChatBinding& b, const String& chatId, const plain::ChatMessa
   // next boot, where the engine resumes it once (bootLostChat).
   journalTurn(chatId, msg);
   engineSetHeadArc(true);   // E2-P-TOOLS: the ring shows the turn working, as engine 1's TurnGuard does
-  const bool direct = b.config().provider == "anthropic" && !b.config().routed;
-  s_fileIdChat = direct ? b.config().chatKey : std::string();   // E2-REP4: photos by file id
+  // E2-REP4: photos by file id where the uploader serves the head (the route still checks the table).
+  s_fileIdChat = providers::uploadsPhotosFor(b.config().provider, b.config().routed) ? b.config().chatKey : std::string();
   {
     PsramFirstScope psramFirst;
     st = b.turn(msg, out);

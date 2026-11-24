@@ -289,6 +289,8 @@ int tendKeptUploads(uint32_t nowMs);
 // request (an id while held, else bytes) and an earlier photo is never uploaded: its bytes never turn
 // into an id inside a cached part of the request.
 int uploadTurnPhotos(const ProviderDeps& pd, nimbus::orch::TurnImages& imgs);
+// Does uploadTurnPhotos serve a head on `provider` (its own slot, a direct key: not through the router)?
+bool uploadsPhotosFor(const std::string& provider, bool routed);
 std::string photoFileId(const std::string& chatKey, nimbus::orch::TurnImages* arriving, const std::string& ref,
                         const std::function<int(nimbus::orch::TurnImages&)>& upload, uint32_t nowMs);
 

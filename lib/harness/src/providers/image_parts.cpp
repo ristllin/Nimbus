@@ -776,6 +776,8 @@ int tendKeptUploads(uint32_t nowMs) { return imageparts::expireKept(nowMs); }
 
 int uploadTurnPhotos(const ProviderDeps& pd, nimbus::orch::TurnImages& imgs) { return imageparts::antUploadImages(pd, imgs); }
 
+bool uploadsPhotosFor(const std::string& provider, bool routed) { return provider == "anthropic" && !routed; }
+
 std::string photoFileId(const std::string& chatKey, nimbus::orch::TurnImages* arriving, const std::string& ref,
                         const std::function<int(nimbus::orch::TurnImages&)>& upload, uint32_t nowMs) {
   const auto holds = [&ref](const nimbus::orch::TurnImage& it) { return it.bytes && it.len && "p" + it.ref == ref; };
