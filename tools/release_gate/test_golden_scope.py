@@ -19,7 +19,7 @@ import check_golden_scope as gs  # noqa: E402
 
 G = gs.GOLDENS
 ANT = G + "messages-anthropic-direct/one_call.req"
-MIS = G + "chat-mistral-routed/one_call.req"   # lane E2-R10: Mistral direct is releasable (needs a ruling)
+MIS = G + "chat-mistral-routed/one_call.req"  # lane E2-R10: Mistral direct is releasable (needs a ruling)
 OAI = G + "responses-openai-routed/text_only.req"
 MODELS_TEXT = (REPO / gs.MODELS).read_text(encoding="utf-8")
 
