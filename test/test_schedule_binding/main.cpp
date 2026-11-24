@@ -173,6 +173,8 @@ struct Device {
   }
   void boot() {
     plain::ChatBindingConfig c;
+    c.provider = "anthropic";   // E2-R8a: the head slot has no default
+    c.host = "api.anthropic.com";
     c.chatKey = "web";
     c.model = "claude-sonnet-5-5";
     c.summarizerModel = "claude-haiku-5-5";

@@ -245,6 +245,8 @@ struct Device {
   }
   plain::Status boot(const std::string& chat = "1001") {
     plain::ChatBindingConfig c;
+    c.provider = "anthropic";   // E2-R8a: the head slot has no default
+    c.host = "api.anthropic.com";
     c.chatKey = chat;
     c.model = "claude-haiku-5-5";
     c.summarizerModel = "claude-haiku-5-5";
@@ -504,6 +506,8 @@ static void test_a_photo_of_this_conversation_is_shown_again_in_the_view_result(
   // (Set after boot through a second binding would be heavier; the wire takes it from TurnSetup::photo.)
   dev.binding.reset();
   plain::ChatBindingConfig c;
+  c.provider = "anthropic";   // E2-R8a: the head slot has no default
+  c.host = "api.anthropic.com";
   c.chatKey = "1001";
   c.model = "claude-haiku-5-5";
   plain::ChatBindingDeps bd;

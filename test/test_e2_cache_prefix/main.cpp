@@ -242,6 +242,8 @@ struct Device {
   plain::Status boot(const std::string& chat) {
     resident = chat;
     plain::ChatBindingConfig c;
+    c.provider = "anthropic";   // E2-R8a: the head slot has no default
+    c.host = "api.anthropic.com";
     c.chatKey = chat;
     c.model = "claude-haiku-5-5";
     c.summarizerModel = "claude-haiku-5-5";

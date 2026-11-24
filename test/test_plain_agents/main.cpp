@@ -196,6 +196,8 @@ struct Device {
 
   plain::Status boot() {
     plain::ChatBindingConfig c;
+    c.provider = "anthropic";   // E2-R8a: the head slot has no default
+    c.host = "api.anthropic.com";
     c.chatKey = kChat;
     c.host = "api.anthropic.com";   // E2-R8a: a binding names its head's slot (no default)
     c.provider = "anthropic";

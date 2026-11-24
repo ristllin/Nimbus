@@ -136,6 +136,8 @@ struct Device {
   }
   plain::Status boot(const std::string& model = "claude-haiku-5-5", const std::string& chat = "1001") {
     plain::ChatBindingConfig c;
+    c.provider = "anthropic";   // E2-R8a: the head slot has no default
+    c.host = "api.anthropic.com";
     c.chatKey = chat;
     c.model = model;
     c.summarizerModel = "claude-haiku-5-5";
