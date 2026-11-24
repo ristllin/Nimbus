@@ -50,9 +50,13 @@ struct JobRecord {
 
 // The finished-job ring: the last kJournalFinishedKeep jobs that reached a terminal
 // state. Its records live in store slots kJournalFinishedSlot0.. after the active ones.
+// E2-REP6: an entry whose report has not run is never pushed out by another while the ring holds one
+// that can go; when all of them wait, the ring grows into overflow slots up to kJournalFinishedMax (an
+// earlier release reading the file skips the slots past its own).
 constexpr int kJournalFinishedKeep  = 8;
+constexpr int kJournalFinishedMax   = kJournalFinishedKeep + 8;
 constexpr int kJournalFinishedSlot0 = kAgentMaxJobs;
-constexpr int kJournalSlots         = kAgentMaxJobs + kJournalFinishedKeep;
+constexpr int kJournalSlots         = kAgentMaxJobs + kJournalFinishedMax;
 
 // Persistence seam. Slots are 0..kJournalSlots-1: 0..kAgentMaxJobs-1 hold the active
 // records, the rest the finished-job ring. The device backs it with one flash file
@@ -145,8 +149,8 @@ class Journal {
   bool restored(const char* tag) const;
 
   // ---- the finished-job ring (L19-35) ---------------------------------------------
-  // `tag` reached a terminal state: keep `f` in the ring (the oldest entry goes when
-  // it is full), then mark the active record seen. The ring entry lands FIRST, so a
+  // `tag` reached a terminal state: keep `f` in the ring (when it is full, the oldest
+  // entry not waiting for its report goes: finishedTarget), then mark the active record seen. The ring entry lands FIRST, so a
   // restart between the two writes still finds the job finished (begin() then loads
   // it as seen). The RAM ring and record update either way; true only when both
   // writes landed. An unknown tag still records `f` (a job whose record never landed).
@@ -159,6 +163,9 @@ class Journal {
   // Lane E2-P-SUB2: `tag`'s report turn ran: clear its ring entry's unreported mark and store it.
   // False when the ring holds no such entry or the write did not land.
   bool markReported(const char* tag);
+  // E2-REP6: the tag of the waiting entry the last finish() pushed out ("" = none): only when
+  // kJournalFinishedMax entries all waited for their report (the caller logs it).
+  const char* droppedUnreported() const { return dropped_; }
   // The highest NNNN of a "jobNNNN" tag held anywhere in the journal (-1 = none), so
   // a new boot never hands out a tag a restored or finished job still carries.
   long highestTagNumber() const;
@@ -186,7 +193,7 @@ class Journal {
   uint32_t      nextSeq_ = 0;
   bool          restored_[kAgentMaxJobs] = {};   // RAM only: loaded by begin()
 
-  // The ring, in load order. Heap, reserved once (about 2 KB: PSRAM on the device,
+  // The ring, in load order. Heap, reserved once (about 4 KB: PSRAM on the device,
   // never static internal RAM).
   struct FinEntry {
     FinishedJob job;
@@ -196,6 +203,7 @@ class Journal {
   std::vector<FinEntry> fin_;
   int           finCount_ = 0;
   uint32_t      nextFinSeq_ = 0;
+  char          dropped_[sizeof(FinishedJob::tag)] = {};
 };
 
 // ---- the file store (agjournal off NVS, v4.6) ------------------------------------------

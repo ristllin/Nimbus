@@ -1701,6 +1701,9 @@ void JobEngine::finishJob(const orch::JobRecord& rec, const std::string& artifac
   f.unreported = d_.reportTurns && final != orch::JobState::Cancelled;
   if (!d_.journal->finish(rec.tag, f, final))
     hlog::logf("orchestrator: finished record %s not stored", rec.tag);
+  if (d_.journal->droppedUnreported()[0])   // E2-REP6: every entry waited; that report is held in RAM only
+    hlog::logf("orchestrator: %d reports wait: %s's waits in RAM only (lost at a restart)", orch::kJournalFinishedMax,
+               d_.journal->droppedUnreported());
 }
 
 std::string JobEngine::finishedBeforeRestartText() const {

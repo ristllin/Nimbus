@@ -931,6 +931,51 @@ static void test_restored_and_highest_tag() {
   TEST_ASSERT_EQUAL(13, r.highestTagNumber());   // a tag of another shape is ignored
 }
 
+// E2-REP6 (review F5): report turns cannot run for a while and more than eight jobs finish. No
+// unreported result is pushed out of the ring by another: each one comes back after a restart (a
+// reported one goes first), until the overflow bound, where the oldest goes with a log line.
+static void test_unreported_results_beyond_eight_survive_a_restart() {
+  FakeFileIo io;
+  FileJournalStore st(io);
+  st.load();
+  Journal j;
+  j.begin(&st);
+  char tag[16];
+  TEST_ASSERT_TRUE(j.write(rec("job0000", "o:x")));
+  TEST_ASSERT_TRUE(j.finish("job0000", fin("seen", "prj", "prj/out.md")));   // reported (not waiting)
+  j.gc();
+  const int waiting = kJournalFinishedKeep + 4;
+  for (int i = 1; i <= waiting; ++i) {
+    std::snprintf(tag, sizeof(tag), "job%04d", i);
+    FinishedJob f = fin("task", "prj", "prj/out.md");
+    f.unreported = true;
+    TEST_ASSERT_TRUE(j.write(rec(tag, "o:x")));
+    TEST_ASSERT_TRUE(j.finish(tag, f));
+    j.gc();
+  }
+  FileJournalStore st2(io);
+  st2.load();
+  Journal j2;
+  j2.begin(&st2);
+  int unreported = 0;
+  FinishedJob f{};
+  for (int i = 0; j2.finished(i, f); ++i) unreported += f.unreported ? 1 : 0;
+  TEST_ASSERT_EQUAL_INT(waiting, unreported);
+  TEST_ASSERT_TRUE(j2.finished(waiting - 1, f));
+  TEST_ASSERT_EQUAL_STRING("job0001", f.tag);   // the oldest waiting one is still there
+  TEST_ASSERT_TRUE(j2.markReported("job0001"));
+  // Past the overflow bound the oldest waiting entry goes (logged): the ring never grows past it.
+  for (int i = waiting + 1; i <= kJournalFinishedMax + 2; ++i) {
+    std::snprintf(tag, sizeof(tag), "job%04d", i);
+    FinishedJob g = fin("task", "prj", "prj/out.md");
+    g.unreported = true;
+    TEST_ASSERT_TRUE(j2.write(rec(tag, "o:x")));
+    TEST_ASSERT_TRUE(j2.finish(tag, g));
+    j2.gc();
+  }
+  TEST_ASSERT_EQUAL_INT(kJournalFinishedMax, j2.finishedCount());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_is_terminal);
@@ -959,5 +1004,6 @@ int main() {
   RUN_TEST(test_without_the_finished_entry_a_restart_resurrects_the_job);
   RUN_TEST(test_restored_and_highest_tag);
   RUN_TEST(test_finish_stores_the_terminal_state_with_the_seen_mark);
+  RUN_TEST(test_unreported_results_beyond_eight_survive_a_restart);
   return UNITY_END();
 }
