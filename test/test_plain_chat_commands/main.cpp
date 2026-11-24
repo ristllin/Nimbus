@@ -268,6 +268,20 @@ static void test_the_newest_whole_generation_wins_after_any_cut_of_the_next_clea
     }
 }
 
+// Lane E2-FIX14 (D4): the two lines engine 1's own would not make true on engine 2. "/loop grants on"
+// says engine 2 has no connectors or sub-agents for routines yet (engine 1's "may now use your
+// connectors and start sub-agents" was not true here); "off" keeps engine 1's line, true on both. The
+// web page's "Erase memory" says nothing was erased (engine 2 keeps no assistant memory), never "Saved".
+static void test_the_grants_and_erase_memory_lines_are_true_on_engine_2() {
+  const std::string on = agent::plain::routineGrantsLine(true);
+  TEST_ASSERT_TRUE(on.find("may now use") == std::string::npos);
+  TEST_ASSERT_TRUE(on.find("no connectors or sub-agents") != std::string::npos);
+  TEST_ASSERT_TRUE(on.find("only read, set their follow-up and reply") != std::string::npos);
+  TEST_ASSERT_EQUAL_STRING("Routines now only read, set their follow-up and reply.", agent::plain::routineGrantsLine(false));
+  const std::string mem = agent::plain::kNoAssistantMemoryLine;
+  TEST_ASSERT_TRUE(mem.find("nothing was erased") != std::string::npos);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_every_verb_of_the_table_has_its_route);
@@ -278,5 +292,6 @@ int main(int, char**) {
   RUN_TEST(test_a_folder_that_cannot_be_told_hands_out_no_number);
   RUN_TEST(test_a_refused_clear_write_keeps_the_number);
   RUN_TEST(test_the_newest_whole_generation_wins_after_any_cut_of_the_next_clear);
+  RUN_TEST(test_the_grants_and_erase_memory_lines_are_true_on_engine_2);
   return UNITY_END();
 }

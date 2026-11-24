@@ -157,6 +157,7 @@ struct ExchangeResult {
   std::string errorLine;       // the one plain line for the owner when err != None
   std::string errorLineStored; // errorLine as it may be stored or reach a model: without the provider's reason
   std::string providerBody;    // the provider's own refusal body (first 4 KB) when err is Other (lane E2-FIX7)
+  std::string parkBody;        // the refusal body (first 4 KB) when parkHost: the park reads its kind (E2-FIX14)
   nimbus::orch::tx::ExchangeFacts ref;   // the last request sent, by reference (RB-E3, recordRequest)
 };
 

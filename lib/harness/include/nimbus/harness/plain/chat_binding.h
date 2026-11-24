@@ -16,6 +16,7 @@
 #include "nimbus/harness/plain/deliver.h"
 #include "nimbus/harness/plain/engine.h"
 #include "nimbus/harness/plain/guards.h"
+#include "nimbus/harness/plain/head_gate.h"   // noteHeadOutcome: the shared park after a turn (E2-FIX14)
 #include "nimbus/harness/plain/hooks.h"
 #include "nimbus/harness/plain/request.h"
 #include "nimbus/harness/plain/resume.h"   // installResume - the crash resume (lane E2-FIX12)
@@ -127,6 +128,20 @@ struct ChatBindingDeps {
   // the progress line's own rule (the Telegram typing keep-alive); null: none. The device sets neither.
   std::function<void(const TurnCtx&, TurnSetup&)> moreSetup;
   std::function<void(const ProgressEvent&)> onProgress;
+  // Lane E2-FIX14: engine 1's money gate after a turn. True: the shared provider park
+  // (nimbus::orch::providerPark) learns what the head answered (plain/head_gate.h noteHeadOutcome).
+  bool parkHead = false;
+  // The provider's own monthly limit is reached (store::providerOverBudget). Null: none. Read with parkHead
+  // before the crash resume's one request (lane E2-FIX14 after E2-FIX12).
+  std::function<bool(const std::string& provider)> overBudget;
+  // Lane E2-FIX14: what engine 1's deliver() does to a model's reply before it leaves
+  // (src/agent/orchestrator_common.cpp), each the shared code engine 1 calls. replyFilter: the owner's
+  // output rules for this chat (prefs::filtersForRole, orch::applyOutputFilters: the no-dash rule);
+  // null: none. replyScreen: the outbound screen (moderateGate, ModGate::OutboundReply); false: it
+  // blocks this reply and nothing of it is sent, as on engine 1; null: none. Both run once on the
+  // whole reply, before it is split into parts; the same runs on a routine's note to the chat.
+  std::function<std::string(const std::string& chatId, const std::string& text)> replyFilter;
+  std::function<bool(const std::string& chatId, const std::string& text)> replyScreen;
 };
 
 // The owner's line on every turn while the stored conversation could not be loaded (lane
@@ -195,6 +210,7 @@ struct ChatMessage {
   // Lane E2-P-SUB: Owner for a person's message; AgentResult for a sub-agent's report turn (text is
   // its agent device note, outside content, so the rails gate its writes; plain/agents.h).
   Trigger trigger = Trigger::Owner;
+  bool probe = false;                            // the park's re-check request (MessageGate::probe, E2-FIX14)
 };
 
 // A turn's spend as the owner's usage view files it (store::recordProviderSpend): one slot of the
@@ -369,6 +385,8 @@ class ChatBinding {
       ~Idle() { busy = false; }
     } idle{busy_};
     sent_ = refused_ = 0;
+    shown_.clear();
+    withheld_ = false;
     if (reporter_) reporter_->open(turnCtx(), now);
     TurnInput in;
     in.ctx = turnCtx();
@@ -391,6 +409,8 @@ class ChatBinding {
       st = Status::fail(tx::Err::TooLarge, "plain::ChatBinding::turn.memory");
     }
     if (engine_->unloaded() && d_.sendPart) (void)d_.sendPart(cfg_.chatId, unloadedLine());
+    if (d_.parkHead)
+      noteHeadOutcome(cfg_.provider, d_.key ? d_.key() : std::string(), out, msg.probe, /*told=*/true, d_.platform->nowMs());
     breaker_.spent(person, out.end.microUsd, d_.platform->nowMs());
     if (reporter_) reporter_->close(d_.platform->nowMs());
     if (d_.usage) d_.usage(out);
@@ -457,7 +477,11 @@ class ChatBinding {
     s.chatKey = cfg_.chatKey;
     s.chatId = cfg_.chatId;
     s.deliver = [this](const DeliverInput& in, DeliverOutcome& out) {
-      return deliverTurn(DeliverDeps{&channel_, nullptr, nullptr}, in, out);
+      const Status st = deliverReply(in, out);
+      // E2-FIX14: a note the outbound screen withheld is done with, as engine 1 drops it once; never
+      // retried (a retry would ask the screen again and could send it on a classifier outage).
+      if (withheld_ && in.text && !in.text->empty()) out.sent = out.replyDone = true;
+      return st;
     };
     s.append = [this](const std::string& note, uint64_t at) {
       if (!engine_ || busy_) return Status::fail(nimbus::orch::tx::Err::Busy, "plain::ChatBinding::ownerSink.append");
@@ -486,6 +510,12 @@ class ChatBinding {
     r.owner = ownerSink();
     return r;
   }
+
+  // The reply as it left in the last turn, after the owner's output rules ("" when no reply went
+  // out, or when no rule is bound: the model's text is what left). E2-FIX14: the chat's history row.
+  const std::string& shownReply() const { return shown_; }
+  // The outbound screen withheld the last turn's reply (nothing of it was sent).
+  bool replyWithheld() const { return withheld_; }
 
   // The head of a message: true when every update id of `src` was already taken into this chat
   // (a re-served update after a restart: acked, never answered again).
@@ -615,12 +645,12 @@ class ChatBinding {
     r.log = log_.get();
     r.arena = arena_.get();
     r.head = [this] { return engine_ ? engine_->head() : nullptr; };
-    r.runTurn = [this](const TurnInput& in, TurnOutcome& out) {
-      return engine_ ? engine_->runTurn(in, out)
-                     : Status::fail(nimbus::orch::tx::Err::InvalidArgument, "plain::ChatBinding::resume");
-    };
+    r.runTurn = [this](const TurnInput& in, TurnOutcome& out) { return resumeTurn(in, out); };
+    // E2-FIX14: what the resume sends passes the owner's output rules and the outbound screen.
     r.deliver = [this](const DeliverInput& in, DeliverOutcome& out) {
-      return deliverTurn(DeliverDeps{&channel_, nullptr, nullptr}, in, out);
+      const Status st = deliverReply(in, out);
+      if (withheld_ && in.text && !in.text->empty()) out.sent = out.replyDone = true;   // dropped once, as engine 1
+      return st;
     };
     r.context = [this](TurnCtx& out) {
       out = turnCtx();
@@ -633,6 +663,23 @@ class ChatBinding {
       resumeRan_ = true;
     };
     return r;
+  }
+  // Lane E2-FIX14: the resume's one request passes engine 1's money gates first. Over the limit, parked or
+  // paused, nothing is sent: the resume fails as a refused run does, the turn stays open for a later boot and
+  // the device keeps its crash notice. A resume never takes the park's re-check. After it, the park learns
+  // what the head answered, as after any turn.
+  Status resumeTurn(const TurnInput& in, TurnOutcome& out) {
+    namespace tx = nimbus::orch::tx;
+    if (!engine_) return Status::fail(tx::Err::InvalidArgument, "plain::ChatBinding::resume");
+    const std::string key = d_.key ? d_.key() : std::string();
+    std::string why;
+    if (d_.parkHead && headHeld(cfg_.provider, key, d_.overBudget && d_.overBudget(cfg_.provider), d_.platform->nowMs(), why)) {
+      say(("e2: boot resume held, no request: " + why).c_str());
+      return Status::fail(tx::Err::Busy, "plain::ChatBinding::resume.held");
+    }
+    const Status st = engine_->runTurn(in, out);
+    if (d_.parkHead) noteHeadOutcome(cfg_.provider, key, out, /*probe=*/false, /*told=*/true, d_.platform->nowMs());
+    return st;
   }
   // After boot: one log line when the seam acted; a resumed turn's spend as any turn's; the device told.
   void afterResume() {
@@ -736,6 +783,7 @@ class ChatBinding {
     out.photo = d_.photo;
     out.dayStartMin = cfg_.dayStartMin;
     out.head = endpoint();
+    out.head.effort = headEffortFor(cfg_.provider, t.model);   // E2-FIX14: as nimbusd sends for the same model
     out.wire = nullptr;   // wireFor(AnthropicMessages)
     out.storedRounds = cfg_.storedRounds;
     out.cost = cost_;
@@ -819,7 +867,29 @@ class ChatBinding {
       };
     e.noCard = d_.noCard;
     e.holdUnloaded = [this] { return importPending_; };
+    if (d_.replyFilter || d_.replyScreen)
+      e.deliver = [this](const DeliverInput& in, DeliverOutcome& out) { return deliverReply(in, out); };
     return e;
+  }
+
+  // E2-FIX14: one delivery as engine 1's deliver() makes it: the owner's output rules on the model's
+  // whole reply, then the outbound screen, once per reply (a resend after a refused allocation, from
+  // a later part, keeps the first verdict), then the portable deliver function over the channel. A
+  // withheld reply sends nothing of itself; the status line, the harness's own words, still goes.
+  Status deliverReply(const DeliverInput& in, DeliverOutcome& out) {
+    if (!d_.replyFilter && !d_.replyScreen) return deliverTurn(DeliverDeps{&channel_, nullptr, nullptr}, in, out);
+    DeliverInput go = in;
+    if (in.text && !in.text->empty() && !out.replyDone && in.turn) {
+      if (in.fromPart == 0) {
+        shown_ = d_.replyFilter ? d_.replyFilter(in.turn->chatId, *in.text) : *in.text;
+        withheld_ = d_.replyScreen && !d_.replyScreen(in.turn->chatId, shown_);
+        if (withheld_) say("e2: the outbound screen withheld a reply");
+      }
+      go.text = withheld_ ? nullptr : &shown_;
+    }
+    const Status st = deliverTurn(DeliverDeps{&channel_, nullptr, nullptr}, go, out);
+    if (withheld_ || !out.sent) shown_.clear();
+    return st;
   }
 
   ChatBindingConfig cfg_;
@@ -830,6 +900,8 @@ class ChatBinding {
   size_t arenaBytes_ = 0;
   nimbus::orch::ChatBreaker breaker_;
   uint32_t sent_ = 0, refused_ = 0;
+  std::string shown_;           // the reply as it left (E2-FIX14)
+  bool withheld_ = false;       // the outbound screen withheld it
   bool busy_ = false;
   bool migrationRan_ = false;
   bool importPending_ = false;

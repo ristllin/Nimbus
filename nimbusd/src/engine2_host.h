@@ -439,8 +439,10 @@ class Engine2Host {
       out.outside = c.name == "web_search";
       return true;
     };
-    d.moreSetup = [this](const plain::TurnCtx&, plain::TurnSetup& s) {
-      s.head.effort = "medium";   // PRD section 3: thinking as today (adaptive, effort medium), as engine 1 sends
+    d.moreSetup = [this](const plain::TurnCtx& t, plain::TurnSetup& s) {
+      // PRD section 3: thinking as today (adaptive, effort medium), as engine 1 sends: the output table's
+      // head-round effort for the model, the same function the device's binding reads (E2-FIX14).
+      s.head.effort = plain::headEffortFor("anthropic", t.model);
       s.bodyCapLimit = o_.bodyCapLimit;
     };
     return d;

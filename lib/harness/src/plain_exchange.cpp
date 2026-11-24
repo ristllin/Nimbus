@@ -270,6 +270,8 @@ class Exchange {
     verdict_ = classify(httpStatus_, resp.body, routed_, capHost_);
     if (verdict_.err == ExchangeErr::None) read(resp);
     else if (verdict_.err == ExchangeErr::Other) refusedBody_ = resp.body.substr(0, 4096);
+    // E2-FIX14: a key or credit refusal's own words, so the shared park can tell billing from the key.
+    parkBody_ = verdict_.err == ExchangeErr::KeyRefused ? resp.body.substr(0, 4096) : std::string();
     // The reason belongs to this answer only (F7): a later answer of another class clears it, so a
     // line never joins one status to an earlier status's words. From the whole body: a long message
     // still parses.
@@ -387,6 +389,7 @@ class Exchange {
     out_.errorLine = exchangeLine(err, slug_, httpStatus_, err == ExchangeErr::Other ? refusedReason_ : std::string());
     out_.errorLineStored = exchangeLine(err, slug_, httpStatus_);   // what may be kept: no provider words (F4)
     if (err == ExchangeErr::Other) out_.providerBody = refusedBody_;
+    if (out_.parkHost) out_.parkBody = parkBody_;
     return Status::success();
   }
 
@@ -407,7 +410,7 @@ class Exchange {
   nimbus::orch::TokenUsage usage_;
   uint8_t sameHost_ = 0, capClimbs_ = 0;
   bool cutRetried_ = false, refusedClimbed_ = false, routerResent_ = false, refResent_ = false;
-  std::string refusedBody_, refusedReason_;
+  std::string refusedBody_, refusedReason_, parkBody_;
   uint32_t routerCap_ = 0;
   uint32_t cutSentTokens_ = 0;
   std::string cutSentEffort_;

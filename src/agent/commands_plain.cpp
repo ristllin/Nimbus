@@ -113,8 +113,7 @@ void loop(const String& chatId, const std::string& args) {
   }
   if (action == "grants" && (id == "on" || id == "off")) {
     loops::setRoutineGrants(id == "on");
-    say(chatId, selfTag() + (id == "on" ? "Routines may now use your connectors and start sub-agents."
-                                        : "Routines now only read, set their follow-up and reply."));
+    say(chatId, selfTag() + plain::routineGrantsLine(id == "on"));   // E2-FIX14: true on engine 2
     return;
   }
   const String msg = loopAction(action, id);

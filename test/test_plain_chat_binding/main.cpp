@@ -17,6 +17,17 @@
 //   - the turn's usage is handed over once per turn, in the provider's counts;
 //   - /compact runs the driver now and answers on the chat; /budget's view is in tokens;
 //   - the progress line is bound on the hooks (a turn with it installed still answers once).
+// Lane E2-FIX14 (engine 1's money gates and delivery rules, through plain/head_gate.h and the binding):
+//   - a refused key parks the provider in the shared park: the next message sends no request and gets
+//     engine 1's short answer, the one after it nothing; a changed key ends the park and a turn answers;
+//   - an empty credit parks it too; after the re-check wait one request goes as the probe and its answer
+//     ends the episode;
+//   - a per-provider monthly limit stops turns with engine 1's line; raised, turns resume; the overall
+//     ceiling's pause still stops them;
+//   - the owner's no-dash rule takes the dash out of the reply as it leaves (and of the history copy);
+//     a reply the outbound screen blocks sends nothing, as on engine 1; a flagged member message starts
+//     no turn and gets engine 1's line;
+//   - the head request carries the effort nimbusd sends for the same model.
 #include <unity.h>
 
 #include <cstdlib>
@@ -28,10 +39,15 @@
 #include "../support/scripted_provider/scripted_provider.h"
 #include "nimbus/harness/plain/chat_binding.h"
 #include "nimbus/harness/plain/chat_photos.h"
+#include "nimbus/harness/plain/head_gate.h"
+#include "nimbus/harness/plain/waiting.h"
 #include "nimbus/harness/plain/request.h"
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/orch/media_label.h"
 #include "nimbus/orch/tx/card_files.h"
+#include "nimbus/orch/no_dash.h"
+#include "nimbus/orch/owner_prefs.h"
+#include "nimbus/orch/provider_park.h"
 #include "nimbus/orch/tx/rules.h"
 
 namespace plain = agent::plain;
@@ -157,7 +173,10 @@ struct Device {
       sent.push_back(chat + "|" + part);
       return true;
     };
-    d.key = [] { return std::string("sk-fake-binding"); };
+    d.key = [this] { return key; };
+    d.parkHead = parkHead;
+    d.replyFilter = replyFilter;
+    d.replyScreen = replyScreen;
     d.seen = &seen;
     d.outside = outside;
     d.recentFiles = recentFiles;
@@ -192,6 +211,7 @@ struct Device {
     m.photosBlind = !nimbus::orch::headTakesImages(headHost, headModel);
     m.text = plain::photoText(photos, headHost, headModel, text);
     m.parts = plain::photoParts(photos, headHost, headModel);
+    m.probe = probe;
     out = plain::TurnOutcome{};
     return binding->turn(m, out);
   }
@@ -218,6 +238,14 @@ struct Device {
   std::vector<nimbus::orch::TurnSpend> compactUsage;   // lane E2-CMP: the summarizer's requests
   bool progress = false;
   std::vector<std::string> progressLines;
+  // Lane E2-FIX14.
+  std::string key = "sk-fake-binding";
+  bool parkHead = false;
+  bool probe = false;   // the next message is the park's re-check (MessageGate::probe)
+  std::function<std::string(const std::string&, const std::string&)> replyFilter;
+  std::function<bool(const std::string&, const std::string&)> replyScreen;
+  std::function<std::string(const std::string&, const std::string&)> inbound;
+  bool overBudget = false;
   std::unique_ptr<plain::ChatBinding> binding;
   plain::TurnOutcome out;
 };
@@ -280,8 +308,8 @@ std::vector<uint64_t> storedQs(const Card& card, const std::string& chat) {
 
 }  // namespace
 
-void setUp() {}
-void tearDown() {}
+void setUp() { nimbus::orch::providerPark().clear(); }   // the shared park is process-wide
+void tearDown() { nimbus::orch::providerPark().clear(); }
 
 static void test_a_message_reaches_the_turn_and_the_reply_the_channel_once() {
   Device dev;
@@ -908,6 +936,294 @@ static void test_a_second_cut_inside_the_resume_gives_the_plain_notice() {
   TEST_ASSERT_EQUAL(asked, dev.model.requests().size());
 }
 
+// ---- lane E2-FIX14: engine 1's money gates and delivery rules -------------------------------------
+namespace {
+
+// The device seam's order for one person's message (orchestrator_plain.cpp runOne): engine 1's gates
+// (plain::gateMessage over the shared park), then the turn when they let it run. The gate's verdict.
+plain::MessageGate message(Device& dev, const std::string& text, const std::string& chat = "1001") {
+  plain::MessageGateDeps g;
+  g.key = [&dev] { return dev.key; };
+  g.nowMs = [&dev] { return dev.ms; };
+  g.inbound = dev.inbound;
+  g.overBudget = [&dev](const std::string&) { return dev.overBudget; };
+  const plain::MessageGate gate = plain::gateMessage(g, chat, text, /*personWrote=*/true);
+  if (gate.verdict == plain::GateVerdict::Run) {
+    dev.probe = gate.probe;
+    (void)dev.say(text);
+    dev.probe = false;
+  }
+  return gate;
+}
+
+const char kKeyBody[] = R"({"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}})";
+const char kCreditBody[] =
+    R"({"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API."}})";
+
+}  // namespace
+
+// D1: a refused key parks the head in the shared park, exactly as engine 1 does. The refused turn's own
+// line told the person (the episode's notice); the next message sends no request and gets engine 1's
+// short answer; the one after it gets nothing. A changed key ends the park at once: the next message
+// is answered, and the answer ends the episode.
+static void test_a_refused_key_parks_the_head_and_the_next_message_sends_no_request() {
+  Device dev;
+  dev.parkHead = true;
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  dev.model.push(sp::httpError(401, kKeyBody));
+  TEST_ASSERT_EQUAL((int)plain::GateVerdict::Run, (int)message(dev, "first").verdict);
+  TEST_ASSERT_EQUAL(1, (int)dev.model.requests().size());
+  TEST_ASSERT_TRUE(dev.out.parkHost);
+  TEST_ASSERT_EQUAL(1, sentWith(dev.sent, "refused the key"));
+  TEST_ASSERT_TRUE(nimbus::orch::providerPark().isParked("anthropic"));
+
+  const plain::MessageGate second = message(dev, "second");
+  TEST_ASSERT_EQUAL((int)plain::GateVerdict::Held, (int)second.verdict);
+  TEST_ASSERT_EQUAL_STRING("parked", second.why);
+  TEST_ASSERT_EQUAL_STRING(nimbus::orch::keyShortAnswer("Anthropic").c_str(), second.line.c_str());
+  TEST_ASSERT_EQUAL(1, (int)dev.model.requests().size());   // no request left
+  const plain::MessageGate third = message(dev, "third");
+  TEST_ASSERT_EQUAL((int)plain::GateVerdict::Held, (int)third.verdict);
+  TEST_ASSERT_EQUAL_STRING("", third.line.c_str());          // engine 1: nothing more this episode
+  TEST_ASSERT_EQUAL(1, (int)dev.model.requests().size());
+
+  dev.key = "sk-fake-another";                               // a changed key is a new start
+  dev.model.push(sp::say("Back again."));
+  TEST_ASSERT_EQUAL((int)plain::GateVerdict::Run, (int)message(dev, "fourth").verdict);
+  TEST_ASSERT_EQUAL(2, (int)dev.model.requests().size());
+  TEST_ASSERT_TRUE(dev.out.delivered);
+  TEST_ASSERT_FALSE(nimbus::orch::providerPark().isParked("anthropic"));
+  std::string why;
+  TEST_ASSERT_TRUE_MESSAGE(dev.model.verify(why), why.c_str());
+}
+
+// D1: an empty credit parks the head as billing (the provider's own words decide the kind). The next
+// message gets engine 1's billing short answer and sends nothing. After the park's re-check wait one
+// message goes as the probe; its answer ends the episode, and the turns after it run.
+static void test_an_empty_credit_parks_the_head_until_the_recheck_answers() {
+  Device dev;
+  dev.parkHead = true;
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  dev.model.push(sp::httpError(400, kCreditBody));
+  (void)message(dev, "first");
+  TEST_ASSERT_EQUAL(1, (int)dev.model.requests().size());
+  nimbus::orch::ParkEntry e[nimbus::orch::ProviderPark::kMaxProviders];
+  const size_t n = nimbus::orch::providerPark().snapshot(e, nimbus::orch::ProviderPark::kMaxProviders, dev.ms);
+  TEST_ASSERT_EQUAL(1, (int)n);
+  TEST_ASSERT_EQUAL((int)nimbus::orch::ParkKind::Billing, (int)e[0].kind);
+  TEST_ASSERT_EQUAL(400, e[0].httpStatus);
+
+  const plain::MessageGate second = message(dev, "second");
+  TEST_ASSERT_EQUAL((int)plain::GateVerdict::Held, (int)second.verdict);
+  TEST_ASSERT_EQUAL_STRING(
+      nimbus::orch::billingShortAnswer("Anthropic", nimbus::orch::providerPark().recheckInMs("anthropic")).c_str(),
+      second.line.c_str());
+  TEST_ASSERT_TRUE(second.line.find("Your message was not answered.") == 0);
+  TEST_ASSERT_EQUAL(1, (int)dev.model.requests().size());
+
+  dev.ms += nimbus::orch::ProviderPark::kRecheckMs + 1000;   // the re-check is due
+  dev.model.push(sp::say("Credit is back."));
+  const plain::MessageGate probe = message(dev, "third");
+  TEST_ASSERT_EQUAL((int)plain::GateVerdict::Run, (int)probe.verdict);
+  TEST_ASSERT_TRUE(probe.probe);
+  TEST_ASSERT_EQUAL(2, (int)dev.model.requests().size());
+  TEST_ASSERT_FALSE(nimbus::orch::providerPark().isParked("anthropic"));
+  dev.model.push(sp::say("And again."));
+  TEST_ASSERT_EQUAL((int)plain::GateVerdict::Run, (int)message(dev, "fourth").verdict);
+  TEST_ASSERT_EQUAL(3, (int)dev.model.requests().size());
+}
+
+// D1: the provider's own monthly limit stops turns with engine 1's line, every message, with no
+// request; raised, turns resume. The overall ceiling's pause (every provider) still stops them.
+static void test_a_provider_limit_stops_turns_until_it_is_raised_and_the_ceiling_still_holds() {
+  Device dev;
+  dev.parkHead = true;
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  dev.overBudget = true;
+  for (int i = 0; i < 2; ++i) {
+    const plain::MessageGate g = message(dev, "over the limit");
+    TEST_ASSERT_EQUAL((int)plain::GateVerdict::Held, (int)g.verdict);
+    TEST_ASSERT_EQUAL_STRING("limit", g.why);
+    TEST_ASSERT_EQUAL_STRING(
+        "\xE2\x9A\xA0\xEF\xB8\x8F anthropic has hit its monthly token budget. Raise the limit in Usage & Budget or wait "
+        "for the reset.",
+        g.line.c_str());
+  }
+  TEST_ASSERT_EQUAL(0, (int)dev.model.requests().size());
+  dev.overBudget = false;   // the owner raised it
+  dev.model.push(sp::say("Here again."));
+  TEST_ASSERT_EQUAL((int)plain::GateVerdict::Run, (int)message(dev, "raised").verdict);
+  TEST_ASSERT_EQUAL(1, (int)dev.model.requests().size());
+
+  nimbus::orch::providerPark().pause(nimbus::orch::kPauseAllProviders, nimbus::orch::kPauseSpendCeiling);
+  const plain::MessageGate frozen = message(dev, "frozen");
+  TEST_ASSERT_EQUAL((int)plain::GateVerdict::Held, (int)frozen.verdict);
+  TEST_ASSERT_EQUAL_STRING("paused", frozen.why);
+  TEST_ASSERT_TRUE(frozen.line.find("monthly spend limit is reached") != std::string::npos);
+  TEST_ASSERT_EQUAL(1, (int)dev.model.requests().size());
+  nimbus::orch::providerPark().resume(nimbus::orch::kPauseAllProviders, nimbus::orch::kPauseSpendCeiling);
+  std::string why;
+  TEST_ASSERT_FALSE(plain::headHeld("anthropic", dev.key, false, dev.ms, why));
+}
+
+// D2: the owner's no-dash rule (engine 1's applyOutputFilters, bound as the device binds it) takes the
+// em dash out of the reply as it leaves, on Telegram as on the web; shownReply (what the device seam
+// writes as the chat's history row) is what left.
+static void test_a_reply_under_the_no_dash_rule_leaves_without_a_dash() {
+  Device dev;
+  dev.replyFilter = [](const std::string&, const std::string& text) {
+    return nimbus::orch::applyOutputFilters(text, nimbus::orch::kPrefFilterNoDash);
+  };
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  dev.model.push(sp::say("Yes \xE2\x80\x94 the garden is watered."));
+  TEST_ASSERT_TRUE(dev.say("did you water it?").ok());
+  TEST_ASSERT_EQUAL(1, (int)dev.sent.size());
+  TEST_ASSERT_FALSE(nimbus::orch::hasEmDash(dev.sent[0]));
+  TEST_ASSERT_EQUAL_STRING("1001|Yes, the garden is watered.", dev.sent[0].c_str());
+  TEST_ASSERT_EQUAL_STRING("Yes, the garden is watered.", dev.binding->shownReply().c_str());
+  TEST_ASSERT_TRUE(dev.out.delivered);
+}
+
+// D2: a reply to a member that the outbound screen blocks sends nothing of itself, as engine 1's deliver()
+// suppresses it (engine 1 sends no other line for it); the turn reports it was not delivered, so the
+// history keeps no copy of words that never left. One screen call for the reply.
+static void test_a_reply_the_outbound_screen_blocks_sends_nothing() {
+  Device dev;
+  int screened = 0;
+  dev.replyScreen = [&screened](const std::string& chat, const std::string&) {
+    ++screened;
+    return chat != "1001";
+  };
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  dev.model.push(sp::say("Something the screen flags."));
+  TEST_ASSERT_TRUE(dev.say("tell me").ok());
+  TEST_ASSERT_EQUAL(1, screened);
+  TEST_ASSERT_EQUAL(0, (int)dev.sent.size());
+  TEST_ASSERT_TRUE(dev.binding->replyWithheld());
+  TEST_ASSERT_FALSE(dev.out.delivered);
+  TEST_ASSERT_EQUAL_STRING("", dev.binding->shownReply().c_str());
+}
+
+// D2: a member's flagged message starts no turn: no request, and the person gets the inbound gate's line.
+static void test_a_flagged_member_message_starts_no_turn() {
+  Device dev;
+  dev.parkHead = true;
+  dev.inbound = [](const std::string& chat, const std::string& text) {
+    return chat == "1001" && text.find("flagged") != std::string::npos ? std::string("Nimbus: That message couldn't be processed here.")
+                                                                         : std::string();
+  };
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  const plain::MessageGate g = message(dev, "a flagged message");
+  TEST_ASSERT_EQUAL((int)plain::GateVerdict::Blocked, (int)g.verdict);
+  TEST_ASSERT_EQUAL_STRING("Nimbus: That message couldn't be processed here.", g.line.c_str());
+  TEST_ASSERT_EQUAL(0, (int)dev.model.requests().size());
+  TEST_ASSERT_EQUAL(0, (int)dev.sent.size());
+}
+
+// D3: the head request carries the effort nimbusd's engine 2 sends for the same model (the output table's
+// head-round value: medium on a Claude family that takes it, none on one that answers 400 to the field).
+// The daemon's value for the models it runs is unchanged ("medium").
+static void test_the_head_request_carries_the_daemons_effort() {
+  Device dev;
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  dev.model.push(sp::say("Thinking at medium."));
+  TEST_ASSERT_TRUE(dev.say("hello").ok());
+  TEST_ASSERT_TRUE(has(dev.model.last().body, "\"effort\":\"medium\""));
+  for (const char* m : {"claude-haiku-5-5", "claude-sonnet-5", "claude-sonnet-4-6", "claude-opus-5", "claude-opus-4-5"})
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("medium", plain::headEffortFor("anthropic", m).c_str(), m);
+  TEST_ASSERT_EQUAL_STRING("", plain::headEffortFor("anthropic", "claude-haiku-4-5").c_str());   // it answers 400 to the field
+}
+
+// D1: a routine's refused key parks the head too, but its line never reached the person, so the owner's
+// next message gets engine 1's whole notice (the episode's one notice), then the short answer, then nothing.
+static void test_a_routines_refusal_parks_and_leaves_the_notice_to_the_owner() {
+  Device dev;
+  dev.parkHead = true;
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  plain::TurnOutcome routine;
+  routine.parkHost = true;
+  routine.parkStatus = 401;
+  routine.parkText = kKeyBody;
+  routine.headRequests = 1;
+  plain::noteHeadOutcome("anthropic", dev.key, routine, /*probe=*/false, /*told=*/false, dev.ms);
+  TEST_ASSERT_TRUE(nimbus::orch::providerPark().isParked("anthropic"));
+  std::string why;
+  TEST_ASSERT_TRUE(plain::headHeld("anthropic", dev.key, false, dev.ms, why));   // the next routine waits
+  const plain::MessageGate first = message(dev, "hello");
+  TEST_ASSERT_EQUAL((int)plain::GateVerdict::Held, (int)first.verdict);
+  TEST_ASSERT_EQUAL_STRING(
+      "That didn't finish - Anthropic rejected its key. Update it under Assistant > Models. Your message was not "
+      "answered. Nothing is still running.",
+      first.line.c_str());
+  TEST_ASSERT_EQUAL_STRING(nimbus::orch::keyShortAnswer("Anthropic").c_str(), message(dev, "again").line.c_str());
+  TEST_ASSERT_EQUAL_STRING("", message(dev, "and again").line.c_str());
+  TEST_ASSERT_EQUAL(0, (int)dev.model.requests().size());
+}
+
+// D2: a routine's note the outbound screen withholds sends nothing and is done with (engine 1 drops it
+// once): the held delivery is told it went, so it is never asked of the screen again.
+static void test_a_withheld_routine_note_is_not_retried() {
+  Device dev;
+  int screened = 0;
+  dev.replyScreen = [&screened](const std::string&, const std::string&) {
+    ++screened;
+    return false;
+  };
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  const std::string note = "A routine note the screen flags.";
+  plain::TurnCtx ctx;
+  ctx.chatId = "1001";
+  ctx.chatKey = "1001";
+  plain::DeliverInput in;
+  in.turn = &ctx;
+  in.text = &note;
+  plain::DeliverOutcome out;
+  TEST_ASSERT_TRUE(dev.binding->ownerSink().deliver(in, out).ok());
+  TEST_ASSERT_EQUAL(1, screened);
+  TEST_ASSERT_EQUAL(0, (int)dev.sent.size());
+  TEST_ASSERT_TRUE(out.sent);
+  TEST_ASSERT_TRUE(out.replyDone);
+}
+
+// D1 after E2-FIX13: a message kept during the read-in passes the same gates when its turn comes
+// (orchestrator_plain.cpp answerKept: the gate, then the turn). Parked by a refused key, the kept message
+// sends no request, gets the same short answer a new message gets, and leaves the list.
+static void test_a_kept_messages_turn_is_refused_by_a_parked_provider_with_the_same_line() {
+  Device dev;
+  dev.parkHead = true;
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  dev.model.push(sp::httpError(401, kKeyBody));
+  (void)message(dev, "first");
+  TEST_ASSERT_TRUE(nimbus::orch::providerPark().isParked("anthropic"));
+  plain::WaitingInbox in(nullptr, "1001");
+  TEST_ASSERT_TRUE(in.load().ok());
+  plain::WaitingMessage w;
+  w.text = "kept while the earlier conversation was read in";
+  (void)in.hold(w);
+  TEST_ASSERT_EQUAL(1, (int)in.messages().size());
+  std::vector<std::string> lines;
+  plain::WaitingDrainFns f;
+  f.taken = [](const plain::WaitingMessage&) { return false; };
+  f.answer = [&dev, &lines](const plain::WaitingMessage& m) {
+    plain::MessageGateDeps g;   // the seam's gates without the inbound screen (it ran when the message came)
+    g.key = [&dev] { return dev.key; };
+    g.nowMs = [&dev] { return dev.ms; };
+    g.overBudget = [&dev](const std::string&) { return dev.overBudget; };
+    const plain::MessageGate gate = plain::gateMessage(g, "1001", m.text, /*personWrote=*/true);
+    if (gate.verdict != plain::GateVerdict::Run) {
+      lines.push_back(gate.line);
+      return plain::WaitingAnswer::Done;
+    }
+    (void)dev.say(m.text);
+    return plain::WaitingAnswer::Done;
+  };
+  TEST_ASSERT_EQUAL(1, (int)plain::answerWaiting(in, f));
+  TEST_ASSERT_EQUAL(1, (int)dev.model.requests().size());   // no request for the kept message
+  TEST_ASSERT_EQUAL(1, (int)lines.size());
+  TEST_ASSERT_EQUAL_STRING(nimbus::orch::keyShortAnswer("Anthropic").c_str(), lines[0].c_str());
+  TEST_ASSERT_TRUE(in.empty());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_a_message_reaches_the_turn_and_the_reply_the_channel_once);
@@ -933,5 +1249,15 @@ int main(int, char**) {
   RUN_TEST(test_after_a_reload_earlier_results_are_shown_whole);
   RUN_TEST(test_a_cut_after_an_effect_is_resumed_once_and_answered);
   RUN_TEST(test_a_second_cut_inside_the_resume_gives_the_plain_notice);
+  RUN_TEST(test_a_refused_key_parks_the_head_and_the_next_message_sends_no_request);
+  RUN_TEST(test_an_empty_credit_parks_the_head_until_the_recheck_answers);
+  RUN_TEST(test_a_provider_limit_stops_turns_until_it_is_raised_and_the_ceiling_still_holds);
+  RUN_TEST(test_a_reply_under_the_no_dash_rule_leaves_without_a_dash);
+  RUN_TEST(test_a_reply_the_outbound_screen_blocks_sends_nothing);
+  RUN_TEST(test_a_flagged_member_message_starts_no_turn);
+  RUN_TEST(test_the_head_request_carries_the_daemons_effort);
+  RUN_TEST(test_a_routines_refusal_parks_and_leaves_the_notice_to_the_owner);
+  RUN_TEST(test_a_withheld_routine_note_is_not_retried);
+  RUN_TEST(test_a_kept_messages_turn_is_refused_by_a_parked_provider_with_the_same_line);
   return UNITY_END();
 }

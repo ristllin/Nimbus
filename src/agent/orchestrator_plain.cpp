@@ -83,6 +83,7 @@
 #include "nimbus/harness/plain/chat_binding.h"
 #include "nimbus/harness/plain/chat_commands.h"   // readGeneration, writeGeneration - /clear (P7)
 #include "nimbus/harness/plain/chat_photos.h"
+#include "nimbus/harness/plain/head_gate.h"   // engine 1's gates: inbound screen, provider limit, park (E2-FIX14)
 #include "nimbus/harness/plain/schedule_binding.h"   // reminder and routine fires (lane E2-SCHED)
 #include "nimbus/harness/plain/waiting.h"            // the messages kept during the read-in (E2-FIX13)
 #include "nimbus/orch/turn_journal.h"              // kTurnSourceOwner - the crash journal (E2-FIX12)
@@ -90,6 +91,11 @@
 #include "nimbus/harness/turn_memory.h"   // PsramFirstScope
 #include "nimbus/harness/log.h"           // hlog::setSink - the harness lines into alog
 #include "nimbus/orch/blob_store.h"        // blobPath - an earlier photo's stored copy
+#include "../sys/config_nvs.h"   // sys::deviceName - engine 1's inbound-block line (E2-FIX14)
+#include "nimbus/orch/moderation.h"   // ModGate, ModAction (E2-FIX14)
+#include "nimbus/orch/no_dash.h"      // applyOutputFilters - the owner's output rules (E2-FIX14)
+#include "prefs_subsystem.h"          // filtersForRole (E2-FIX14)
+#include "version.h"                  // NIMBUS_FW_VERSION (E2-FIX14)
 #include "notes_device.h"       // notesdev::pinnedNotesFor, notebook (the rails' pending shelf)
 #include "schedule_device.h"    // scheduledev::fire, host - the schedule entries (lane E2-SCHED)
 #include "skills_device.h"      // skillsdev::chatSkills
@@ -547,6 +553,18 @@ plain::ChatBinding* chatFor(const String& chatId, const std::string& model, nimb
   // hands back what it sent, for the chat's history rows.
   d.deviceName = nimbus::sys::deviceName().c_str();
   d.resumed = [chat = std::string(chatId.c_str())](const plain::ResumeReport& r) { onResumed(chat, r); };
+  // Lane E2-FIX14: engine 1's money gate after each turn (the shared park), and its deliver()'s
+  // rules on every reply: the owner's output rules, then the outbound screen (a member's chat only).
+  d.parkHead = true;
+  d.replyFilter = [](const std::string& chat, const std::string& text) {
+    const uint32_t mask = prefs::filtersForRole(roleOfChat(String(chat.c_str())) == nimbus::orch::Role::Admin);
+    return mask ? nimbus::orch::applyOutputFilters(text, mask) : text;
+  };
+  d.replyScreen = [](const std::string& chat, const std::string& text) {
+    return moderateGate(nimbus::orch::ModGate::OutboundReply, String(chat.c_str()), String(text.c_str())) !=
+           nimbus::orch::ModAction::Block;
+  };
+  d.overBudget = [](const std::string& p) { return store::providerOverBudget(String(p.c_str())); };   // E2-FIX14: the resume
   const uint32_t spiFree0 = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
   const uint32_t spiBig0 = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
   const uint32_t t0 = millis();
@@ -669,6 +687,45 @@ void journalTurn(const String& chatId, const plain::ChatMessage& msg) {
   nimbus::crash::turnStarted(source, chatId.c_str(), head);
 }
 
+// Lane E2-FIX14: engine 1's gates before a turn (plain/head_gate.h), each over the shared code engine 1
+// calls: the inbound screen (moderateGate, InboundText; engine 1's line), the provider's own monthly
+// limit (store::providerOverBudget) and the shared provider park (its flash file is registered by
+// provider_gate.cpp).
+std::string anthropicKeyText() {
+  const String k = store::anthropicKey();
+  return std::string(k.c_str(), k.length());
+}
+
+plain::MessageGateDeps gateDeps() {
+  plain::MessageGateDeps g;
+  g.key = anthropicKeyText;
+  g.nowMs = [] { return (uint32_t)millis(); };
+  g.inbound = [](const std::string& chat, const std::string& text) -> std::string {
+    if (moderateGate(nimbus::orch::ModGate::InboundText, String(chat.c_str()), String(text.c_str())) !=
+        nimbus::orch::ModAction::Block)
+      return std::string();
+    return std::string(nimbus::sys::deviceName().c_str()) + " \xC2\xB7 " NIMBUS_FW_VERSION
+                                                              ": That message couldn't be processed here.";
+  };
+  g.overBudget = [](const std::string& p) { return store::providerOverBudget(String(p.c_str())); };
+  return g;
+}
+
+// The park's re-check handed to a message that then sent nothing goes back (E2-FIX14).
+void handBack(bool probe) {
+  if (probe) nimbus::orch::providerPark().releaseProbe("anthropic");
+}
+
+// After the turn: a turn refused before its first request hands the re-check back (E2-FIX14).
+void afterTurn(bool probe, const plain::Status& st, const plain::TurnOutcome& out) {
+  if (!st.ok() && out.headRequests == 0) handBack(probe);
+}
+
+// The reply as it left (after the owner's output rules), else the model's text (E2-FIX14).
+String historyText(const plain::ChatBinding& b, const plain::TurnOutcome& out) {
+  return String((b.shownReply().empty() ? out.text : b.shownReply()).c_str());
+}
+
 // One turn of `b` for `msg` (its day-stream row already written) and what follows it: the figures,
 // the answer's history row, the deferred effects, the skill lines. Returns whether a part went out;
 // `status` (optional) is the binding's answer (Busy: the turn did not start, nothing stored).
@@ -687,14 +744,14 @@ bool turnFor(plain::ChatBinding& b, const String& chatId, const plain::ChatMessa
   }
   nimbus::crash::turnEnded();
   if (status) *status = st;
+  afterTurn(msg.probe, st, out);   // E2-FIX14: a turn refused before its first request gives the re-check back
   logTurn(b, out, st, millis() - t0);
   if (!msg.parts.empty())
     alogf("e2: photos=%u bytes=%u psramFree=%u psramLargest=%u", (unsigned)msg.parts.size(),
           (unsigned)(s_photos ? s_photos->bytes() : 0), (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
           (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
-  if (out.delivered && !out.text.empty())
-    memory::captureMessage(chatId.c_str(), "assistant", nimbus::orch::MsgKind::Message,
-                           String(out.text.c_str()), "", "e2");
+  if (out.delivered && !out.text.empty())   // E2-FIX14: the reply as it left (after the owner's output rules)
+    memory::captureMessage(chatId.c_str(), "assistant", nimbus::orch::MsgKind::Message, historyText(b, out), "", "e2");
   else if (!out.statusStored.empty())   // the line without a provider's reason (E2-FIX11): a model may read this row
     memory::captureMessage(chatId.c_str(), "system", nimbus::orch::MsgKind::Message,
                            String(out.statusStored.c_str()), "", "e2");
@@ -832,7 +889,18 @@ plain::WaitingAnswer answerKept(const plain::WaitingMessage& w, const String& ch
   }
   if (!b) return keptStalled(chatId, line);
   s_keptStallTold.clear();
+  // E2-FIX14: a kept message's turn passes engine 1's money gates as a new message does (its inbound screen
+  // ran when it came): over the limit, parked or paused, it gets the same line and no request.
+  plain::MessageGateDeps g = gateDeps();
+  g.inbound = nullptr;
+  const plain::MessageGate gate = plain::gateMessage(g, chatId.c_str(), w.text, /*personWrote=*/true);
+  if (gate.verdict != plain::GateVerdict::Run) {
+    alogf("e2: a message to %s kept during the read-in: the head is held (%s), no request", chatId.c_str(), gate.why);
+    if (!gate.line.empty()) sayInstead(chatId, gate.line.c_str());
+    return plain::WaitingAnswer::Done;
+  }
   plain::ChatMessage msg;
+  msg.probe = gate.probe;
   msg.text = w.text;
   msg.ch = w.ch;
   msg.src = w.src;
@@ -883,20 +951,56 @@ void answerKeptMessages() {
   }
 }
 
-// One person's message as one engine-2 turn (tg_poll). Returns whether a reply went out.
-bool runOne(const String& text, const String& fromName, const String& chatId) {
-  const String host = store::resolvedOrchHost();
+// Lane E2-FIX14: true when the message was answered before the gates (a re-served update) or by them
+// (a block, the limit, the park); `sent` then says whether a line went out. `gate` holds the verdict.
+bool answeredBeforeTurn(const String& text, const String& fromName, const String& chatId, const String& host,
+                        plain::MessageGate& gate, bool& sent) {
   if (const char* line = refusalFor(host)) {
     captureOwnerRow(text, fromName, chatId, false);
     leaveToImport(chatId);
-    return sayInstead(chatId, line);
+    sent = sayInstead(chatId, line);
+    return true;
   }
+  sent = true;
+  // RB-TG1 before the gates: an update the resident chat already took (re-served after a restart) is
+  // neither answered nor counted again, and never spends the park's one short answer.
+  if (!localChat(chatId) && s_chat && s_chat->config().chatId == chatId.c_str() &&
+      s_chat->allSeen(telegram::turnUpdateIds(chatId))) {
+    alogf("e2: message to %s already taken before the restart: not answered again", chatId.c_str());
+    return true;
+  }
+  gate = plain::gateMessage(gateDeps(), chatId.c_str(), text.c_str(), /*personWrote=*/true);
+  if (gate.verdict == plain::GateVerdict::Blocked) {   // engine 1: no turn, nothing kept, its one line
+    alogf("moderation: inbound blocked (chat=%s)", chatId.c_str());
+    sent = sayInstead(chatId, gate.line.c_str());
+    return true;
+  }
+  if (gate.verdict != plain::GateVerdict::Held) return false;
+  // No request: the limit, the park or a pause.
+  alogf("e2: %s holds the head (%s): no request, %s", host.c_str(), gate.why,
+        gate.line.empty() ? "the person was told this episode" : "the person is told");
+  captureOwnerRow(text, fromName, chatId, false);
+  leaveToImport(chatId);
+  sent = !gate.line.empty() && sayInstead(chatId, gate.line.c_str());
+  return true;
+}
+
+// One person's message as one engine-2 turn (tg_poll). Returns whether a reply went out.
+bool runOne(const String& text, const String& fromName, const String& chatId) {
+  const String host = store::resolvedOrchHost();
+  plain::MessageGate gate;
+  bool gated = false;
+  if (answeredBeforeTurn(text, fromName, chatId, host, gate, gated)) return gated;
   // E2-FIX13: kept while the earlier conversation is read in, and after it behind the messages kept
-  // before (answered in order on this task's next pass).
-  if (hasKept(chatId) || waitsForHistory(chatId)) return keepMessage(text, fromName, chatId);
+  // before (answered in order on this task's next pass; each kept turn passes the gates again).
+  if (hasKept(chatId) || waitsForHistory(chatId)) {
+    handBack(gate.probe);
+    return keepMessage(text, fromName, chatId);
+  }
   const std::string model(store::orchModel(host).c_str());
   plain::ChatBinding* b = chatFor(chatId, model, roleOfChat(chatId));
   if (!b) {
+    handBack(gate.probe);
     captureOwnerRow(text, fromName, chatId, false);
     return sayInstead(chatId, s_noStartWhy ? s_noStartWhy : kNoStartLine);
   }
@@ -910,8 +1014,10 @@ bool runOne(const String& text, const String& fromName, const String& chatId) {
   // answered then: no second row, no second answer.
   if (b->allSeen(msg.src)) {
     alogf("e2: message to %s already taken before the restart: not answered again", chatId.c_str());
+    handBack(gate.probe);
     return true;
   }
+  msg.probe = gate.probe;
   const String row = captureOwnerRow(text, fromName, chatId, true);
   // E2-P-PHOTO: a head without image input reads each photo's one description (engine 1's caption walk,
   // made only for such a head) as its line; a seeing head gets the pixels and no caption call.
@@ -1052,6 +1158,19 @@ void drainUpdateNotice() {
 // The owner chat's engine boots before its first message, so the seen index holds what the card
 // holds before a re-served update is answered (RB-TG1). tg_poll, once.
 bool s_bootTried = false;
+
+// Lane E2-FIX14: the web page's "Clear conversation", staged by requestConvClear (any task) and run on
+// tg_poll as the web chat's /clear (clearChat): a new conversation, the earlier one kept on the card.
+// A clear that could not start is told on the web chat with its true cause.
+std::atomic<bool> s_convClearReq{false};
+void drainConvClear() {
+  if (!s_convClearReq.exchange(false, std::memory_order_relaxed)) return;
+  String why;
+  const bool started = clearChat("web", why);
+  alogf("e2: the web page's clear conversation: %s", started ? "a new conversation" : "not started");
+  if (!started) sayInstead("web", why.length() ? why.c_str() : kNoStartLine);
+}
+
 void bootOwnerChat() {
   if (s_bootTried) return;
   if (!memory::episodicIndexComplete()) return;   // E2-MIG: tried again once the history is indexed
@@ -1190,6 +1309,25 @@ const char* kindWord(sch::Kind k) {
   return k == sch::Kind::Wakeup ? "wakeup" : "routine";
 }
 
+// Lane E2-FIX14: a routine or a wake-up (E2-P-MEM) sends no request while the head's provider is over its
+// limit or held by the park (a refused key, an empty credit, a pause); it waits for its next slot. A
+// reminder goes (it sends its stored text, no request). The overall monthly limit first, as before.
+bool routineHeld(sch::Kind kind, const String& host, nimbus::orch::FireOutcome& out) {
+  if (kind == sch::Kind::Reminder) return false;
+  if (spend::frozen()) {
+    out.deferred = true;
+    out.error = nimbus::orch::kSpendFrozenError;
+    return true;
+  }
+  std::string held;
+  if (host != "anthropic" ||
+      !plain::headHeld("anthropic", anthropicKeyText(), store::providerOverBudget(host), (uint32_t)millis(), held))
+    return false;
+  out.deferred = true;
+  out.error = "paid requests are held: " + held;
+  return true;
+}
+
 // One schedule entry's fire (the loops tick, tg_poll, between turns).
 nimbus::orch::FireOutcome fireEntry(const String& chatIn, const String& id) {
   nimbus::orch::FireOutcome out;
@@ -1202,14 +1340,10 @@ nimbus::orch::FireOutcome fireEntry(const String& chatIn, const String& id) {
   }
   sch::Kind kind = sch::Kind::Routine;
   if (!sch::entryKind(scheduledev::host(), sid, kind)) kind = sch::Kind::Routine;   // fire() answers it
-  if (kind != sch::Kind::Reminder && spend::frozen()) {   // the money guard: a routine or wakeup waits, a reminder goes
-    out.deferred = true;
-    out.error = nimbus::orch::kSpendFrozenError;
-    return out;
-  }
   const String chat = chatIn.length() ? chatIn : telegram::ownerChat();
   const std::string chatId(chat.c_str(), chat.length());
   const String host = store::resolvedOrchHost();
+  if (routineHeld(kind, host, out)) return out;   // the money guard: a routine or wake-up waits, a reminder goes
   plain::ChatBinding* b = nullptr;
   if (chat.length() && !(kind != sch::Kind::Reminder && refusalFor(host)))
     b = chatFor(chat, std::string(store::orchModel(host).c_str()), roleOfChat(chat));
@@ -1236,6 +1370,10 @@ nimbus::orch::FireOutcome fireEntry(const String& chatIn, const String& id) {
     d.routineModel = sub;
     d.fired = [sub](const plain::FireReport& rep) {
       store::recordProviderSpend(plain::turnSpendOf(rep.outcome, "anthropic", sub), "routine");
+      // E2-FIX14: the park learns what the routine's head answered; nobody was told, so the owner's next
+      // message still gets the episode's notice (engine 1: a routine may carry it, never take it).
+      plain::noteHeadOutcome("anthropic", anthropicKeyText(), rep.outcome, /*probe=*/false, /*told=*/false,
+                             (uint32_t)millis());
     };
     fb = plain::fireBindingFor(*b, memory::haveSd() ? &txdev::cardRoutineFiles() : nullptr, d);
   } else {
@@ -1317,6 +1455,14 @@ plain::Status reportTurnIn(const std::string& chatId, const std::string& note) {
   if (s_inTurn.load(std::memory_order_relaxed) || chat.length() == 0 || hasKept(chat) || refusalFor(host) ||
       waitsForHistory(chat, true))
     return busy;
+  // E2-FIX14: a report turn sends no request while the head is over its limit, parked or paused: the report
+  // waits in the JobEngine (it never takes the park's re-check; a person's message does).
+  std::string held;
+  if (host == "anthropic" &&
+      plain::headHeld("anthropic", anthropicKeyText(), store::providerOverBudget(host), (uint32_t)millis(), held)) {
+    alogf("e2: an agent report for %s waits: %s", chatId.c_str(), held.c_str());
+    return busy;
+  }
   plain::ChatBinding* b = chatFor(chat, std::string(store::orchModel(host).c_str()), roleOfChat(chat));
   if (!b) return busy;
   plain::ChatMessage msg;
@@ -1514,6 +1660,7 @@ int pollJobs() {
   answerKeptMessages();   // and those kept, answered in order once their chat's read-in ended
   drainTerminates();      // the journal's staged terminates (web stops), on the journal's writer task
   drainUpdateNotice();    // the fixed post-update notice - tg_poll only
+  drainConvClear();       // the web page's "Clear conversation" (E2-FIX14)
   // Lane E2-SCHED: the loops tick (at most one due entry; 20 s-gated, heap and Wi-Fi guarded inside)
   // and the outboxes of routine notes. tg_poll, between turns.
   loadOutboxes();
@@ -1582,9 +1729,11 @@ void stageFoldDailyReset() {}
 // ---- clear conversation and the staged maintenance ----------------------------
 
 String memorySnapshot() { return String(); }
-void requestMemoryClear() {}
-void requestConvReset() {}
-void requestConvClear() {}
+void requestMemoryClear() {}   // engine 2 keeps no assistant memory (the web route says so: E2-FIX14)
+void requestConvReset() {}     // engine 2 keeps no provider-side conversation to reset
+// Lane E2-FIX14: the web page's "Clear conversation" is the web chat's /clear on engine 2, staged here
+// (the web task) and run by tg_poll's next pollJobs (drainConvClear).
+void requestConvClear() { s_convClearReq.store(true, std::memory_order_relaxed); }
 void noteConfigChanged() {}
 
 // ---- what the common half asks of the engine ----------------------------------

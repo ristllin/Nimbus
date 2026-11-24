@@ -164,6 +164,8 @@ struct Turn {
   // The line as it may be stored or reach a model (TurnOutcome::statusStored); statusRef set.
   const std::string& storedLine() const { return statusStored.empty() || statusRef != &statusText ? *statusRef : statusStored; }
   bool parkHost = false, failOver = false;
+  int parkStatus = 0;                  // the park's refusal: its status and body (E2-FIX14)
+  std::string parkText;
   std::string cause;
   tx::TurnEndFacts end;
   std::vector<tx::Item> writes;        // c, r pairs of successful effect calls (supersede rule)
@@ -1008,6 +1010,10 @@ class TurnRun {
     t_.sizeTokens = (uint32_t)std::min<uint64_t>(size, UINT32_MAX);
     t_.end.microUsd = (uint32_t)std::min<uint64_t>((uint64_t)t_.end.microUsd + requestMicroUsd(t_.setup.cost, rt), UINT32_MAX);
     t_.parkHost |= ex.parkHost;
+    if (ex.parkHost) {   // E2-FIX14: the refusal the binding hands the shared park
+      t_.parkStatus = ex.httpStatus;
+      t_.parkText = ex.parkBody;
+    }
     t_.failOver |= ex.failOver;
   }
 
@@ -2043,6 +2049,7 @@ Status PlainEngine::runTurn(const TurnInput& in, TurnOutcome& out) {
   out.trip = t->trip;
   out.status = t->status;
   out.parkHost = t->parkHost;
+  out.parkStatus = t->parkStatus;
   out.failOver = t->failOver;
   // A deferred effect's bit is set only once its argument is copied: never a head switch without its head.
   for (size_t k = 0; k < kDeferredKinds; ++k) {
@@ -2061,6 +2068,7 @@ Status PlainEngine::runTurn(const TurnInput& in, TurnOutcome& out) {
     }
     out.end = t->end;
     out.end.cause = t->cause;   // also when no e item could be stored
+    out.parkText = t->parkText;
   } catch (const std::bad_alloc&) {
   }
   return st;

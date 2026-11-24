@@ -189,6 +189,9 @@ NON_MODEL_FILES: dict = {
     "paths, the anthropic-version value and error-marker words matched against provider answers, never sent to a "
     "model; its one wire placeholder, Mistral's '(empty)' for an empty history text, is engine 1's existing byte "
     "(mistral.cpp) and nothing reads it until the Chat codec (lane E2-R6), which catalogues it then",
+    "lib/harness/include/nimbus/harness/plain/head_gate.h": "E2-FIX14: engine 1's own lines for a turn its gates "
+    "stop (the provider's monthly limit, a parked or paused provider), sent to the person's chat with system "
+    "provenance by the engine-2 device seam before any turn, never stored in a transcript or shown to a model",
     "src/agent/migrate_device.cpp": "E2-MIG: the earlier engine's import; its literals are log lines and the test "
     "console's TXASIDE answers (test builds), never sent to a model",
     "lib/core/src/orch_wire_errors.cpp": "E2-R5: the engine-2 error classifier; its literals are field names and "

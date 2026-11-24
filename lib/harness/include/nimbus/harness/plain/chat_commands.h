@@ -51,6 +51,20 @@ inline ChatCommandRoute chatCommandRoute(const nimbus::orch::Command& c) {
   return ChatCommandRoute::Shared;
 }
 
+// ---- lines engine 1's own would not make true on engine 2 (lane E2-FIX14) ---------------------------
+// Device copy for the owner, never model text. Engine 2 binds no connectors and no sub-agents, so the
+// switch "/loop grants on" is stored (it applies once they exist) and the reply says what routines can
+// do now; "off" is engine 1's line, true on both.
+inline const char* routineGrantsLine(bool on) {
+  return on ? "Saved. Routines on the new engine have no connectors or sub-agents to use yet, so they still only "
+              "read, set their follow-up and reply."
+            : "Routines now only read, set their follow-up and reply.";
+}
+// The web settings' "Erase memory": engine 2 keeps no separate assistant memory (engine 1's running
+// notes), so nothing is erased; the owner's notes and files are his and stay.
+inline constexpr char kNoAssistantMemoryLine[] =
+    "The new engine keeps no separate assistant memory, so nothing was erased. Your notes and files are kept.";
+
 // ---- /clear's generation (lane E2-FIX2B, finding P7) ------------------------------------------
 // A chat's conversation is the transcript of its generation: 0 is the chat id itself, n is
 // "<chat>_c<n>". The number is kept in /mem/tx/<chat>.gen as one decimal line, written whole to

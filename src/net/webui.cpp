@@ -120,6 +120,9 @@
 #if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
 #include "web_skills.h"
 #endif
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+#include "nimbus/harness/plain/chat_commands.h"   // E2-FIX14: kNoAssistantMemoryLine
+#endif
 #include "web_prefs.h"   // lane J: the standing-rules routes                  // P2: /api/skills* dynamic-skill CRUD
 #include "errlog_routes.h"               // CUM-401: /api/errlog via the deferred-route registry
 #include "../agent/files_subsystem.h"      // E1: files::stats for /api/state
@@ -1821,7 +1824,12 @@ static bool applyOrchField(const String& n, const String& v, bool& cfgDirty, Str
 
   // directive + memory + telegram + tts
   if (n == "sysPrompt") { agent::store::setSysPrompt(v); cfgDirty = true; return true; }
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+  // E2-FIX14: engine 2 keeps no assistant memory to erase; the page says so instead of "Saved".
+  if (n == "clearMem")  { if (v == "1") err = agent::plain::kNoAssistantMemoryLine; return true; }
+#else
   if (n == "clearMem")  { if (v == "1") agent::orchestrator::requestMemoryClear(); return true; }
+#endif
   if (n == "tgToken")   {
     if (v.length() && agent::store::setTelegramToken(v)) {
       // Verify-on-save (owner: "first run a tiny verification"): reset the verdict and

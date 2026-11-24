@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "nimbus/harness/http.h"
+#include "nimbus/harness/output_caps.h"   // tableCap: the head's effort (E2-FIX14)
 #include "nimbus/harness/plain/turn.h"
 #include "nimbus/orch/token_usage.h"
 #include "nimbus/orch/tx/rules.h"   // BoundTools (E2-FIX5)
@@ -50,6 +51,14 @@ struct HeadEndpoint {
   bool routed = false;              // through the Cumulo router (deadline header, refusal contract)
   std::function<std::string()> key;
 };
+
+// The reasoning effort a head request carries for `model` at `provider` (lane E2-FIX14): the output
+// table's head-round value (providers::tableCap, the one table engine 1's head rounds read: medium on a
+// Claude family that takes the field, nothing on one that answers 400 to it). The device's binding and
+// nimbusd's engine 2 both read it, so the same model gets the same effort from either.
+inline std::string headEffortFor(const std::string& provider, const std::string& model) {
+  return providers::tableCap(provider, model, providers::RoundKind::ToolRound).effort;
+}
 
 // A tier-2 payload shown whole, read back by the r item's handle at render time (lane E2-VERB:
 // every turn's, until the overflow path stubs it; the payload lives in the bulk file only).
