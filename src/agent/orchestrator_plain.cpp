@@ -109,6 +109,7 @@
 #include "store.h"              // the slot keys, orchModel, subModel, resolvedOrchHost
 #include "provider_verify.h"    // customToolsVerified - a custom endpoint's tools (E2-R8a)
 #include "nimbus/harness/plain/head_slot.h"   // headSlotFor - the head on its provider slot (E2-R8a)
+#include "nimbus/orch/model_caps.h"           // caps::slotName - a slot's key (E2-R8a)
 #include "nimbus/orch/model_catalog.h"        // parseModelStore - an unknown model marked unusable (E2-R8a)
 #include "telegram.h"           // telegram::ownerChat, sendPart, turnUpdateIds, seenIndex
 #include "transport_tls.h"      // deviceTransport
@@ -429,11 +430,18 @@ void noteSkillRefused(const std::string& id, size_t bytes) {
 }
 
 // ---- the head on its provider slot (lane E2-R8a) -----------------------------------------
-// A slot's key, read when a request is rendered (never stored by the engine): the device's one
-// slug-to-key reader, the one engine 1's providers and the provider park read.
+// A slot's key, read when a request is rendered (never stored by the engine); each slot is named by
+// the facts table's own slot name.
 std::string keyOf(const std::string& p) {
-  static const providers::ProviderDeps deps = deviceProviderDeps();
-  return deps.key(p.c_str());
+  namespace caps = nimbus::orch::caps;
+  String k;
+  if (p == caps::slotName(caps::Slot::Anthropic)) k = store::anthropicKey();
+  else if (p == caps::slotName(caps::Slot::OpenAI)) k = store::openaiKey();
+  else if (p == caps::slotName(caps::Slot::Mistral)) k = store::mistralKey();
+  else if (p == caps::slotName(caps::Slot::Zai)) k = store::zaiKey();
+  else if (p == "custom") k = store::customKey();
+  else if (p == "cumulo") k = store::cumuloKey();
+  return std::string(k.c_str(), k.length());
 }
 
 // What the device knows about its slots (plain/head_slot.h).
