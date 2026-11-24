@@ -2706,7 +2706,10 @@ inline void test_a_routed_head_sends_the_deadline_header() {
 // router's selector ('<upstream>/<model>'); the request sends that selector to the router (the
 // router picks the upstream), and the exchange sizes the answer for the upstream it names.
 inline void test_a_routed_head_sends_the_router_model_selector() {
-  TXB_WAITS_FOR("PENDING RB-W4", "RB-E1a");
+  // Lane E2-R6: waits for R8. Both codecs and engine 1 send the route's bare model under
+  // /router/<upstream>/ (R4a); this asks for the selector in the body over a chat wire to the
+  // anthropic upstream, which the router takes only on /v1/messages. R8 re-pins it through resolveRoute.
+  TXB_WAITS_FOR("PENDING RB-W4", "RB-E1a", "RB-R8");
   txb::Battery b(plain::Dialect::ChatCompletions);
   b.routed = true;
   b.hostOverride = "router.cumulo-nimbus.ai";

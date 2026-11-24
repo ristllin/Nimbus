@@ -143,7 +143,7 @@ void test_loop_shape_chat() {
   loopShape(plain::Dialect::ChatCompletions);
 }
 void test_loop_shape_flat() {
-  TXB_WAITS_FOR("PENDING RB-W4", "RB-E1a");
+  TXB_WAITS_FOR("PENDING RB-W4", "RB-E1a", "RB-R4b");   // text-mode history (E2-R6)
   loopShape(plain::Dialect::Flat);
 }
 
@@ -197,7 +197,7 @@ void test_guard_last_round_chat() {
   guardLastRound(plain::Dialect::ChatCompletions);
 }
 void test_guard_last_round_flat() {
-  TXB_WAITS_FOR("PENDING RB-W4", "RB-E1a", "RB-E1b");
+  TXB_WAITS_FOR("PENDING RB-W4", "RB-E1a", "RB-E1b", "RB-R4b");   // text-mode history (E2-R6)
   guardLastRound(plain::Dialect::Flat);
 }
 

@@ -312,7 +312,7 @@ void test_p6_no_retry_on_billing_auth_or_unknown_model() {
   }, "RB-R4a");
 }
 
-// ---- 7. usage arithmetic: uncached + read + write by the row's usage mode ----------------------------------------------
+// ---- 7. usage arithmetic: uncached + read + write is the whole prompt, by the row's usage mode --------------------------
 uint64_t rawRequestIn(plain::Dialect d, const std::string& body) {
   JsonDocument doc, filter;
   filter["usage"] = true;   // only the usage: a recorded body may carry a 150 KB thinking block
@@ -326,7 +326,6 @@ uint64_t rawRequestIn(plain::Dialect d, const std::string& body) {
 
 void test_p7_usage_arithmetic() {
   forEachRow("p7 usage", {}, [](const txb::Row& r) {
-    const caps::UsageMode mode = caps::capsFor(r.slot, r.model.c_str(), r.routed).row.usageMode;
     size_t checked = 0;
     for (const sp::WireFixture& f : fixturesFor(r)) {
       if (f.status != 200 || f.body.find("\"usage\"") == std::string::npos || !f.expected("class").empty()) continue;
@@ -334,7 +333,11 @@ void test_p7_usage_arithmetic() {
       TXB_OK(parseWith(r, f, step));
       const uint64_t want = rawRequestIn(r.dialect, f.body);
       TEST_ASSERT_TRUE_MESSAGE(want > 0, msgOf(r, f.file).c_str());
-      TEST_ASSERT_EQUAL_UINT64_MESSAGE(want, rc::requestIn(step.usage, mode), msgOf(r, f.file).c_str());
+      // Uncached + read + write is the whole prompt, and no cached token is counted twice (design section 8):
+      // every codec fills promptTokens as the uncached part (lane E2-R6), whatever the provider's meaning.
+      const uint64_t sum = (uint64_t)step.usage.promptTokens + step.usage.cacheReadTokens + step.usage.cacheWriteTokens;
+      TEST_ASSERT_EQUAL_UINT64_MESSAGE(want, sum, msgOf(r, f.file).c_str());
+      TEST_ASSERT_EQUAL_UINT64_MESSAGE(want, step.usage.maxRequestIn, msgOf(r, f.file + " maxRequestIn").c_str());
       ++checked;
     }
     if (r.slot != caps::Slot::CustomChat) TEST_ASSERT_TRUE_MESSAGE(checked > 0, msgOf(r, "no usage fixture").c_str());

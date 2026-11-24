@@ -475,12 +475,12 @@ Status renderBody(const RenderInput& in, HttpRequest& out) {
 // finish_reason (router design section 5 item 9): stop or tool_calls end the answer (ToolUse when it
 // holds calls, whatever the label); length is a cut; model_length and model_context_window_exceeded a
 // full window; content_filter and sensitive a refusal; anything else Other. usage: prompt_tokens (it
-// includes the cached tokens on every row of this dialect: usageMode inputIncludesCache),
-// prompt_tokens_details.cached_tokens, completion_tokens, the served model.
+// includes the cached tokens on every row of this dialect: usageMode inputIncludesCache) less
+// prompt_tokens_details.cached_tokens, the cached tokens, completion_tokens, the whole prompt as
+// maxRequestIn, the served model.
 
 struct Call {
   std::string id, name, args;
-  bool object = false;      // arguments read as one object (a string holding one, or an object)
   bool runnable = false;    // that object can be sent back as it is
   uint32_t seen = 0;
 };
@@ -547,7 +547,6 @@ bool argsField(JsonReader& j, Call& c) {
     c.args = j.body().substr(from, j.at() - from);
   }
   c.runnable = runnableArgs(c.args);
-  c.object = c.runnable;
   return true;
 }
 
@@ -699,18 +698,21 @@ void stepOf(Answer& a, ParsedStep& step) {
     t.id = std::move(c.id);
     t.name = std::move(c.name);
     t.complete = c.runnable && step.stop == StopReason::ToolUse;   // only an answer that stops to call runs them
-    t.argsJson = c.object ? std::move(c.args) : std::string("{}");
+    t.argsJson = c.args.empty() ? std::string("{}") : std::move(c.args);   // as written: the engine stubs what cannot run
     step.calls.push_back(std::move(t));
   }
   if (step.stop == StopReason::Refusal) {
     step.calls.clear();   // a refused answer runs nothing
     step.refusal = !m.refusal.empty() ? m.refusal : a.finish;
   }
+  // prompt_tokens includes the cached tokens: the engine's promptTokens is the uncached part (it adds
+  // the cache reads back for its size guard and prices them at the cache rate), maxRequestIn the whole.
   step.usage = a.usage;
+  const uint32_t whole = a.usage.promptTokens;
+  step.usage.promptTokens = whole >= a.usage.cacheReadTokens ? whole - a.usage.cacheReadTokens : whole;
   step.usage.responses = 1;
   step.usage.servedModel = a.model;
-  const uint64_t whole = (uint64_t)a.usage.promptTokens + a.usage.cacheWriteTokens;   // prompt_tokens includes the cache
-  step.usage.maxRequestIn = (uint32_t)std::min<uint64_t>(whole, UINT32_MAX);
+  step.usage.maxRequestIn = whole;
 }
 
 Status parseBody(const HttpResponse& in, ParsedStep& out) {

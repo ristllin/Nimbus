@@ -2,6 +2,7 @@
 #include <ArduinoJson.h>
 
 #include <algorithm>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -10,6 +11,7 @@
 #include "nimbus/harness/plain/wire.h"
 #include "nimbus/orch/tx/arena.h"
 #include "nimbus/orch/tx/rules.h"
+#include "pending.h"
 
 // tx_battery/stub_wire.h - a plain stand-in wire per dialect (lane RB-E1a), so the loop is
 // proven before the real wires land (RB-W1a/W1b Anthropic, RB-W2 Responses, RB-W3 chat,
@@ -418,7 +420,11 @@ class StubWire : public plain::WireCodec {
 // The wire the battery renders with: the dialect's real one once its lane has landed.
 inline const plain::WireCodec* batteryWire(plain::Dialect d) {
   const plain::WireCodec* w = nullptr;
-  if (plain::wireFor(d, w).ok() && w) return w;
+  // Flat is the Chat codec in text mode (lane E2-R6): the battery's tool loops keep the toy for it
+  // until text-mode history lands in the planner (lane R4b's sentinel).
+  std::function<tx::Status()> r4b;
+  const bool textHistory = sentinelFor("RB-R4b", r4b) && !r4b().notImplemented();
+  if ((d != plain::Dialect::Flat || textHistory) && plain::wireFor(d, w).ok() && w) return w;
   static const StubWire stubs[] = {StubWire(plain::Dialect::AnthropicMessages), StubWire(plain::Dialect::OpenAIResponses),
                                    StubWire(plain::Dialect::ChatCompletions), StubWire(plain::Dialect::Flat)};
   return &stubs[(size_t)d];

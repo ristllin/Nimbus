@@ -54,6 +54,14 @@ struct RenderFixture {
              {"ledger_write", "Change the ledger.", R"({"type":"object","properties":{"day":{"type":"string"}}})"},
              {"web_search", "Search the web.", R"({"type":"object","properties":{"q":{"type":"string"}}})"}};
     photoBytes["pab12cd34"] = std::string("\xFF\xD8\xFF\xE0", 4) + std::string(996, 'j');
+    // Lane E2-R6: a chat dialect renders as a head of that dialect, through its route and pre-flight:
+    // Mistral for chat (it sees photos), a custom endpoint for text mode.
+    if (d == plain::Dialect::ChatCompletions || d == plain::Dialect::Flat) {
+      const bool chat = d == plain::Dialect::ChatCompletions;
+      turn.host = head.host = chat ? "api.mistral.ai" : "custom.example.test";
+      turn.model = chat ? "mistral-large-4-0" : "battery-model";
+      routeAndPreflight = true;
+    }
   }
   // The same inputs for one provider table row (lane E2-R3a): its dialect, endpoint, model and route.
   explicit RenderFixture(const Row& r) : RenderFixture(r.dialect) {

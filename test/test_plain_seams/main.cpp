@@ -80,8 +80,6 @@ std::vector<StubRow> stubs() {
   static bool flag;
   return {
       {"plain::wireFor responses", [] { const plain::WireCodec* w; return plain::wireFor(plain::Dialect::OpenAIResponses, w); }},
-      {"plain::wireFor chat", [] { const plain::WireCodec* w; return plain::wireFor(plain::Dialect::ChatCompletions, w); }},
-      {"plain::wireFor flat", [] { const plain::WireCodec* w; return plain::wireFor(plain::Dialect::Flat, w); }},
       {"plain::photoAllowed", [] { return plain::photoAllowed(gTurn, {}, flag); }},
       {"plain::installMedia", [] { return plain::installMedia(gHooks, {}); }},
       {"plain::documentRoute", [] { plain::DocRoute r; return plain::documentRoute(gTurn, "inbox/1-a.pdf", "application/pdf", r); }},
@@ -106,7 +104,7 @@ static void test_every_stub_answers_not_implemented() {
   (void)gLog.append(tx::Item{}, state);
   TEST_ASSERT_TRUE(state == tx::StoreState::NotStored);
   const plain::WireCodec* w = reinterpret_cast<const plain::WireCodec*>(&state);
-  (void)plain::wireFor(plain::Dialect::Flat, w);
+  (void)plain::wireFor(plain::Dialect::OpenAIResponses, w);   // a wire not yet built (Chat and Flat: lane E2-R6)
   TEST_ASSERT_NULL(w);
 }
 
