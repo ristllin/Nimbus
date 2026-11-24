@@ -1521,3 +1521,12 @@ PC-0175, PC-0176: not used.
 - lane: RB-R4 (lane E2-R4b)
 - prd: router design (P/analysis-2026-11-24/ROUTER-DESIGN.md) section 5 item 7 (text-mode history), section 7 (captions in the photo stub), section 14 lane R4b; AGENTS.md rule 9
 - why: lib/harness/include/nimbus/harness/plain/texts.h stubs. kEarlierRan (PC-0257): a head whose table row has no tools sees each stored call and its result in their place as one line, "[device] earlier I ran <tool>: <result or its stub>" (the separator is device_notes::kReasonSep), so a switch to a text-mode head still sees what happened; nothing is stored differently. kNotAvailableOn (PC-0259): the exchange's line when the provider does not know the model, "<model> is not available on <provider>.", in place of the generic refusal line; kept in stubs because device_notes is at its ceiling. PC-0258: a photo's stored caption (the image part's new `cap` key) rides the existing photo line where its note would ("[photo p<ref8> <when>: <caption>]"); no new text. Planned work, not a fix (CUM-999).
+### PC-0260: the custom endpoint's tool-call probe (engine 2)
+- catalog: e2
+- class: probe
+- kind: spec
+- bytes: 1323 -> 1344
+- sha8: 29789b84 -> f4dd133a
+- lane: RB-R4 (lane E2-R8a, router design lane R8; the router lanes file their entries under RB-R4 as PC-0257 did)
+- prd: router design (P/analysis-2026-11-24/ROUTER-DESIGN.md) section 3.3 (tools only after the verify step accepted a tool call and a window is known), section 14 lane R8; AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h probe. kToolProbeAsk, kToolProbeName and kToolProbeDescription (PC-0260): the one request the device's custom endpoint verify sends (src/agent/provider_verify.cpp through plain::toolProbeBody), the word "ping" with one tool "ping" ("Answers pong.") and tool_choice required, read only by the owner's own endpoint at verify, never in a turn. PC-0261, PC-0262: not used (the text-mode line and the no-key line are owner-facing device copy, never sent to a model). Planned work, not a fix (CUM-1001).

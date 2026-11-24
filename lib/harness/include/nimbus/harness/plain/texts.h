@@ -415,7 +415,13 @@ inline constexpr char kControlNotApplied[] = "not applied: ";
 inline constexpr char kControlNoAction[] = "action must be an object";
 inline constexpr char kControlAfterReply[] = " (runs after this reply is sent)";
 }  // namespace tool_results
-namespace probe {}
+namespace probe {
+// Lane E2-R8a (router design section 3.3): the custom endpoint's verify asks once whether it takes a tool
+// call (plain/head_slot.h toolProbeBody): one word in, one tool offered and required.
+inline constexpr char kToolProbeAsk[] = "ping";
+inline constexpr char kToolProbeName[] = "ping";
+inline constexpr char kToolProbeDescription[] = "Answers pong.";
+}  // namespace probe
 // The summarizer (lane RB-C2, plain_compact.cpp; PRD section 3; lane RB-C3: one cumulative summary,
 // rulings 105 and 106): its system text and the pieces of its one user message. The message carries
 // the summary so far (its lines with their ids), the older day digests a chat may still hold, then the

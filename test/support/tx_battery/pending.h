@@ -12,6 +12,7 @@
 #include "nimbus/harness/plain/engine.h"
 #include "nimbus/harness/plain/exchange.h"
 #include "nimbus/harness/plain/guards.h"
+#include "nimbus/harness/plain/head_slot.h"   // probeSlot (RB-R8)
 #include "nimbus/harness/plain/hooks.h"
 #include "nimbus/harness/plain/rails.h"
 #include "nimbus/harness/plain/request.h"
@@ -67,6 +68,12 @@ struct NullFiles : tx::TxFiles {
 inline tx::Status probeWire(plain::Dialect d) {
   const plain::WireCodec* w = nullptr;
   return plain::renderWireFor(d, w);
+}
+
+// Lane E2-R8a: a provider slot resolves to its endpoint and wire (the bindings' one call).
+inline tx::Status probeSlot() {
+  plain::HeadSlot h;
+  return plain::headSlotFor(plain::SlotSettings{}, "openai", "gpt-5.6-luna", h);
 }
 
 inline tx::Status probeParse() {
@@ -173,8 +180,9 @@ inline bool sentinelFor(const std::string& lane, std::function<tx::Status()>& ou
       // Router design lane R4a (route and pre-flight): a routed head resolves to its upstream's row,
       // so the exchange sends it a real output cap and the x-cumulo-deadline-ms header.
       {"RB-R4a", probeRoute},
-      // Router design lane R8 (bindings and routed): the device's bindings ask resolveRoute per provider.
-      {"RB-R8", [] { return tx::Status::pending("RB-R8 engine-2 bindings per provider"); }},
+      // Router design lane R8 (bindings and routed): the device's bindings ask resolveRoute per provider
+      // (plain/head_slot.h headSlotFor; lane E2-R8a).
+      {"RB-R8", probeSlot},
       // Router design lane R4b (storage, planner cases): the id rule (Mistral's 9 alphanumerics) and
       // text-mode history (stored calls and results as text); landed on rb-main 3c60d8f96.
       {"RB-R4b", [] { return tx::Status::success(); }},

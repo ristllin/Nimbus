@@ -136,6 +136,7 @@ Status resolveRoute(const HeadEndpoint& head, const TurnCtx& turn, Route& out, c
   out.capHost = out.provider == "custom" && out.dialect == Dialect::AnthropicMessages ? "anthropic" : out.provider;
   out.hasSlot = slotOf(out.provider, out.dialect, out.slot);
   if (out.hasSlot) out.caps = caps::capsFor(out.slot, out.model.c_str(), out.routed, refused);
+  if (out.hasSlot && out.slot == caps::Slot::CustomChat && head.toolsVerified) out.caps.row.flags |= caps::flag::kTools;
   if (out.hasSlot && refused) out.refused = refused->fieldsFor(out.slot, out.model.c_str(), out.routed);
   tableFacts(head, routerBase, out);
   out.realBytesMax = out.routed ? kRoutedRealBytesMax : 0;

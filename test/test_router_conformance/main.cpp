@@ -230,6 +230,7 @@ void test_p3_every_call_has_one_result() {
 void test_p4_tool_round_trip() {
   forEachRow("p4 round trip", {"RB-E1a"}, [](const txb::Row& r) {
     txb::Battery b(r);
+    b.toolsVerified = true;   // lane E2-R8a: a custom endpoint offers tools once its verify took a tool call
     b.world.files["notes/a.md"] = "alpha";
     b.model.push(sp::call("read_file", R"({"path":"notes/a.md"})"));
     b.model.push(sp::say("It says alpha."));

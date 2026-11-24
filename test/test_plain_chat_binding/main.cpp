@@ -1667,6 +1667,7 @@ static void test_every_slot_runs_a_turn_a_summary_and_a_routine() {
     }
     TEST_ASSERT_TRUE_MESSAGE(has(dev.model.last().body, "appended 23 B"), k.provider);   // the tool's result went back
     TEST_ASSERT_EQUAL_MESSAGE(1, (int)dev.out.toolCalls, k.provider);
+    TEST_ASSERT_TRUE_MESSAGE(has(dev.model.requests()[0].body, "\"tools\""), k.provider);   // offered as tools, not text mode
     TEST_ASSERT_EQUAL_STRING_MESSAGE("1001|It is added.", dev.sent.back().c_str(), k.provider);
     spentOn(dev.usage.back(), k.provider, k.provider);
     // A summarizer pass on the slot's small model.

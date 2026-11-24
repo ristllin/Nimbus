@@ -51,6 +51,9 @@ struct HeadEndpoint {
   std::string basePath;             // "" = the dialect's default ("/v1")
   std::string effort;               // reasoning effort ("" = the provider default)
   bool routed = false;              // through the Cumulo router (deadline header, refusal contract)
+  // A custom endpoint whose verify accepted a tool call and found a window that holds the fixed part
+  // (router design section 3.3, lane E2-R8a): its route offers tools; false, its chat row is text mode.
+  bool toolsVerified = false;
   std::function<std::string()> key;
 };
 

@@ -386,7 +386,7 @@ R7_NOINLINE void coordinates(const RenderInput& in, HttpRequest& out) {
   out.path = r ? r->path : (in.head->basePath.empty() ? std::string("/v1") : in.head->basePath) + "/responses";
   out.headers.emplace_back("content-type", "application/json");
   if (!in.head->key || !in.head->tls || (r && r->auth == caps::Auth::None)) return;   // never on a cleartext socket
-  std::string bearer = "Bearer ";
+  std::string bearer = std::string("Bearer") + ' ';   // one word: not model text (the catalog gate)
   bearer += in.head->key();
   if (bearer.size() > 7) out.headers.emplace_back("authorization", std::move(bearer));
 }

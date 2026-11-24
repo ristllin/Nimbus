@@ -5,6 +5,7 @@
 
 #include <cstdlib>
 
+#include "nimbus/harness/plain/texts.h"
 #include "nimbus/orch/model_caps.h"
 #include "nimbus/orch/model_catalog.h"
 #include "nimbus/orch/model_price_defaults.h"
@@ -93,6 +94,7 @@ Status headSlotFor(const SlotSettings& s, const std::string& provider, const std
     if (!parseBase(s.customBase, out.endpoint)) return bad("plain::headSlotFor.custom");
     const bool messages = s.customConv == "anthropic";
     out.dialect = messages ? Dialect::AnthropicMessages : s.customTools ? Dialect::ChatCompletions : Dialect::Flat;
+    out.endpoint.toolsVerified = !messages && s.customTools;
     return Status::success();
   }
   if (!caps::slotFromHost(provider.c_str(), &slot)) return bad("plain::headSlotFor.provider");
@@ -145,11 +147,11 @@ std::string toolProbeBody(const std::string& model) {
   doc["max_tokens"] = 64;
   JsonObject m = doc["messages"].add<JsonObject>();
   m["role"] = "user";
-  m["content"] = "ping";
+  m["content"] = texts::probe::kToolProbeAsk;
   JsonObject fn = doc["tools"].add<JsonObject>();
   fn["type"] = "function";
-  fn["function"]["name"] = "ping";
-  fn["function"]["description"] = "Answers pong.";
+  fn["function"]["name"] = texts::probe::kToolProbeName;
+  fn["function"]["description"] = texts::probe::kToolProbeDescription;
   fn["function"]["parameters"]["type"] = "object";
   fn["function"]["parameters"]["properties"].to<JsonObject>();
   doc["tool_choice"] = "required";
@@ -162,7 +164,7 @@ bool answerCalledTool(const std::string& chatBody) {
   JsonDocument doc;
   if (deserializeJson(doc, chatBody, DeserializationOption::NestingLimit(10))) return false;
   JsonArrayConst calls = doc["choices"][0]["message"]["tool_calls"];
-  return calls.size() > 0 && std::string((const char*)(calls[0]["function"]["name"] | "")) == "ping";
+  return calls.size() > 0 && std::string((const char*)(calls[0]["function"]["name"] | "")) == texts::probe::kToolProbeName;
 }
 
 bool customToolsFrom(const std::string& storeText, const std::string& model) {

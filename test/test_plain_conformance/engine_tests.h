@@ -2703,23 +2703,32 @@ inline void test_a_routed_head_sends_the_deadline_header() {
 }
 
 // Ruling 54 item 4 and 59 item 7: one place splits a routed head's model. TurnCtx::model is the
-// router's selector ('<upstream>/<model>'); the request sends that selector to the router (the
-// router picks the upstream), and the exchange sizes the answer for the upstream it names.
-inline void test_a_routed_head_sends_the_router_model_selector() {
-  // Lane E2-R6: waits for R8. Both codecs and engine 1 send the route's bare model under
-  // /router/<upstream>/ (R4a); this asks for the selector in the body over a chat wire to the
-  // anthropic upstream, which the router takes only on /v1/messages. R8 re-pins it through resolveRoute.
-  TXB_WAITS_FOR("PENDING RB-W4", "RB-E1a", "RB-R8");
-  txb::Battery b(plain::Dialect::ChatCompletions);
+// router's selector ('<upstream>/<model>'); router design section 10 (lane E2-R8a): the request goes to
+// the router under its upstream's own path, in the upstream's wire, with the bare model in the body
+// and the deadline header, for each of the three wires.
+inline void routedSelectorCase(plain::Dialect d, const char* selector, const char* path, const char* bare) {
+  txb::Battery b(d);
   b.routed = true;
   b.hostOverride = "router.cumulo-nimbus.ai";
-  b.modelOverride = "anthropic/claude-sonnet-5-5";
+  b.modelOverride = selector;
   b.model.push(sp::say("hi"));
   plain::TurnOutcome out;
   TXB_OK(b.owner("hello", out));
   const sp::Recorded& r = b.model.last();
-  TEST_ASSERT_TRUE_MESSAGE(r.req.path.rfind("/router/", 0) == 0, "a routed head's request does not go to the router path");
-  TEST_ASSERT_TRUE_MESSAGE(bodyHas(r, "\"model\":\"anthropic/claude-sonnet-5-5\""), "the router's selector is not the model sent");
+  TEST_ASSERT_EQUAL_STRING_MESSAGE(path, r.req.path.c_str(), selector);
+  TEST_ASSERT_TRUE_MESSAGE(bodyHas(r, std::string("\"model\":\"") + bare + "\""), selector);
+  bool header = false;
+  for (const auto& h : r.req.headers) header |= h.first.find("eadline") != std::string::npos;
+  TEST_ASSERT_TRUE_MESSAGE(header, selector);
+}
+
+inline void test_a_routed_head_sends_the_router_model_selector() {
+  TXB_WAITS_FOR("PENDING RB-R8", "RB-E1a");
+  routedSelectorCase(plain::Dialect::AnthropicMessages, "anthropic/claude-sonnet-5-5", "/router/anthropic/v1/messages",
+                     "claude-sonnet-5-5");
+  routedSelectorCase(plain::Dialect::ChatCompletions, "mistral/mistral-large-4-0", "/router/mistral/v1/chat/completions",
+                     "mistral-large-4-0");
+  routedSelectorCase(plain::Dialect::OpenAIResponses, "openai/gpt-5.6-luna", "/router/openai/v1/responses", "gpt-5.6-luna");
 }
 
 inline void test_the_log_reopens_when_storage_returns() {

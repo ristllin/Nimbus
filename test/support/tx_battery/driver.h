@@ -103,6 +103,7 @@ class Battery {
   // dialect's), a head through the router, and a delivery of its own (null: deliverTurn).
   std::string hostOverride, modelOverride;
   bool routed = false;
+  bool toolsVerified = false;      // a custom endpoint whose verify accepted a tool call (lane E2-R8a)
   bool noHead = false;             // the setup names no model (a binding fault; ruling 89 item 3)
   // Compaction installed (default). A case that measures the arena or the ladder alone turns it off: since
   // lane RB-C3 the engine compacts first at turn open and before every rung, so the ladder would never act.
@@ -385,6 +386,7 @@ class Battery {
     out.dayStartMin = dayStartMin;
     out.head.host = t.host;
     out.head.routed = routed;
+    out.head.toolsVerified = toolsVerified;
     out.cost = cost;
     out.storedRounds = storedRounds;
     out.bodyCapLimit = bodyCapLimit;

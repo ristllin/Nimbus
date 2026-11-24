@@ -197,6 +197,7 @@ struct ChatBindingConfig {
   bool tls = true;
   std::string basePath;                          // "" = the slot's own
   bool routed = false;                           // through the Cumulo router
+  bool toolsVerified = false;                    // a custom endpoint's verified tool call (HeadEndpoint's)
   std::string summarizerModel;                   // the compaction rung (the provider's small model)
   // The compaction ladder in order, each rung with its own endpoint and key (the released engine's
   // ladder across providers). Empty: one rung, the head's endpoint on summarizerModel.
@@ -221,6 +222,7 @@ inline void useSlot(const HeadSlot& slot, ChatBindingConfig& cfg) {
   cfg.tls = slot.endpoint.tls;
   cfg.basePath = slot.endpoint.basePath;
   cfg.routed = slot.endpoint.routed;
+  cfg.toolsVerified = slot.endpoint.toolsVerified;
 }
 // A summarizer rung on `slot` (its endpoint and key are the slot's).
 inline SummarizerRung rungOf(const HeadSlot& slot) {
@@ -825,6 +827,7 @@ class ChatBinding {
     e.tls = cfg_.tls;
     e.basePath = cfg_.basePath;
     e.routed = cfg_.routed;
+    e.toolsVerified = cfg_.toolsVerified;
     e.key = d_.key ? d_.key : [] { return std::string(); };
     return e;
   }
