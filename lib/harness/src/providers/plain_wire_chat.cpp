@@ -449,10 +449,15 @@ Status renderBody(const RenderInput& in, HttpRequest& out) {
   // Text mode offers no tools, so the planner renders stored calls and results as text (lane E2-R4b).
   const bool text = textMode(in);
   static const std::vector<ToolSpec> kNoTools;
-  RenderInput planned = in;
-  if (text) planned.tools = &kNoTools;
   plan::Plan p;
-  Status st = plan::plan(planned, oneObject, p);
+  Status st;
+  {   // the planner reads the tools pointer only; it is put back before anything else reads the input
+    RenderInput& planned = const_cast<RenderInput&>(in);
+    const std::vector<ToolSpec>* tools = planned.tools;
+    if (text) planned.tools = &kNoTools;
+    st = plan::plan(planned, oneObject, p);
+    planned.tools = tools;
+  }
   if (!st.ok()) return st;
   if (!p.anyBlock) return Status::fail(Err::InvalidArgument, "plain::chat.render.noMessages");
   std::vector<Msg> msgs;
