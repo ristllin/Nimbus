@@ -888,6 +888,13 @@ static uint32_t chatHash(const String& chatId) {
 // queue on the device; returns false when Telegram isn't provisioned OR the reply
 // queue is full, so the orchestrator can log a dropped message instead of losing it
 // silently.
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+// Lane E2-FIX13 (engine 2's seam, orchestrator_plain.cpp): a message kept during the read-in is being
+// answered now, outside any web turn, so its delivery to the web chat is async (tg_poll only).
+namespace agent::orchestrator {
+bool answeringKept();
+}
+#endif
 static bool orchSendSink(const String& chatId, const String& text) {
 #ifdef NIMBUS_NOTIFIER_DEBUG
   // Mirror every orchestrator reply to serial so a `TURN` test (no Telegram) can
