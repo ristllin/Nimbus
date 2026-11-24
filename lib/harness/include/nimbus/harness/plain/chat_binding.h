@@ -507,11 +507,7 @@ class ChatBinding {
     if (!engine_ || moved_) return Status::fail(tx::Err::InvalidArgument, "plain::ChatBinding::turn.before-boot");
     if (busy_) return Status::fail(tx::Err::Busy, "plain::ChatBinding::turn.busy");
     const bool person = msg.trigger != Trigger::AgentResult;
-    if (!person && holdsReport(reportTagOf(msg.text))) {   // E2-REP6: reported before a restart
-      agent::hlog::logf("plain(%s): the report of %s is in the conversation already: not run again",
-                        cfg_.chatId.c_str(), reportTagOf(msg.text).c_str());
-      return Status::success();
-    }
+    if (reportedBefore(msg)) return Status::success();   // E2-REP6: its turn ran before a restart
     const uint32_t now = d_.platform->nowMs();
     if (!breaker_.admit(person, now).run && !person) return Status::fail(tx::Err::Busy, "plain::ChatBinding::turn.breaker");
     busy_ = true;
@@ -673,6 +669,15 @@ class ChatBinding {
     if (at == std::string::npos) return std::string();
     const size_t from = at + std::char_traits<char>::length(dn::kAgentId);
     return head.substr(from, head.find(' ', from) - from);
+  }
+
+  // A report turn whose note the conversation holds already (logged): it is not run again.
+  bool reportedBefore(const ChatMessage& msg) const {
+    const std::string tag = msg.trigger == Trigger::AgentResult ? reportTagOf(msg.text) : std::string();
+    if (!holdsReport(tag)) return false;
+    agent::hlog::logf("plain(%s): the report of %s is in the conversation already: not run again", cfg_.chatId.c_str(),
+                      tag.c_str());
+    return true;
   }
 
   // Does the conversation in RAM hold the agent note of job `tag` already? A report turn whose answer
