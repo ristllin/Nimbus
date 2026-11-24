@@ -103,6 +103,7 @@ class WebApi {
     if (base == "/api/connect" && m == "GET") { out = connectResp(); return true; }
     if (base == "/api/config")                { out = m == "POST" ? configPost(body) : configGet(); return true; }
     if (base == "/api/verify" && m == "POST") { out = verifyPost(body); return true; }
+    if (base == "/api/engine")                { out = m == "POST" ? enginePost(body) : engineGet(); return true; }
     return false;
   }
 
@@ -817,11 +818,44 @@ class WebApi {
     // Session usage (real engine counters).
     d["turnInFlight"] = s.turnInFlight;
     d["turnCount"]    = s.turnCount;
+    fillEngine(d);   // lane E2-P-HOST2: which engine answers, and engine 2's own counters while it does
     d["params"].to<JsonArray>();   // ring/hardware overrides do not apply to a VN
     // NOTE: no d.ota* fields - ESP OTA does not apply; the platform rolls the image.
     std::string out;
     serializeJson(d, out);
     return okJson(out);
+  }
+
+  // Lane E2-P-HOST2: the engine this instance runs (`engine`, from `engineFrom`: instance, env or default), the
+  // one its next start takes (`engineNext`), and while engine 2 runs its version line (the device's engine-2
+  // image reports the same) and its turn count.
+  void fillEngine(JsonDocument& d) {
+    const EngineChoice next = engineChoice(rig_->cfg(), rig_->dataDir());
+    d["engine"] = rig_->engineNumber();
+    d["engineNext"] = next.engine;
+    d["engineFrom"] = next.from;
+    const Engine2Stats* e2 = rig_->engine2Stats();
+    if (!e2) return;
+    d["fw"] = NIMBUS_FW_VERSION_ENGINE2;
+    d["turnCount"] = e2->turns.load();
+  }
+  ApiResp engineGet() {
+    JsonDocument d;
+    fillEngine(d);
+    d.remove("fw");
+    d.remove("turnCount");
+    std::string out;
+    serializeJson(d, out);
+    return okJson(out);
+  }
+  // POST /api/engine engine=1|2: the instance's choice for its next start (mem/engine.json); the running engine
+  // stays until the restart. Engine 1 reads every engine-2 turn from its own day stream (the way back).
+  ApiResp enginePost(const std::string& body) {
+    const std::string v = formValue(body, "engine");
+    if (v != "1" && v != "2") return ApiResp{400, "application/json", R"({"error":"Send engine=1 or engine=2."})"};
+    if (!storeEngineFile(rig_->dataDir(), v == "2" ? 2 : 1))
+      return ApiResp{500, "application/json", R"({"error":"The choice was not stored. Check the instance disk."})"};
+    return engineGet();
   }
 
   void fillDisk(JsonDocument& d) {
@@ -930,6 +964,13 @@ class WebApi {
     u["turns"] = s.turnCount;
     u["lastIn"] = s.lastTokensIn;
     u["lastOut"] = s.lastTokensOut;
+    if (const Engine2Stats* e2 = rig_->engine2Stats()) {   // lane E2-P-HOST2: engine 2 answers the turns
+      u["sessIn"] = e2->sessIn.load();
+      u["sessOut"] = e2->sessOut.load();
+      u["turns"] = e2->turns.load();
+      u["lastIn"] = e2->lastIn.load();
+      u["lastOut"] = e2->lastOut.load();
+    }
     u["byProvider"].to<JsonArray>();
     {
       JsonDocument cd;   // lane DEF: the Usage page's monthly ceiling meter

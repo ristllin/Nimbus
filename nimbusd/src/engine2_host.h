@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "daemon_http.h"
+#include "engine2_parity.h"   // lane E2-P-HOST2: the outside mark, scope files, the counters, the owner lines
 #include "hosted_file_tools.h"
 #include "hosted_fold.h"   // hostedTextIO
 #include "hosted_loops.h"   // the schedule tool and its fires (lane E2-SCHED)
@@ -116,6 +117,22 @@ struct Engine2Options {
   // Called for a Telegram chat only (the web chat shows its own spinner). Null: none.
   std::function<void(const std::string& chat, bool keepAlive, const std::string& line)> turnProgress;
   std::string deviceName;   // the plain crash notice's name ("": Nimbus)
+  // Lane E2-P-HOST2.
+  // The role of a chat (null: every chat is the owner's). Admin: the owner's conversation; anyone else gets
+  // a conversation of their own (<data>/mem/tx/<chat>), on their role and principal, one resident at a time.
+  std::function<nimbus::orch::Role(const std::string& chat)> roleOf;
+  // A member's own earlier-engine rows (their chat only), for the import at that chat's first start; null: none.
+  std::function<std::vector<nimbus::orch::EpisodicMessage>(const std::string& chat, const nimbus::orch::MsgQuery&,
+                                                           nimbus::orch::EpiQueryInfo&)>
+      memberRows;
+  // A row of engine 1's day stream (the web chat's history and the way back to engine 1): the person's message
+  // and the answer of each engine-2 turn, tagged e2 so engine 2's own import never takes them. Null: none.
+  std::function<void(const std::string& chat, const char* role, const std::string& text, const std::string& tags)>
+      captureRow;
+  // search scope memories: the earlier engine's long-term memories, read only (its memory.search). Null: not valid.
+  std::function<bool(const nimbus::orch::Principal& who, const std::string& query, std::string& out)> memories;
+  agent::JobEngine* jobs = nullptr;   // sub-agents (agent_start, agent_list, agent_stop); null: none
+  Engine2Stats* stats = nullptr;      // the counters /api/state reads; null: none
 };
 
 // The owner's lines of /clear and of a skill left out of the pinned block (owner-facing only).
@@ -126,6 +143,7 @@ inline constexpr char kClearNotStoredLine[] =
     "The new conversation was not started: the volume did not store it. This conversation goes on; send /clear "
     "again later.";
 inline constexpr char kNoStartLine[] = "The assistant could not start. Check the instance log and restart it.";
+inline constexpr char kNotClaudeLine[] = "This assistant runs on Claude models only. Pick a Claude model and try again.";
 
 // What a person's message gets while paid calls are paused (the web chat's own refusal, lane DEF).
 inline constexpr char kPausedLine[] =
@@ -161,6 +179,13 @@ class Engine2Host {
       o_.loops->attachSchedule(reg_);
       o_.loops->setStateFiles(&routineFiles_);
     }
+    if (o_.jobs) {   // lane E2-P-HOST2: the device's agent tools over the instance's one JobEngine
+      plain::AgentsDeps a;
+      a.jobs = o_.jobs;
+      a.chat = [this] { return curChat_; };
+      a.dispatchNow = [this] { (void)o_.jobs->dispatchQueued(); };
+      (void)plain::registerAgentTools(reg_, a);
+    }
   }
   Engine2Host(const Engine2Host&) = delete;
   Engine2Host& operator=(const Engine2Host&) = delete;
@@ -175,21 +200,11 @@ class Engine2Host {
     bootModel_ = model;
     binding_.reset();   // a reboot: the old arena goes back before the new one is taken
     std::string key;
-    if (!conversationKey(key))
+    if (!conversationKey(o_.chatKey, key))
       return "engine 2 did not start: the number of the owner's conversation (mem/tx/" + o_.chatKey +
              ".gen) could not be read";
-    plain::ChatBindingConfig c;
-    c.chatKey = key;
-    c.chatId = o_.chatId;
-    c.host = "api.anthropic.com";
-    c.provider = "anthropic";
-    c.model = model;
-    c.summarizerModel = o_.summarizerModel ? o_.summarizerModel() : std::string("claude-haiku-5-5");
-    c.role = nimbus::orch::Role::Admin;
-    c.timeZone = o_.timeZone;
-    c.dayStartMin = dayStart();
-    c.profile = o_.profile;
-    std::unique_ptr<plain::ChatBinding> b(new plain::ChatBinding(c, bindingDeps()));
+    std::unique_ptr<plain::ChatBinding> b(
+        new plain::ChatBinding(chatConfig(key, o_.chatId, model, nimbus::orch::Role::Admin), bindingDeps(o_.chatId, true)));
     (void)held_.load();
     const plain::Status st = b->boot();
     if (b->migrationRan()) logImport(*b);
@@ -204,14 +219,15 @@ class Engine2Host {
   // Logs every ending that is not a reply.
   // A head model the owner changed since boot boots the chat again over its stored transcript, so the
   // budget and the compaction marks are the new head's; a model engine 2 cannot run is said in one line.
+  // Lane E2-P-HOST2: a chat whose person is not the owner (roleOf) runs in a conversation of its own.
   PlainTurn say(const std::string& chat, const std::string& text, const char* ch) {
-    if (o_.model && o_.model() != bootModel_) {
+    const nimbus::orch::Role role = roleOf(chat);
+    if (role == nimbus::orch::Role::Admin && o_.model && o_.model() != bootModel_) {
       const std::string why = start();
       if (!why.empty()) {
         std::fprintf(stderr, "[nimbusd] engine2: %s\n", why.c_str());
         const bool head = engine2HeadOk(o_.head ? o_.head() : std::string(), o_.model());
-        if (o_.deliver)
-          o_.deliver(chat, head ? kNoStartLine : "This assistant runs on Claude models only. Pick a Claude model and try again.");
+        if (o_.deliver) o_.deliver(chat, head ? kNoStartLine : kNotClaudeLine);
         PlainTurn t;
         t.stated = "plain-rig:failed:head";
         return t;
@@ -223,10 +239,12 @@ class Engine2Host {
       t.stated = "plain-rig:paused";
       return t;
     }
-    if (!binding_) {
+    std::string line = kNoStartLine;
+    plain::ChatBinding* b = role == nimbus::orch::Role::Admin ? binding_.get() : memberFor(chat, role, line);
+    if (!b) {
       PlainTurn t;
       t.stated = "plain-rig:not-booted";
-      if (o_.deliver) o_.deliver(chat, kNoStartLine);
+      if (o_.deliver) o_.deliver(chat, line);
       return t;
     }
     plain::ChatMessage msg;
@@ -234,34 +252,35 @@ class Engine2Host {
     msg.tzMinutes = tzNow();
     // The device's photo path (orchestrator_plain.cpp): parts for every photo, and for a head that cannot
     // see, each one's description and the text without the "attached" words.
+    const std::string model = b->config().model;
     photoSet_ = nimbus::orch::takeTurnImages(chat, text);
-    msg.photosBlind = photoSet_ && !nimbus::orch::headTakesImages("anthropic", bootModel_);
-    msg.text = plain::photoText(photoSet_.get(), "anthropic", bootModel_, text);
-    msg.parts = plain::photoParts(photoSet_.get(), "anthropic", bootModel_);
-    curChat_ = chat;
-    sent_.clear();
-    unsent_.clear();
-    PlainTurn t;
-    t.status = binding_->turn(msg, t.out);
-    curChat_.clear();
+    msg.photosBlind = photoSet_ && !nimbus::orch::headTakesImages("anthropic", model);
+    msg.text = plain::photoText(photoSet_.get(), "anthropic", model, text);
+    msg.parts = plain::photoParts(photoSet_.get(), "anthropic", model);
+    // The way back: the person's message in engine 1's day stream (a photo message has its row already,
+    // written by the channel's offer), tagged e2 so engine 2's own import never takes it.
+    if (!photoSet_ && o_.captureRow) o_.captureRow(chat, "user", text, plain::ownerRowTags(std::string(), true));
+    PlainTurn t = runTurn(*b, chat, msg);
     dropPhotos();
-    t.sent.swap(sent_);
-    t.unsent.swap(unsent_);
-    settleEnding(t);
     tellSkillsLeftOut(chat);
-    lastTurnEnd_ = vclock::epoch();
-    if (t.ending != PlainEnding::Reply)
-      std::fprintf(stderr, "[nimbusd] engine2: turn ended %s: %s\n", plainEndingSlug(t.ending),
-                   (t.stated == t.out.statusText ? t.out.statusStored : t.stated).c_str());   // no provider words in the log (E2-FIX11)
-    if (t.out.parkHost) std::fprintf(stderr, "[nimbusd] engine2: the head's key or credit was refused\n");
-    const nimbus::orch::tx::TurnEndFacts& e = t.out.end;
-    std::fprintf(stderr,
-                 "[nimbusd] engine2: turn rounds=%u calls=%u requests=%u in=%u cacheR=%u cacheW=%u cacheW1h=%u out=%u "
-                 "uUSD=%u photos=%u\n",
-                 unsigned(t.out.rounds), unsigned(t.out.toolCalls), unsigned(t.out.headRequests), unsigned(e.promptTokens),
-                 unsigned(e.cacheReadTokens), unsigned(e.cacheWriteTokens), unsigned(e.cacheWrite1hTokens),
-                 unsigned(e.outputTokens), unsigned(e.microUsd), unsigned(msg.parts.size()));
     return t;
+  }
+
+  // Lane E2-P-HOST2: one sub-agent's report as its own turn in the chat that started it (plain::deliverReports,
+  // after the job pump, between turns). Busy, nothing stored, when no turn can run for that chat now.
+  plain::Status reportTurn(const std::string& chat, const std::string& note) {
+    const plain::Status busy = plain::Status::fail(nimbus::orch::tx::Err::Busy, "nimbusd::Engine2Host::reportTurn");
+    const nimbus::orch::Role role = roleOf(chat);
+    std::string line;
+    plain::ChatBinding* b = paused() ? nullptr : role == nimbus::orch::Role::Admin ? binding_.get() : memberFor(chat, role, line);
+    if (!b) return busy;
+    plain::ChatMessage msg;
+    msg.trigger = plain::Trigger::AgentResult;
+    msg.text = note;
+    msg.ch = chat == o_.chatId ? "web" : "tg";
+    msg.tzMinutes = tzNow();
+    const PlainTurn t = runTurn(*b, chat, msg);
+    return t.status;
   }
 
   // The owner's /clear (the device's two steps): "yes" or "confirm" starts a new conversation under the
@@ -373,6 +392,23 @@ class Engine2Host {
 
   bool running() const { return binding_ && binding_->engine(); }
   plain::ChatBinding* binding() { return binding_.get(); }
+  plain::ChatBinding* memberBinding() { return member_.get(); }   // lane E2-P-HOST2 (tests)
+  // Lane E2-P-HOST2: /budget's view of engine 2 for `chat` in the owner's words ("" when no chat runs).
+  std::string budgetViewText(const std::string& chat) {
+    std::string line;
+    const nimbus::orch::Role role = roleOf(chat);
+    plain::ChatBinding* b = role == nimbus::orch::Role::Admin ? binding_.get() : memberFor(chat, role, line);
+    plain::BudgetView v;
+    if (!b || !b->budgetView(v).ok()) return std::string();
+    char out[400];
+    std::snprintf(out, sizeof(out),
+                  "New engine, in tokens: system prompt %u, tools %u, fixed part %u. Summary %u (up to %u), "
+                  "recent conversation %u (recent part %u). Compaction at %u, aim %u. Max rounds %u, hard time limit %u s.",
+                  (unsigned)v.systemTokens, (unsigned)v.toolsTokens, (unsigned)v.fixedTokens, (unsigned)v.summaryTokens,
+                  (unsigned)v.summaryBudgetTokens, (unsigned)v.recentTokens, (unsigned)v.recentPartTokens,
+                  (unsigned)v.dueTokens, (unsigned)v.aimTokens, (unsigned)v.maxRounds, (unsigned)v.hardTimeS);
+    return out;
+  }
   nimbus::orch::ToolRegistry& registry() { return reg_; }
   HostedNotes& notes() { return notes_; }
   PosixTxFiles& txFiles() { return txFiles_; }
@@ -382,16 +418,114 @@ class Engine2Host {
   uint16_t dayStart() const { return o_.dayStartMin ? o_.dayStartMin() : plain::kDayStartDefaultMin; }
   std::string skillsDir() const { return o_.dataDir + "/mem/skills"; }   // engine 1's HostedSkills store
 
-  // The transcript key of the owner's conversation: the base key, or "<key>_c<n>" after /clear. False
-  // when the number could not be read (never taken as generation 0).
-  bool conversationKey(std::string& key) {
+  // The transcript key of a conversation: the base key, or "<key>_c<n>" after /clear. False when the
+  // number could not be read (never taken as generation 0).
+  bool conversationKey(const std::string& base, std::string& key) {
     uint32_t g = 0;
-    if (plain::readGeneration(txFiles_, o_.chatKey, g) == plain::GenRead::Unknown) return false;
-    key = g ? o_.chatKey + "_c" + std::to_string(g) : o_.chatKey;
+    if (plain::readGeneration(txFiles_, base, g) == plain::GenRead::Unknown) return false;
+    key = g ? base + "_c" + std::to_string(g) : base;
     return true;
   }
 
-  plain::ChatBindingDeps bindingDeps() {
+  nimbus::orch::Role roleOf(const std::string& chat) const {
+    return o_.roleOf ? o_.roleOf(chat) : nimbus::orch::Role::Admin;
+  }
+
+  plain::ChatBindingConfig chatConfig(const std::string& key, const std::string& chat, const std::string& model,
+                                      nimbus::orch::Role role) const {
+    plain::ChatBindingConfig c;
+    c.chatKey = key;
+    c.chatId = chat;
+    c.host = "api.anthropic.com";
+    c.provider = "anthropic";
+    c.model = model;
+    c.summarizerModel = o_.summarizerModel ? o_.summarizerModel() : std::string("claude-haiku-5-5");
+    c.role = role;
+    c.timeZone = o_.timeZone;
+    c.dayStartMin = dayStart();
+    c.profile = o_.profile;
+    return c;
+  }
+
+  // Lane E2-P-HOST2: a member's binding (the device's chatFor): the resident one when it serves this chat, role,
+  // model and conversation, else booted over that chat's own transcript. A binding whose turns are held only in
+  // RAM is never dropped with them (ruling 81): another chat is refused with the true cause meanwhile. Null, with
+  // `line` the person's line, when no turn can run for the chat.
+  plain::ChatBinding* memberFor(const std::string& chat, nimbus::orch::Role role, std::string& line) {
+    const std::string model = o_.model ? o_.model() : std::string();
+    if (!engine2HeadOk(o_.head ? o_.head() : std::string(), model)) {
+      line = kNotClaudeLine;
+      return nullptr;
+    }
+    std::string key;
+    const bool keyRead = conversationKey(chat, key);
+    if (member_) {
+      const plain::ChatBindingConfig& c = member_->config();
+      const bool same = c.chatId == chat && c.role == role;
+      if (same && c.model == model && (!keyRead || c.chatKey == key)) return member_.get();
+      if (member_->unloaded() && !member_->reload()) {
+        if (same) return member_.get();
+        line = hostedOwnerLine(member_->elsewhereLine());
+        return nullptr;
+      }
+      member_.reset();   // another chat, role or model: the arena goes back before the next one
+    }
+    line = kNoStartLine;
+    if (!keyRead || !nimbus::orch::tx::chatKeyOk(key)) {
+      std::fprintf(stderr, "[nimbusd] engine2: chat %s has no readable transcript key\n", chat.c_str());
+      return nullptr;
+    }
+    std::unique_ptr<plain::ChatBinding> b(new plain::ChatBinding(chatConfig(key, chat, model, role), bindingDeps(chat, false)));
+    const plain::Status st = b->boot();
+    if (b->migrationRan()) logImport(*b);
+    if (!st.ok()) {
+      std::fprintf(stderr, "[nimbusd] engine2: chat %s did not start: %s@%s\n", chat.c_str(),
+                   nimbus::orch::tx::errSlug(st.err), st.where ? st.where : "");
+      return nullptr;
+    }
+    member_ = std::move(b);
+    return member_.get();
+  }
+
+  // One turn of `b` in `chat` and what follows it: the parts sent, the answer's row in engine 1's day stream,
+  // the counters and the log lines.
+  PlainTurn runTurn(plain::ChatBinding& b, const std::string& chat, const plain::ChatMessage& msg) {
+    curChat_ = chat;
+    sent_.clear();
+    unsent_.clear();
+    PlainTurn t;
+    t.status = b.turn(msg, t.out);
+    curChat_.clear();
+    t.sent.swap(sent_);
+    t.unsent.swap(unsent_);
+    settleEnding(t);
+    lastTurnEnd_ = vclock::epoch();
+    if (o_.captureRow && t.out.delivered && !t.out.text.empty()) o_.captureRow(chat, "assistant", t.out.text, "e2");
+    else if (o_.captureRow && !t.out.statusStored.empty()) o_.captureRow(chat, "system", t.out.statusStored, "e2");
+    const nimbus::orch::tx::TurnEndFacts& e = t.out.end;
+    if (o_.stats && t.out.headRequests) {
+      const uint32_t in = e.promptTokens + e.cacheReadTokens + e.cacheWriteTokens;
+      o_.stats->turns.fetch_add(1);
+      o_.stats->lastIn.store(in);
+      o_.stats->lastOut.store(e.outputTokens);
+      o_.stats->sessIn.fetch_add(in);
+      o_.stats->sessOut.fetch_add(e.outputTokens);
+    }
+    if (t.ending != PlainEnding::Reply)
+      std::fprintf(stderr, "[nimbusd] engine2: turn ended %s: %s\n", plainEndingSlug(t.ending),
+                   (t.stated == t.out.statusText ? t.out.statusStored : t.stated).c_str());   // no provider words in the log (E2-FIX11)
+    if (t.out.parkHost) std::fprintf(stderr, "[nimbusd] engine2: the head's key or credit was refused\n");
+    std::fprintf(stderr,
+                 "[nimbusd] engine2: turn rounds=%u calls=%u requests=%u in=%u cacheR=%u cacheW=%u cacheW1h=%u out=%u "
+                 "uUSD=%u photos=%u\n",
+                 unsigned(t.out.rounds), unsigned(t.out.toolCalls), unsigned(t.out.headRequests), unsigned(e.promptTokens),
+                 unsigned(e.cacheReadTokens), unsigned(e.cacheWriteTokens), unsigned(e.cacheWrite1hTokens),
+                 unsigned(e.outputTokens), unsigned(e.microUsd), unsigned(msg.parts.size()));
+    return t;
+  }
+
+  // The binding's parts for `chat`: the owner's conversation (`owner`) or a member's.
+  plain::ChatBindingDeps bindingDeps(const std::string& chat, bool owner) {
     plain::ChatBindingDeps d;
     d.platform = &platform_;
     d.transport = transport();
@@ -427,16 +561,29 @@ class Engine2Host {
     d.onProgress = [this](const plain::ProgressEvent&) {
       if (telegramTurn()) o_.turnProgress(curChat_, true, std::string());
     };
-    if (o_.oldRows) d.oldEngine = [this](nimbus::orch::tx::MigrateDeps& m) { return fillOld(m); };
+    if (owner && o_.oldRows) d.oldEngine = [this](nimbus::orch::tx::MigrateDeps& m) { return fillOld(m); };
+    if (!owner && o_.memberRows)   // lane E2-P-HOST2: the member's own earlier rows, never another chat's
+      d.oldEngine = [this, chat](nimbus::orch::tx::MigrateDeps& m) {
+        memberOld_.reset(new nimbus::orch::tx::EpisodicRowSource(
+            m.chatKey, [this, chat](const nimbus::orch::MsgQuery& q, nimbus::orch::EpiQueryInfo& info) {
+              return o_.memberRows(chat, q, info);
+            }));
+        m.rows = memberOld_.get();
+        m.tzMinutes = tzNow();
+        return true;
+      };
     d.railPending = notes_.railPending();
     d.deviceName = o_.deviceName;
     // The notes' origin and the schedule's call context on every call; search and view read the turn's
-    // own conversation; web_search's result is outside content (it taints the turn).
+    // own conversation. Lane E2-P-HOST2: a call that read outside content (web_search; a read of inbox/ or
+    // agents/, or of another person's file: the device's rule) taints the turn.
     plain::ToolDispatchFn inner = o_.loops ? o_.loops->scheduleDispatch(notes_.dispatch()) : notes_.dispatch();
     d.turnTool = [this, inner](const plain::ToolCall& c, const plain::TurnCtx& t, plain::ToolOutput& out) {
       if (history_.answer(c, t, out)) return true;
       out = inner(c, t);
-      out.outside = c.name == "web_search";
+      const nimbus::orch::Principal who =
+          t.who ? *t.who : nimbus::orch::principalForRole(o_.chatId, nimbus::orch::Role::Admin);
+      out.outside = hostedReadsOutside(*o_.files, c.name, c.argsJson, !out.isError, who);
       return true;
     };
     d.moreSetup = [this](const plain::TurnCtx& t, plain::TurnSetup& s) {
@@ -449,7 +596,8 @@ class Engine2Host {
   }
 
   // One part of the running turn to the chat it came from (a boot's resume or a fire: the owner chat).
-  bool deliverPart(const std::string& part) {
+  bool deliverPart(const std::string& raw) {
+    const std::string part = hostedOwnerLine(raw);   // lane E2-P-HOST2: the instance's words, not the card's
     if (!o_.deliver) {
       unsent_.push_back(part);
       return false;
@@ -545,6 +693,12 @@ class Engine2Host {
     };
     d.tzAt = [this](uint64_t t) { return int16_t(o_.utcOffsetMin ? o_.utcOffsetMin(uint32_t(t)) : 0); };
     d.nowMs = [] { return uint32_t(vclock::steadyMs()); };
+    // Lane E2-P-HOST2: the two scopes lane E2-P-MEM added (files: the store's text files; memories: the earlier
+    // engine's long-term memories, read only).
+    d.fileSearch = [this](const nimbus::orch::Principal& who, const std::string& q, plain::FileSearch& out) {
+      return hostedFileSearch(*o_.files, who, q, out);
+    };
+    d.memories = o_.memories;
     return d;
   }
   int16_t tzNow() const { return int16_t(o_.utcOffsetMin ? o_.utcOffsetMin(vclock::epoch32()) : 0); }
@@ -565,6 +719,8 @@ class Engine2Host {
   nimbus::orch::ToolRegistry webInner_;   // the old engine's web.search, reached by web_search only
   std::unique_ptr<nimbus::orch::tx::EpisodicRowSource> oldRows_;   // the last import's row source
   std::unique_ptr<plain::ChatBinding> binding_;
+  std::unique_ptr<nimbus::orch::tx::EpisodicRowSource> memberOld_;   // lane E2-P-HOST2: a member's import source
+  std::unique_ptr<plain::ChatBinding> member_;   // lane E2-P-HOST2: the one resident member chat
   std::unique_ptr<nimbus::orch::TurnImages> photoSet_;   // the running turn's photos (E2-P-PHOTO)
   std::map<std::string, std::string> carried_;           // earlier photos read back this turn, by hash
   std::vector<std::pair<std::string, size_t>> skillsLeftOut_;

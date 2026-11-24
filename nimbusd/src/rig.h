@@ -31,6 +31,7 @@
 #include "hosted_skills.h"
 #include "nimbus/docs_pack.h"
 #include "nimbus/harness/conversation.h"
+#include "engine2_parity.h"   // lane E2-P-HOST2: engine 2's sub-agent files and its rows
 #include "nimbus/harness/dream.h"
 #include "nimbus/harness/engine.h"
 #include "nimbus/harness/fold_driver.h"   // FoldDriver - the one fold driver (lane F)
@@ -219,6 +220,9 @@ class NimbusdRig {
     // on this direct host answers with no summary and sends nothing, so a persona can
     // watch the ladder walk to the next provider. "" = off (always, in production).
     std::string foldFaultHost;
+    // Lane E2-P-HOST2: the engine this instance runs (engine2_parity.h engineChoice). 2: the sub-agents' brief
+    // files and reports are engine 2's (the device's), and a finished job's report runs as an engine-2 turn.
+    int engine = 1;
   };
 
   // `httpOverride` lets a host test inject a FakeHttpTransport in place of the
@@ -796,7 +800,35 @@ class NimbusdRig {
   // One pump step: reap, the synthesis clock, at most one dispatch, one poll round.
   // Engine thread only (a Mistral dispatch is a synchronous provider call, and a
   // synthesis runs a whole turn) - the EngineThread drives it on every tick.
-  int pumpJobs() { return jobs_ ? jobs_->pump() : 0; }
+  int pumpJobs() {
+    if (!jobs_) return 0;
+    const int n = jobs_->pump();
+    // Lane E2-P-HOST2: the chat whose finished reports the pump named runs them on engine 2, after the pump
+    // (never inside a turn: this is the engine thread between tasks).
+    if (!e2ReportsFor_.empty() && e2Reports_) {
+      const std::string chat = std::move(e2ReportsFor_);
+      e2ReportsFor_.clear();
+      e2Reports_(chat);
+    }
+    return n;
+  }
+  // Lane E2-P-HOST2, set before the engine thread starts while engine 2 runs: the reports of a chat, as turns.
+  void setEngine2Reports(std::function<void(const std::string& chat)> fn) { e2Reports_ = std::move(fn); }
+  // An engine-2 turn's row in the day stream (the web chat's history, the way back to engine 1); no fold count.
+  void captureEngine2Row(const std::string& chat, const char* role, const std::string& text, const std::string& tags) {
+    capture(chat, role, text, tags);
+  }
+  // search scope memories on engine 2: engine 1's memory.search, read only, as engine 1 dispatched it.
+  bool searchMemoriesFor(const orch::Principal& who, const std::string& query, std::string& out) {
+    const orch::ToolResult r = orch::searchMemories(memCtx_, query, who);
+    out = r.success ? r.output : r.error;
+    return r.success;
+  }
+  int engineNumber() const { return opt_.engine; }
+  const std::string& dataDir() const { return opt_.dataDir; }
+  // The engine-2 counters /api/state reads while engine 2 runs (null: engine 1).
+  void setEngine2Stats(const Engine2Stats* s) { e2Stats_ = s; }
+  const Engine2Stats* engine2Stats() const { return e2Stats_; }
   // Whether a pump can do real work right now (a job queued, running, or results
   // waiting for synthesis) - lets the engine thread mark itself busy around it.
   // Lane QW4 round 3: the stop list (helpers whose stop is not yet confirmed, read from
@@ -3305,8 +3337,21 @@ class NimbusdRig {
         if (jobs_) jobs_->takeFreshResultsFor(jobs_->freshScopeFor(chat), nullptr, nullptr, nullptr);
         return;
       }
+      if (opt_.engine == 2) {   // lane E2-P-HOST2: the report turn runs on engine 2 after the pump
+        e2ReportsFor_ = chat;
+        return;
+      }
       if (eng_) eng_->maybeConsolidate(chat);
     };
+    if (opt_.engine == 2) {   // lane E2-P-HOST2: the device's brief files and whole report (engine 1 keeps none)
+      jd.readDoc = [this](const std::string& chat, const std::string& project, const std::string& name) {
+        return hostedReadDoc(*files_, access_->principalFor(chat), project, name);
+      };
+      jd.persistResult = [this](const std::string& project, const std::string& name, const std::string& tag,
+                                const std::string& text, const std::string&) {
+        return persistAgentReport(*files_, project, name, tag, text);
+      };
+    }
     jd.turnInFlight = [this] { return eng_ && eng_->turnInFlight(); };
     // Lane DEF: a finished sub-agent's reported usage counts toward the monthly spend
     // ceiling (device parity: orchestrator.cpp recordSpawnUsage).
@@ -3686,6 +3731,9 @@ class NimbusdRig {
   std::string curUserRowId_;     // the in-flight user row (excluded from the window)
   HostedLoops loops_;            // routines and wake-ups
   std::function<orch::FireOutcome(const orch::LoopFireRequest&)> e2Fire_;   // lane E2-SCHED
+  std::function<void(const std::string&)> e2Reports_;   // lane E2-P-HOST2: a chat's sub-agent reports on engine 2
+  std::string e2ReportsFor_;                           // the chat the last pump named (engine thread)
+  const Engine2Stats* e2Stats_ = nullptr;              // lane E2-P-HOST2: engine 2's counters
   std::atomic<bool> tzMoved_{false};
   std::unique_ptr<HostedSkills> skills_;
   std::string turnTag_;          // "turn:<row id>" of the turn in flight ("" between turns)
