@@ -103,6 +103,9 @@ const UseRow kUses[] = {
     {"media.play", U::Ambient},
     {"media.pause", U::Ambient},
     {"media.stop", U::Ambient},
+    {"media_play", U::Ambient},   // engine 2's names (E2-P-OUT2), the same class
+    {"media_pause", U::Ambient},
+    {"media_stop", U::Ambient},
     {"device.selftest.audible", U::Ambient},
     // settings, skills, people, the head
     {"device.reboot", U::Control},
