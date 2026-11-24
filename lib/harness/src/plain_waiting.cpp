@@ -94,42 +94,69 @@ bool waitingFromText(const std::string& text, std::vector<WaitingMessage>& out) 
   return true;
 }
 
+bool waitingChatOf(const std::string& name, std::string& chat) {
+  const std::string ext = ".wait.json";
+  const std::string tmp = ext + kTmpExt;
+  std::string n = name;
+  if (n.size() > tmp.size() && n.compare(n.size() - tmp.size(), tmp.size(), tmp) == 0) n.resize(n.size() - (tmp.size() - ext.size()));
+  if (n.size() <= ext.size() || n.compare(n.size() - ext.size(), ext.size(), ext) != 0) return false;
+  chat = n.substr(0, n.size() - ext.size());
+  return true;
+}
+
 Status WaitingInbox::load() {
   if (!files_) {
     loaded_ = true;   // RAM only: what this boot kept
     return Status::success();
   }
-  const std::string path = waitingPathFor(chatId_);
-  bool present = false;
-  if (!listed(present)) return Status::fail(Err::Io, "plain::WaitingInbox::load.list");
+  const std::string path = waitingPathFor(chatId_), tmp = path + kTmpExt;
+  bool present = false, tmpPresent = false;
+  if (!listed(path, present) || !listed(tmp, tmpPresent)) return Status::fail(Err::Io, "plain::WaitingInbox::load.list");
   std::vector<WaitingMessage> msgs;
   if (present) {
-    size_t size = 0, got = 0;
-    std::string text;
-    if (!files_->size(path, size)) return Status::fail(Err::Io, "plain::WaitingInbox::load.size");
-    text.resize(size);
-    if (size && (!files_->readAt(path, 0, &text[0], size, got) || got != size))
-      return Status::fail(Err::Io, "plain::WaitingInbox::load.read");
-    if (!waitingFromText(text, msgs)) {
-      // Read whole but not a list: set aside as it is (never removed), and start empty.
-      std::string aside;
-      if (!asideName(aside) || !files_->rename(path, aside)) return Status::fail(Err::Io, "plain::WaitingInbox::load.aside");
-      hlog::logf("e2: the waiting messages of %s did not decode: set aside as %s", chatId_.c_str(), aside.c_str());
-      msgs.clear();
-    }
+    const Status st = readList(path, msgs);
+    if (!st.ok()) return st;
+  } else if (tmpPresent) {
+    // E2-REP6: a rewrite whose rename removed the list and then was cut or refused left only the
+    // .tmp (the TxFiles contract, log.h): it is the list. Put back in place (a refusal is retried by
+    // the next write, which writes the .tmp again and renames it).
+    const Status st = readList(tmp, msgs);
+    if (!st.ok()) return st;
+    if (!msgs.empty() && !files_->rename(tmp, path))
+      hlog::logf("e2: the waiting messages of %s are read from %s (not put back in place yet)", chatId_.c_str(), tmp.c_str());
+    else if (!msgs.empty())
+      hlog::logf("e2: the waiting messages of %s were left in %s by a cut: %u put back in place", chatId_.c_str(),
+                 tmp.c_str(), (unsigned)msgs.size());
   }
   msgs_ = std::move(msgs);
   loaded_ = true;
   return Status::success();
 }
 
-// Does the card's listing of /mem/tx name this chat's file? False when the card could not tell.
-bool WaitingInbox::listed(bool& present) const {
+// One file of the list read whole. One that reads but does not decode is set aside as it is (never
+// removed) and the list starts empty.
+Status WaitingInbox::readList(const std::string& file, std::vector<WaitingMessage>& msgs) {
+  msgs.clear();
+  size_t size = 0, got = 0;
+  std::string text;
+  if (!files_->size(file, size)) return Status::fail(Err::Io, "plain::WaitingInbox::load.size");
+  text.resize(size);
+  if (size && (!files_->readAt(file, 0, &text[0], size, got) || got != size))
+    return Status::fail(Err::Io, "plain::WaitingInbox::load.read");
+  if (waitingFromText(text, msgs)) return Status::success();
+  std::string aside;
+  if (!asideName(aside) || !files_->rename(file, aside)) return Status::fail(Err::Io, "plain::WaitingInbox::load.aside");
+  hlog::logf("e2: the waiting messages of %s did not decode: set aside as %s", chatId_.c_str(), aside.c_str());
+  msgs.clear();
+  return Status::success();
+}
+
+// Does the card's listing of /mem/tx name `file`? False when the card could not tell.
+bool WaitingInbox::listed(const std::string& file, bool& present) const {
   present = false;
   std::vector<std::string> names;
   if (!files_ || !files_->list(tx::kTxRoot, names)) return false;
-  const std::string path = waitingPathFor(chatId_);
-  const std::string name = path.substr(std::string(tx::kTxRoot).size() + 1);
+  const std::string name = file.substr(std::string(tx::kTxRoot).size() + 1);
   for (const std::string& n : names) present = present || n == name;
   return true;
 }
@@ -151,9 +178,9 @@ bool WaitingInbox::asideName(std::string& out) const {
 }
 
 // The file is there, or the card could not tell (a removal is then not taken as done).
-bool WaitingInbox::onCard() const {
+bool WaitingInbox::onCard(const std::string& file) const {
   bool present = true;
-  return !listed(present) || present;
+  return !listed(file, present) || present;
 }
 
 bool WaitingInbox::holds(const std::vector<uint64_t>& src) const {
@@ -167,7 +194,11 @@ bool WaitingInbox::holds(const std::vector<uint64_t>& src) const {
 Status WaitingInbox::save(const std::vector<WaitingMessage>& msgs) {
   if (!files_) return Status::fail(Err::Io, "plain::WaitingInbox::save.nocard");
   const std::string path = waitingPathFor(chatId_), tmp = path + kTmpExt;
-  if (msgs.empty()) return files_->remove(path) || !onCard() ? Status::success() : Status::fail(Err::Io, "plain::WaitingInbox::save.remove");
+  if (msgs.empty()) {   // the .tmp first: a cut between the two never leaves a .tmp a load would answer again
+    const bool tmpGone = files_->remove(tmp) || !onCard(tmp);
+    return tmpGone && (files_->remove(path) || !onCard(path)) ? Status::success()
+                                                               : Status::fail(Err::Io, "plain::WaitingInbox::save.remove");
+  }
   if (!files_->writeWhole(tmp, waitingToText(msgs)) || !files_->rename(tmp, path))
     return Status::fail(Err::Io, "plain::WaitingInbox::save");
   return Status::success();
@@ -189,6 +220,7 @@ Status WaitingInbox::pop() {
     if (!st.ok()) return st;
   }
   msgs_ = std::move(rest);
+  frontDone_ = false;
   return Status::success();
 }
 
@@ -196,13 +228,16 @@ size_t answerWaiting(WaitingInbox& in, const WaitingDrainFns& f) {
   size_t answered = 0;
   while (in.loaded() && !in.empty()) {
     const WaitingMessage& m = in.messages().front();
-    if (f.taken && f.taken(m)) {
+    if (in.frontDone()) {
+      // E2-REP6: answered on an earlier pass, its removal refused: only the removal is tried again.
+    } else if (f.taken && f.taken(m)) {
       hlog::logf("e2: a waiting message of %s was answered before a restart: not answered again", in.chatId().c_str());
     } else {
       if (f.answer(m) == WaitingAnswer::Later) break;
       ++answered;
     }
     if (!in.pop().ok()) {
+      in.markFrontDone();
       hlog::logf("e2: a waiting message of %s is answered but still listed on the card", in.chatId().c_str());
       break;
     }

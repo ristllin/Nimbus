@@ -39,6 +39,7 @@ class Card : public tx::CardOps {
   std::set<std::string> dirs{"/"};
   bool failList = false;
   bool refuseWrites = false;
+  bool refuseRename = false;   // E2-REP6: a rename the card refuses (or a cut) after the remove landed
   bool present() override { return true; }
   bool mayWrite() override { return !refuseWrites; }
   uint32_t largestInternal() override { return 64 * 1024; }
@@ -70,7 +71,7 @@ class Card : public tx::CardOps {
     return n;
   }
   bool rename(const std::string& a, const std::string& b) override {
-    if (!files.count(a) || files.count(b)) return false;
+    if (refuseRename || !files.count(a) || files.count(b)) return false;
     files[b] = files[a];
     files.erase(a);
     return true;
@@ -528,6 +529,76 @@ static void test_a_cut_kept_turn_is_resumed_once_and_not_answered_again() {
   TEST_ASSERT_TRUE(again.empty());
 }
 
+// E2-REP6 (review F1): a rewrite of the list whose rename the card refuses after the old list was
+// removed (a cut between the two is the same) leaves only <list>.tmp. The next load takes it as the
+// list (never as an empty one), puts it in place, and every kept message is answered.
+static void test_a_cut_between_the_remove_and_the_rename_loses_no_kept_message() {
+  Device dev;
+  {
+    plain::WaitingInbox in(&dev.files, kChat);
+    TEST_ASSERT_TRUE(in.load().ok());
+    TEST_ASSERT_EQUAL((int)plain::HoldVerdict::Kept, (int)in.hold(tgMessage("first", 1001, 0x70)));
+    dev.card.refuseRename = true;   // the second hold: remove landed, rename refused
+    TEST_ASSERT_EQUAL((int)plain::HoldVerdict::KeptInRam, (int)in.hold(tgMessage("second", 1002, 0x71)));
+  }
+  dev.card.refuseRename = false;
+  TEST_ASSERT_EQUAL(0, (int)dev.card.files.count(kWaitPath));       // the old list is gone
+  TEST_ASSERT_EQUAL(1, (int)dev.card.files.count(kWaitPath + ".tmp"));
+  plain::WaitingInbox after(&dev.files, kChat);                     // the restart
+  TEST_ASSERT_TRUE(after.load().ok());
+  TEST_ASSERT_EQUAL(2, (int)after.messages().size());
+  TEST_ASSERT_EQUAL_STRING("first", after.messages()[0].text.c_str());
+  TEST_ASSERT_EQUAL_STRING("second", after.messages()[1].text.c_str());
+  TEST_ASSERT_EQUAL(1, (int)dev.card.files.count(kWaitPath));       // put back in place
+  TEST_ASSERT_EQUAL(0, (int)dev.card.files.count(kWaitPath + ".tmp"));
+  std::string chat;
+  TEST_ASSERT_TRUE(plain::waitingChatOf(std::string(kChat) + ".wait.json.tmp", chat));   // the boot scan finds it
+  TEST_ASSERT_EQUAL_STRING(kChat, chat.c_str());
+  TEST_ASSERT_TRUE(plain::waitingChatOf(std::string(kChat) + ".wait.json", chat));
+  TEST_ASSERT_FALSE(plain::waitingChatOf(std::string(kChat) + ".wait.json.unread-1", chat));
+
+  // A stale .tmp beside a list (a cut before the rename) is not the list; an emptied list leaves no .tmp
+  // behind that a later boot would answer again.
+  dev.card.files[kWaitPath + ".tmp"] = plain::waitingToText({tgMessage("never told", 1003, 0x72)});
+  plain::WaitingInbox again(&dev.files, kChat);
+  TEST_ASSERT_TRUE(again.load().ok());
+  TEST_ASSERT_EQUAL(2, (int)again.messages().size());
+  TEST_ASSERT_TRUE(again.pop().ok());
+  TEST_ASSERT_TRUE(again.pop().ok());
+  TEST_ASSERT_EQUAL(0, (int)dev.card.files.count(kWaitPath));
+  TEST_ASSERT_EQUAL(0, (int)dev.card.files.count(kWaitPath + ".tmp"));
+  plain::WaitingInbox empty(&dev.files, kChat);
+  TEST_ASSERT_TRUE(empty.load().ok());
+  TEST_ASSERT_TRUE(empty.empty());
+}
+
+// E2-REP6 (review, suspected 2): a message answered with a line (no turn stores it, so `taken` never
+// finds it) whose removal the card keeps refusing is not answered again on every pass: the next pass
+// only retries the removal.
+static void test_a_refused_removal_does_not_send_the_line_again() {
+  Device dev;
+  plain::WaitingInbox in(&dev.files, kChat);
+  TEST_ASSERT_TRUE(in.load().ok());
+  (void)in.hold(tgMessage("kept", 1001, 0x70));
+  int lines = 0;
+  plain::WaitingDrainFns f;
+  f.taken = [](const plain::WaitingMessage&) { return false; };
+  f.answer = [&](const plain::WaitingMessage&) {
+    ++lines;   // a setting or a gate line: nothing stored in the conversation
+    return plain::WaitingAnswer::Done;
+  };
+  dev.card.refuseWrites = true;
+  TEST_ASSERT_EQUAL(1, (int)plain::answerWaiting(in, f));
+  TEST_ASSERT_EQUAL(0, (int)plain::answerWaiting(in, f));
+  TEST_ASSERT_EQUAL(0, (int)plain::answerWaiting(in, f));
+  TEST_ASSERT_EQUAL(1, lines);
+  TEST_ASSERT_EQUAL(1, (int)in.messages().size());
+  dev.card.refuseWrites = false;
+  TEST_ASSERT_EQUAL(0, (int)plain::answerWaiting(in, f));
+  TEST_ASSERT_TRUE(in.empty());
+  TEST_ASSERT_EQUAL(1, lines);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_two_messages_kept_during_a_read_in_are_answered_in_order_after_it);
@@ -539,5 +610,7 @@ int main(int, char**) {
   RUN_TEST(test_the_list_is_bounded_and_runs_in_ram_with_no_card);
   RUN_TEST(test_a_cut_kept_turn_is_resumed_once_and_not_answered_again);
   RUN_TEST(test_a_kept_photo_keeps_its_description_for_a_blind_head);
+  RUN_TEST(test_a_cut_between_the_remove_and_the_rename_loses_no_kept_message);
+  RUN_TEST(test_a_refused_removal_does_not_send_the_line_again);
   return UNITY_END();
 }

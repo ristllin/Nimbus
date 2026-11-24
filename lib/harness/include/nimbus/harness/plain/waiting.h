@@ -58,6 +58,10 @@ inline std::string waitingPathFor(const std::string& chatId) {
   return std::string(nimbus::orch::tx::kTxRoot) + "/" + chatId + ".wait.json";
 }
 
+// The chat a name in /mem/tx belongs to when it is a kept list: <chat>.wait.json, or <chat>.wait.json.tmp
+// (a rewrite a cut or a refused rename left behind: load() takes it as the list). False for any other.
+bool waitingChatOf(const std::string& name, std::string& chat);
+
 enum class HoldVerdict : uint8_t {
   Kept,        // stored on the card
   KeptInRam,   // the card did not store it (or there is none): kept until a restart only
@@ -85,16 +89,22 @@ class WaitingInbox {
   // The first message is done. Io when the card did not store that: it stays first (in RAM too),
   // and the next pass finds it taken.
   Status pop();
+  // E2-REP6: the first message was answered (or found taken) and its removal was refused: the next
+  // pass only tries the removal again, never a second answer (RAM only; a pop clears it).
+  bool frontDone() const { return frontDone_; }
+  void markFrontDone() { frontDone_ = !msgs_.empty(); }
 
  private:
   Status save(const std::vector<WaitingMessage>& msgs);
-  bool listed(bool& present) const;
-  bool onCard() const;
+  Status readList(const std::string& file, std::vector<WaitingMessage>& msgs);
+  bool listed(const std::string& file, bool& present) const;
+  bool onCard(const std::string& file) const;
   bool asideName(std::string& out) const;
   nimbus::orch::tx::TxFiles* files_;
   std::string chatId_;
   std::vector<WaitingMessage> msgs_;
   bool loaded_ = false;
+  bool frontDone_ = false;
 };
 
 // What answering one kept message did.

@@ -992,12 +992,9 @@ void loadWaitingLists() {
   std::vector<std::string> names;
   if (!txdev::cardTxFiles().list(nimbus::orch::tx::kTxRoot, names)) return;
   done = true;
-  const std::string ext = ".wait.json";
-  for (const std::string& n : names)
-    if (n.size() > ext.size() && n.compare(n.size() - ext.size(), ext.size(), ext) == 0) {
-      const std::string chat = n.substr(0, n.size() - ext.size());
-      if (nimbus::orch::tx::chatKeyOk(chat)) (void)waitingFor(chat);
-    }
+  std::string chat;
+  for (const std::string& n : names)   // a list, or the .tmp a cut left in its place (E2-REP6)
+    if (plain::waitingChatOf(n, chat) && nimbus::orch::tx::chatKeyOk(chat)) (void)waitingFor(chat);
 }
 
 // A kept message's photos (E2-REP4: with what a head that takes no images reads: the description and
