@@ -2245,6 +2245,50 @@ nimbus::orch::ToolResult fetchTool(ArduinoJson::JsonObjectConst a, const nimbus:
       "claim success once the file is listed.");
 }
 
+// image.generate's file name stem: a sanitized stem (from the caller or the prompt); the caller adds a
+// counter so repeated generations don't silently overwrite each other (add() REPLACES same project+name)
+// and .png so the store classifies it as an Image.
+// One character of a stem: a lowercase letter or digit, '-' for a gap (space, '-', '_'), 0 to drop.
+static char stemChar(char ch) {
+  if (ch >= 'A' && ch <= 'Z') return (char)(ch - 'A' + 'a');
+  if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9')) return ch;
+  return (ch == ' ' || ch == '-' || ch == '_') ? '-' : 0;
+}
+
+static std::string imageStem(std::string stem, const std::string& prompt) {
+  if (stem.size() > 4 && stem.substr(stem.size() - 4) == ".png")
+    stem = stem.substr(0, stem.size() - 4);
+  if (stem.empty()) stem = prompt;
+  std::string safe;
+  for (char ch : stem) {
+    if (safe.size() >= 40) break;
+    const char c = stemChar(ch);
+    if (c != '-') { if (c) safe += c; }
+    else if (!safe.empty() && safe.back() != '-') safe += '-';
+  }
+  while (!safe.empty() && safe.back() == '-') safe.pop_back();
+  return safe.empty() ? std::string("image") : safe;
+}
+
+// image.generate's answer for a saved image: its path and size, the optional vision read-back, and how
+// the owner gets it.
+static std::string imageSaved(const std::string& project, const std::string& name, size_t n, bool wantDesc,
+                              const std::string& prompt) {
+  std::string out = "saved " + project + "/" + name + " (" +
+                    std::to_string((unsigned)n) + " bytes)";
+  if (wantDesc && agent::vision::available()) {
+    String d = agent::vision::describeImage(absPath(project, name).c_str(),
+                                            "image/png", &memory::dataFs(),
+                                            String(prompt.c_str()));
+    if (d.length()) out += "\n" + std::string(d.c_str());
+  }
+  // CUM-523: name files.send only on a turn that was offered it.
+  out += agent::orchestrator::fileSendForTurn()
+             ? "\nSend it to the owner with files.send."
+             : "\nThe owner opens it from the Files list on the device web page.";
+  return out;
+}
+
 nimbus::orch::ToolResult imageTool(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) {
   // Turn-only (like files.send): generation blocks on TLS up to ~2 min, so it
   // must run on the turn task (tg_poll), NEVER the AsyncTCP /mcp path - a long
@@ -2263,19 +2307,7 @@ nimbus::orch::ToolResult imageTool(ArduinoJson::JsonObjectConst a, const nimbus:
   // counter so repeated generations don't silently overwrite each other
   // (add() REPLACES same project+name), always ending .png so the store
   // classifies it as an Image.
-  std::string stem = argStr(a, "name");
-  if (stem.size() > 4 && stem.substr(stem.size() - 4) == ".png")
-    stem = stem.substr(0, stem.size() - 4);
-  if (stem.empty()) stem = prompt;
-  std::string safe;
-  for (char ch : stem) {
-    if (safe.size() >= 40) break;
-    if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9')) safe += ch;
-    else if (ch >= 'A' && ch <= 'Z') safe += (char)(ch - 'A' + 'a');
-    else if ((ch == ' ' || ch == '-' || ch == '_') && !safe.empty() && safe.back() != '-') safe += '-';
-  }
-  while (!safe.empty() && safe.back() == '-') safe.pop_back();
-  if (safe.empty()) safe = "image";
+  const std::string safe = imageStem(argStr(a, "name"), prompt);
 
   const std::string modl = argStr(a, "model"), size = argStr(a, "size"),
                     qual = argStr(a, "quality");
@@ -2313,20 +2345,8 @@ nimbus::orch::ToolResult imageTool(ArduinoJson::JsonObjectConst a, const nimbus:
   if (!saved)
     return nimbus::orch::ToolResult::fail("generated but couldn't save: " + refusalForHead(serr));
 
-  std::string out = "saved " + project + "/" + name + " (" +
-                    std::to_string((unsigned)n) + " bytes)";
   const bool wantDesc = a["describe"].is<bool>() ? (bool)a["describe"] : false;
-  if (wantDesc && agent::vision::available()) {
-    String d = agent::vision::describeImage(absPath(project, name).c_str(),
-                                            "image/png", &memory::dataFs(),
-                                            String(prompt.c_str()));
-    if (d.length()) out += "\n" + std::string(d.c_str());
-  }
-  // CUM-523: name files.send only on a turn that was offered it.
-  out += agent::orchestrator::fileSendForTurn()
-             ? "\nSend it to the owner with files.send."
-             : "\nThe owner opens it from the Files list on the device web page.";
-  return nimbus::orch::ToolResult::ok(out);
+  return nimbus::orch::ToolResult::ok(imageSaved(project, name, n, wantDesc, prompt));
 }
 
 // ---- W18 public seams (must sit OUTSIDE the big anonymous namespace above:
