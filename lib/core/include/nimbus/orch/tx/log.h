@@ -68,6 +68,7 @@ inline constexpr size_t kChatKeyMaxBytes = TxArenaPool::kChatKeyMax;   // 47
 inline constexpr uint32_t kMaxSegment = 999999;       // seg-NNNNNN: six digits
 inline constexpr size_t kHeadMaxBytes = 16384;        // head.json, crc tail included
 inline constexpr size_t kHeadMaxPinned = 64;          // HeadState::pinned entries
+inline constexpr size_t kHeadMaxRefusedPhotos = 16;  // HeadState::refusedPhotos entries
 inline constexpr size_t kHeadMaxString = 128;         // profile and each pinned entry
 inline constexpr size_t kBulkMaxBytes = 512 * 1024;   // one bulk payload
 inline constexpr size_t kBulkChunkBytes = 32 * 1024;  // one bulk append: about 50 ms of card lock (Ruling 19)
@@ -116,6 +117,9 @@ struct HeadState {
   uint64_t lastReqAt = 0;       // epoch seconds of the last head request on this chat
   uint32_t openTurn = 0;        // 0 = no turn open (the newest t item has an e after it)
   uint8_t attempts = 0;         // attempts of the open turn (its t item's attempt)
+  // Photo refs a provider refused as pixels in this chat (lane E2-REP4; kept only here, at most
+  // kHeadMaxRefusedPhotos, the oldest given up first): each renders as its line after a restart too.
+  std::vector<std::string> refusedPhotos;
 };
 
 // Where an item went: a failed append leaves the item in RAM, not stored, and the

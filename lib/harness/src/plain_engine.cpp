@@ -45,10 +45,6 @@ struct PlainEngine::ChatState {
   // stubs until a compaction stores (or a restart), so the turns after it share one cached prefix; it moves only
   // when a request is over its cap again, and then down to kLadderLowPercent of the cap.
   uint64_t ladderLine = 0;
-  // Lane E2-P-PHOTO: photo refs a provider refused as pixels in this chat (an image refusal); each
-  // renders as its line from then on, so one bad photo never fails the turns after it (RAM only: after a
-  // restart a refused photo is tried once more and refused once more).
-  std::vector<std::string> refusedPhotos;
   uint32_t lastTurn = 0;
   std::unique_ptr<LastTurn> last;      // the last closed turn, for the turn inspector (lane E2-P-SURF)
   bool booted = false;
@@ -625,7 +621,7 @@ class TurnRun {
     for (const tx::Part& p : in.parts) photoCandidate(f, p, 0);
     earlierPhotos(f);
     // E2-P-PHOTO: a photo a provider refused takes no place in view.
-    const std::vector<std::string>& no = c_.refusedPhotos;
+    const std::vector<std::string>& no = c_.head.refusedPhotos;
     for (size_t i = f.candidates.size(); i-- > 0;)
       if (std::find(no.begin(), no.end(), f.candidates[i]) != no.end()) {
         f.candidates.erase(f.candidates.begin() + (long)i);
@@ -948,7 +944,7 @@ class TurnRun {
     r.toolChoiceNone = t_.lastRound;
     r.photo = t_.setup.photo;
     r.bound = bound();
-    r.refusedPhotos = &c_.refusedPhotos;   // E2-P-PHOTO
+    r.refusedPhotos = &c_.head.refusedPhotos;   // E2-P-PHOTO
     r.ladder = &t_.ladder;
     r.longCache = d_.stablePrefix;   // the stable points keep 1 hour (lane E2-CACHE)
     tx::TxLog* log = d_.log;
@@ -1070,8 +1066,11 @@ class TurnRun {
       return false;
     t_.photoRefusalResent = true;
     for (const std::string& ref : t_.photosShown)
-      if (std::find(c_.refusedPhotos.begin(), c_.refusedPhotos.end(), ref) == c_.refusedPhotos.end())
-        c_.refusedPhotos.push_back(ref);
+      if (std::find(c_.head.refusedPhotos.begin(), c_.head.refusedPhotos.end(), ref) == c_.head.refusedPhotos.end()) {
+        // E2-REP4: kept in head.json (written at the close), so a restart does not try it again; bounded.
+        if (c_.head.refusedPhotos.size() >= tx::kHeadMaxRefusedPhotos) c_.head.refusedPhotos.erase(c_.head.refusedPhotos.begin());
+        c_.head.refusedPhotos.push_back(ref);
+      }
     hlog::logf("plain(%s): the provider refused the photos (HTTP %d): sent again with %u as their line",
                d_.chatKey.c_str(), t_.ex.httpStatus, (unsigned)t_.photosShown.size());
     t_.photosShown.clear();
@@ -2088,7 +2087,7 @@ class TurnRun {
       l->bound = bound();
       l->photo = t_.setup.photo;
       l->longCache = d_.stablePrefix;
-      l->refusedPhotos = c_.refusedPhotos;
+      l->refusedPhotos = c_.head.refusedPhotos;
       c_.last = std::move(l);
     } catch (const std::bad_alloc&) {
       c_.last.reset();
@@ -2436,6 +2435,7 @@ Status reopenChat(const EngineDeps& deps, PlainEngine::ChatState& c) {
   }
   const std::string memoryLine = c.memoryLine;
   tx::RecentFilesBlock recent = c.recent;
+  if (h.refusedPhotos.empty()) h.refusedPhotos = c.head.refusedPhotos;   // E2-REP4: refused in RAM, kept
   c = PlainEngine::ChatState{};   // afterRestart: the next turn opens cold over the whole conversation
   c.memoryLine = memoryLine;
   c.recent = recent;

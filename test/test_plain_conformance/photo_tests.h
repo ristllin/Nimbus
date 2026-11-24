@@ -314,6 +314,26 @@ inline void test_a_photo_the_provider_refuses_ends_in_a_reply_with_a_true_line()
   TEST_ASSERT_TRUE(has(lastBody(b), tx::kPhotoRefused));
 }
 
+// Lane E2-REP4: a refused photo is remembered with the chat (head.json), so after a restart the next
+// turn renders it as its refused line in one request (it was tried and refused once more before).
+inline void test_a_refused_photo_stays_refused_after_a_restart() {
+  txb::Battery b;
+  b.photoStore["pab12cd34"] = jpeg('j', 60000);
+  b.model.push(sp::httpError(400, R"({"type":"error","error":{"type":"invalid_request_error","message":)"
+                                  R"("messages.0.content.1.image.source.base64: The image format is not supported."}})"));
+  b.model.push(sp::say("I could not open that photo."));
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("What is on this label?", out, {photoPart("pab12cd34", 60000)}));
+  TEST_ASSERT_EQUAL(2, (int)b.model.requests().size());
+  TXB_OK(b.powerCycle());
+  b.advance(60);
+  b.model.push(sp::say("Noted."));
+  TXB_OK(b.owner("ok, never mind", out));
+  TEST_ASSERT_EQUAL_MESSAGE(3, (int)b.model.requests().size(), "the refused photo was tried again after the restart");
+  TEST_ASSERT_FALSE_MESSAGE(has(lastBody(b), pixelsOf('j')), "the refused photo was sent again after a restart");
+  TEST_ASSERT_TRUE(has(lastBody(b), tx::kPhotoRefused));
+}
+
 // Lane E2-REP4: on a direct Anthropic head a photo is uploaded once (the Files API, the released
 // engine's uploader) and named by its file id after: an album's own turn sends no pixels on any round,
 // the next turn names the same ids, no second upload is made, and the bytes ahead of the closed turns
@@ -426,6 +446,7 @@ inline void run() {
   RUN_TEST(test_an_album_of_ten_is_seen_whole_when_it_arrives);
   RUN_TEST(test_a_photo_the_provider_refuses_ends_in_a_reply_with_a_true_line);
   RUN_TEST(test_a_photo_is_uploaded_once_and_named_by_its_file_id_after);
+  RUN_TEST(test_a_refused_photo_stays_refused_after_a_restart);
 }
 
 }  // namespace photo_tests

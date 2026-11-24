@@ -266,6 +266,14 @@ void encodeHead(const HeadState& h, std::string& s) {
   field(s, "last_req_at", h.lastReqAt);
   field(s, "open_turn", h.openTurn);
   field(s, "attempts", h.attempts);
+  if (!h.refusedPhotos.empty()) {   // E2-REP4: written only when there is one (older heads stay byte for byte)
+    s += ",\"refused_photos\":[";
+    for (size_t i = 0; i < h.refusedPhotos.size(); ++i) {
+      if (i) s += ',';
+      putStr(s, h.refusedPhotos[i]);
+    }
+    s += ']';
+  }
   const uint32_t crc = crc32(s.data(), s.size());
   s += kTailHead;
   for (int i = 7; i >= 0; --i) s += kHex[(crc >> (4 * i)) & 15u];
@@ -363,6 +371,7 @@ const NumKey kNumKeys[] = {
 bool headField(const std::string& key, HeadCursor& c, HeadState& h, unsigned& seen) {
   if (key == "profile") return readStr(c, h.profile, kHeadMaxString);
   if (key == "pinned") return readStrList(c, h.pinned);
+  if (key == "refused_photos") return readStrList(c, h.refusedPhotos) && h.refusedPhotos.size() <= kHeadMaxRefusedPhotos;
   if (c.p < c.end && (*c.p == '"' || *c.p == '[')) {   // a key a newer writer added
     std::string skip;
     std::vector<std::string> skipList;
@@ -407,7 +416,10 @@ bool decodeHead(const char* data, size_t len, HeadState& out) {
 
 bool headWithinLimits(const HeadState& h) {
   if (h.profile.size() > kHeadMaxString || h.pinned.size() > kHeadMaxPinned) return false;
+  if (h.refusedPhotos.size() > kHeadMaxRefusedPhotos) return false;
   for (const std::string& p : h.pinned)
+    if (p.size() > kHeadMaxString) return false;
+  for (const std::string& p : h.refusedPhotos)
     if (p.size() > kHeadMaxString) return false;
   return true;
 }
