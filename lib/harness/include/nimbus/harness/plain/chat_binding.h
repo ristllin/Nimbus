@@ -269,23 +269,7 @@ class ChatBinding {
       if (!st.ok()) return st;
       arena_ = std::move(arena);
       log_.reset(new tx::TxLog(*d_.files, cfg_.chatKey));
-      hooks_.reset(new PlainHooks());
-      (void)installSuppression(*hooks_);
-      RailsDeps rails;
-      rails.pending = d_.railPending;
-      st = installRails(*hooks_, rails);
-      if (st.ok()) {
-        driver_.reset(new CompactDriver(compactDeps()));
-        st = installCompaction(*hooks_, *driver_);
-      }
-      if (!st.ok()) return fail(st);
-      if (d_.progress.send) {
-        reporter_.reset(new ProgressReporter(d_.progress));
-        const Platform* clock = p;
-        st = installProgress(*hooks_, *reporter_, clock->nowMs);   // a copy: no lambda of the same signature wrapping it
-        if (!st.ok()) return fail(st);
-      }
-      if (st.ok()) st = installResume(*hooks_, resumeDeps());   // E2-FIX12: the device binding never installed it
+      st = installSeams();
       if (!st.ok()) return fail(st);
       migrateOld();
       engine_.reset(new PlainEngine(deps()));
@@ -295,11 +279,7 @@ class ChatBinding {
     } catch (const std::bad_alloc&) {
       st = Status::fail(tx::Err::TooLarge, "plain::ChatBinding::boot.memory");
     }
-    // The seam runs after the chat is loaded: its failure (a send the channel refused, a resumed
-    // run that failed) leaves the turn open for a later boot and never keeps the chat from starting.
-    if (!st.ok() && resumeRan_ && engine_ && st.err == resume_.status.err && st.where == resume_.status.where)
-      st = Status::success();
-    if (!st.ok()) return fail(st);
+    if (!st.ok() && !onlyResumeFailed(st)) return fail(st);
     if (resumeRan_) afterResume();
     if (engine_->unloaded()) say("e2: the stored conversation could not be loaded: held in RAM, retried before each turn");
     rebuildSeen();
@@ -567,6 +547,30 @@ class ChatBinding {
     if (!d_.seen || !d_.seen->ready() || !engine_->head()) return;
     if (!nimbus::orch::rebuildSeen(*d_.seen, cfg_.chatId, *engine_->head(), *arena_).ok())
       say("e2: seen-index rebuild refused");
+  }
+  // The hooks and every seam the binding installs on them.
+  Status installSeams() {
+    hooks_.reset(new PlainHooks());
+    (void)installSuppression(*hooks_);
+    RailsDeps rails;
+    rails.pending = d_.railPending;
+    Status st = installRails(*hooks_, rails);
+    if (st.ok()) {
+      driver_.reset(new CompactDriver(compactDeps()));
+      st = installCompaction(*hooks_, *driver_);
+    }
+    if (st.ok() && d_.progress.send) {
+      reporter_.reset(new ProgressReporter(d_.progress));
+      st = installProgress(*hooks_, *reporter_, d_.platform->nowMs);   // a copy: no lambda of the same signature wrapping it
+    }
+    if (st.ok()) st = installResume(*hooks_, resumeDeps());   // E2-FIX12: the device binding never installed it
+    return st;
+  }
+  // E2-FIX12: the crash resume runs after the chat is loaded; its own failure (a send the channel
+  // refused, a resumed run that failed) leaves the turn open for a later boot and never keeps the
+  // chat from starting.
+  bool onlyResumeFailed(const Status& st) const {
+    return resumeRan_ && engine_ && st.err == resume_.status.err && st.where == resume_.status.where;
   }
   // Lane E2-FIX12: the seam's deps, read when it runs (the engine exists by then: boot runs it).
   ResumeDeps resumeDeps() {

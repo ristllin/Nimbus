@@ -625,6 +625,13 @@ bool waitsForHistory(const String& chatId) {
   return !resident && baseKey && !migratedev::historyReady(chatId.c_str());
 }
 
+// The crash journal of a person's turn (E2-FIX12): its chat and kind for the next boot.
+void journalTurn(const String& chatId, const plain::ChatMessage& msg) {
+  const char* head = !msg.parts.empty() ? "[image]" : !msg.stored.empty() ? "[file]" : "";
+  nimbus::crash::turnStarted(chatId == "serial" ? nimbus::orch::kTurnSourceSerial : nimbus::orch::kTurnSourceOwner,
+                             chatId.c_str(), head);
+}
+
 // One person's message as one engine-2 turn (tg_poll). Returns whether a reply went out.
 bool runOne(const String& text, const String& fromName, const String& chatId) {
   const String host = store::resolvedOrchHost();
@@ -667,8 +674,7 @@ bool runOne(const String& text, const String& fromName, const String& chatId) {
   const uint32_t t0 = millis();
   // The crash journal (E2-FIX12): a restart inside this turn names its chat at the next boot, where
   // the engine resumes it once (bootLostChat).
-  nimbus::crash::turnStarted(chatId == "serial" ? nimbus::orch::kTurnSourceSerial : nimbus::orch::kTurnSourceOwner,
-                             chatId.c_str(), !msg.parts.empty() ? "[image]" : !msg.stored.empty() ? "[file]" : "");
+  journalTurn(chatId, msg);
   {
     PsramFirstScope psramFirst;
     st = b->turn(msg, out);

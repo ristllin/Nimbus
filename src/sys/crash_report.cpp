@@ -429,18 +429,38 @@ void collectTurnJournal() {
   g_lostTurnFound = true;
 }
 
+// The first boot of a newly written image is not a crash when the reset reason is the only sign
+// (a cable flash ends in a reset the chip reports as watchdog): no notice. A crash record of this
+// firmware for this reset is still told (nimbus/sys/image_boot.h).
+bool crashNoticeDueNow(const Report* dump) {
+  if (nimbus::sys::crashNoticeDue(g_reason, g_image, dump && dump->fwMatch)) return true;
+  agent::alogcf(errlog::cat::kBoot, "crash: no owner notice: the first boot of this image (reset %s, no crash record of it)",
+                nimbus::sys::resetSlug(g_reason, nimbus::sys::ResetVocab::BootRow).c_str());
+  return false;
+}
+
+// Engine 2: a person's cut request is the engine's to answer (one resume, else its own plain
+// notice); its notice is kept and sent only if the engine cannot take the turn. Only a journal
+// that names the chat (the seam can boot no other: lostOwnerTurn). A release or drop that came
+// first is applied here. Returns the text to send at boot; `toEngine` when it was kept.
+std::string settleAtBoot(nimbus::orch::RestartNoticePlan plan, const nimbus::orch::TurnJournal* j, bool& toEngine) {
+  const bool kept = plan.timing == nimbus::orch::NoticeTiming::Now && j && !j->chat.empty() &&
+                    nimbus::orch::isOwnerRequestKind(j->kind);
+  std::string now, dropped;
+  portENTER_CRITICAL(&g_noticeMux);
+  toEngine = kept && g_ownerTurnsResumed && g_ownerTurn != OwnerTurn::Released;
+  if (toEngine) g_keptOwnerNotice.swap(plan.text);
+  if (toEngine && g_ownerTurn == OwnerTurn::Dropped) dropped.swap(g_keptOwnerNotice);   // the engine told the person
+  now = g_notices.atBoot(std::move(plan));
+  portEXIT_CRITICAL(&g_noticeMux);
+  return now;
+}
+
 void queueCrashNotice() {
   if (!crashBoot()) return;
   // A crash's own dump names its cause; an older dump (this crash wrote none) does not.
   const Report* dump = (g_report && describesThisCrash(*g_report)) ? g_report : nullptr;
-  // The first boot of a newly written image is not a crash when the reset reason is the only
-  // sign (a cable flash ends in a reset the chip reports as watchdog): no notice. A crash record
-  // of this firmware for this reset is still told (nimbus/sys/image_boot.h).
-  if (!nimbus::sys::crashNoticeDue(g_reason, g_image, dump && dump->fwMatch)) {
-    agent::alogcf(errlog::cat::kBoot, "crash: no owner notice: the first boot of this image (reset %s, no crash record of it)",
-                  nimbus::sys::resetSlug(g_reason, nimbus::sys::ResetVocab::BootRow).c_str());
-    return;
-  }
+  if (!crashNoticeDueNow(dump)) return;
   const nimbus::orch::TurnJournal* j = g_lostTurnFound ? &g_lostTurn : nullptr;
   const char* cause = plainCause(crashKind(dump, g_reason));
   const std::string name(sys::deviceName().c_str());
@@ -461,19 +481,8 @@ void queueCrashNotice() {
                                             replay)
             : nimbus::orch::planRestartNotice(name, g_reason, j, hhmm, cause);
   const nimbus::orch::NoticeTiming timing = plan.timing;
-  std::string now;
-  // Engine 2: a person's cut request is the engine's to answer (one resume, else its own plain
-  // notice); this notice is kept and sent only if the engine cannot take the turn.
-  // Only a journal that names the chat: the seam can boot no other (lostOwnerTurn).
-  const bool kept = timing == nimbus::orch::NoticeTiming::Now && j && !j->chat.empty() &&
-                    nimbus::orch::isOwnerRequestKind(j->kind);
-  std::string dropped;
-  portENTER_CRITICAL(&g_noticeMux);
-  const bool toEngine = kept && g_ownerTurnsResumed && g_ownerTurn != OwnerTurn::Released;
-  if (toEngine) g_keptOwnerNotice.swap(plan.text);
-  if (toEngine && g_ownerTurn == OwnerTurn::Dropped) dropped.swap(g_keptOwnerNotice);   // the engine told the person
-  now = g_notices.atBoot(std::move(plan));
-  portEXIT_CRITICAL(&g_noticeMux);
+  bool toEngine = false;
+  std::string now = settleAtBoot(std::move(plan), j, toEngine);
   agent::alogcf(errlog::cat::kBoot, "crash: owner notice %s (turn=%s)",
                 toEngine                                     ? "kept for the engine's resume"
                 : timing == nimbus::orch::NoticeTiming::Now  ? "at boot"
