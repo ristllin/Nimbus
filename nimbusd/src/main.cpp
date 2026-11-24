@@ -169,6 +169,23 @@ uint32_t testBodyCap(const nimbusd::Config& cfg) {
   return cap <= 0xFFFFFFFFull ? (uint32_t)cap : 0;
 }
 
+// Lane E2-P-HOST1: the earlier engine's owner conversation (the web chat and every owner Telegram chat,
+// never a member's) for the import, its fold record, web search and the device name.
+void bindEngine2Parts(nimbusd::NimbusdRig& rig, nimbusd::Engine2Options& o) {
+  o.oldRows = [&rig](const nimbus::orch::MsgQuery& q, nimbus::orch::EpiQueryInfo& info) {
+    nimbus::orch::MsgQuery owner = q;
+    owner.sessionId.clear();
+    owner.sessionAllow = {nimbusd::kWebChatId};
+    for (const auto& m : rig.telegramAccess().members())
+      if (m.owner) owner.sessionAllow.push_back(m.id);
+    return rig.episodic().query(owner, &info);
+  };
+  o.oldFold = [&rig] { return rig.foldState(nimbusd::kWebChatId); };
+  o.webSearch = rig.webSearchDeps();
+  o.webSearchOpen = [&rig] { return rig.webSearchOpen(); };
+  o.deviceName = rig.settings().devName;
+}
+
 std::string startEngine2(const nimbusd::Config& cfg, nimbusd::NimbusdRig& rig, nimbusd::EngineThread& eng,
                          std::function<void(const std::string&, const std::string&)> deliver,
                          std::atomic<nimbusd::TelegramChannel*>* sender, std::unique_ptr<nimbusd::Engine2Host>& out) {
@@ -199,21 +216,8 @@ std::string startEngine2(const nimbusd::Config& cfg, nimbusd::NimbusdRig& rig, n
     rig.spendCeiling().commit(spend, tag != "compact");
   };
   o.paused = [] { return nimbus::orch::spendFrozen(); };   // lane E2-FIX7: engine 2 fails closed at the ceiling
-  // Lane E2-P-HOST1: the earlier engine's owner conversation (the web chat and every owner Telegram chat,
-  // never a member's) for the import, its fold record, web search, the progress signals, the device name.
-  o.oldRows = [&rig](const nimbus::orch::MsgQuery& q, nimbus::orch::EpiQueryInfo& info) {
-    nimbus::orch::MsgQuery owner = q;
-    owner.sessionId.clear();
-    owner.sessionAllow = {nimbusd::kWebChatId};
-    for (const auto& m : rig.telegramAccess().members())
-      if (m.owner) owner.sessionAllow.push_back(m.id);
-    return rig.episodic().query(owner, &info);
-  };
-  o.oldFold = [&rig] { return rig.foldState(nimbusd::kWebChatId); };
-  o.webSearch = rig.webSearchDeps();
-  o.webSearchOpen = [&rig] { return rig.webSearchOpen(); };
+  bindEngine2Parts(rig, o);
   o.turnProgress = turnProgressTo(sender);
-  o.deviceName = rig.settings().devName;
   out.reset(new nimbusd::Engine2Host(o));
   const std::string why = out->start();
   if (!why.empty()) return why;
