@@ -1058,40 +1058,44 @@ plain::ChatBinding* keptBinding(const String& chatId, const char*& line, bool& s
   return b;
 }
 
-// The chat could not start (the card, memory, a held conversation): the messages stay kept and are
-// tried again in a minute; the person is told the cause once while it lasts (ruling 116).
+// No turn can run yet (the chat could not start: the card, memory, a held conversation; E2-REP1: a
+// setting, the monthly ceiling, the provider's limit, the park or a pause): the messages stay kept and
+// are tried again in a minute, never dropped (their rows are engine 2's, so only a turn stores them,
+// ruling 81); the person is told the cause once while it lasts (ruling 116; null or "": no line).
 plain::WaitingAnswer keptStalled(const String& chatId, const char* line) {
   s_keptRetryAt = millis() | 1;
   for (const std::string& c : s_keptStallTold)
     if (c == chatId.c_str()) return plain::WaitingAnswer::Later;
   s_keptStallTold.push_back(chatId.c_str());
-  alogf("e2: chat %s could not start: its kept messages wait and are tried again in a minute", chatId.c_str());
-  sayInstead(chatId, line);
+  alogf("e2: chat %s cannot run a turn yet: its kept messages wait and are tried again in a minute", chatId.c_str());
+  if (line && *line) sayInstead(chatId, line);
   return plain::WaitingAnswer::Later;
 }
 
-// One kept message, answered once the read-in ended: its turn, or one true line instead when a
-// setting holds every turn back (as for a new message).
+// One kept message, answered once the read-in ended: its turn. E2-REP1: a setting or the money gates
+// holding every turn back keep it waiting with a retry, the person told the cause once (it is never
+// dropped: its row is tagged e2, so neither the import nor a later turn would bring it in).
 plain::WaitingAnswer answerKept(const plain::WaitingMessage& w, const String& chatId) {
   const char* line = nullptr;
   bool setting = false;
   plain::ChatBinding* b = keptBinding(chatId, line, setting);
-  if (!b && setting) {
-    sayInstead(chatId, line);
-    return plain::WaitingAnswer::Done;
-  }
   if (!b) return keptStalled(chatId, line);
-  s_keptStallTold.clear();
+  // Told already and still held: the park is only read, so the retries spend none of its latches.
+  const String host = store::resolvedOrchHost();
+  std::string why;
+  if (std::find(s_keptStallTold.begin(), s_keptStallTold.end(), std::string(chatId.c_str())) != s_keptStallTold.end() &&
+      plain::headHeld(host.c_str(), keyOf(host.c_str()), store::providerOverBudget(host), (uint32_t)millis(), why))
+    return keptStalled(chatId, nullptr);
   // E2-FIX14: a kept message's turn passes engine 1's money gates as a new message does (its inbound screen
-  // ran when it came): over the limit, parked or paused, it gets the same line and no request.
+  // ran when it came): over the limit, parked or paused, no request.
   plain::MessageGateDeps g = gateDeps();
   g.inbound = nullptr;
   const plain::MessageGate gate = plain::gateMessage(g, chatId.c_str(), w.text, /*personWrote=*/true);
   if (gate.verdict != plain::GateVerdict::Run) {
     alogf("e2: a message to %s kept during the read-in: the head is held (%s), no request", chatId.c_str(), gate.why);
-    if (!gate.line.empty()) sayInstead(chatId, gate.line.c_str());
-    return plain::WaitingAnswer::Done;
+    return keptStalled(chatId, gate.line.c_str());
   }
+  s_keptStallTold.clear();
   plain::ChatMessage msg;
   msg.probe = gate.probe;
   msg.text = w.text;
