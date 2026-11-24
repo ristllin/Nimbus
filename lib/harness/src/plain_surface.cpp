@@ -56,6 +56,105 @@ std::string whyNot(const Status& st) {
   return std::string("It could not be rendered again (") + (w.empty() ? "internal" : w) + ").";
 }
 
+std::string esc(const std::string& s) {
+  std::string o;
+  for (unsigned char c : s) {
+    if (c == '"' || c == '\\') {
+      o += '\\';
+      o += static_cast<char>(c);
+    } else if (c == '\n') {
+      o += "\\n";
+    } else {
+      o += c < 0x20 ? ' ' : static_cast<char>(c);
+    }
+  }
+  return o;
+}
+
+// "YYYY-MM-DD" at noon UTC as epoch seconds (days from 1970-01-01 in the civil calendar: newlib has no timegm).
+uint64_t dayNoon(const std::string& day) {
+  long y = std::atol(day.c_str());
+  const long mth = std::atol(day.c_str() + 5), dd = std::atol(day.c_str() + 8);
+  y -= mth <= 2;
+  const long era = (y >= 0 ? y : y - 399) / 400, yoe = y - era * 400;
+  const long doy = (153 * (mth + (mth > 2 ? -3 : 9)) + 2) / 5 + dd - 1, doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  const long long t = (era * 146097LL + doe - 719468LL) * 86400LL + 12 * 3600;
+  return t > 0 ? static_cast<uint64_t>(t) : 0;
+}
+
+// The newest cumulative summary of the engine's digests, with its day, q and the q it covers.
+struct SummaryFound {
+  std::string text, day;
+  uint64_t q = 0, thru = 0, when = 0;   // when: the item's time, 0 when it left memory
+};
+SummaryFound newestSummary(const PlainEngine& e) {
+  SummaryFound f;
+  const std::vector<tx::DigestEntry>* d = const_cast<PlainEngine&>(e).digests();
+  if (d)
+    for (const tx::DigestEntry& x : *d)
+      if (tx::isSummaryText(x.text) && x.q >= f.q) {
+        f.text = x.text;
+        f.day = x.day;
+        f.q = x.q;
+        f.thru = x.thru;
+      }
+  const tx::TxArena* a = e.deps().arena;
+  size_t i = 0;
+  tx::Item it;
+  if (f.q && a && a->find(f.q, i).ok() && a->get(i, it).ok()) f.when = it.t;
+  return f;
+}
+
+std::string dateOfItem(const PlainEngine* e, uint64_t q) {
+  size_t i = 0;
+  tx::Item it;
+  if (!q || !e || !e->deps().arena || !e->deps().arena->find(q, i).ok() || !e->deps().arena->get(i, it).ok()) return std::string();
+  return dateOf(it.t);
+}
+
+// The end item's line: the turn's figures, its events and each request.
+std::string endLine(const tx::TurnEndFacts& f) {
+  std::string out = "end: " + f.cause + ", " + num(f.rounds) + " round(s), " + num(f.tools) + " call(s), " + num(f.headRequests) +
+                    " request(s), in " + num(f.promptTokens) + " out " + num(f.outputTokens) + " cache " + num(f.cacheReadTokens) +
+                    ", " + num(f.microUsd) + " micro-USD, " + num(f.ms) + " ms";
+  for (const std::string& ev : f.events) out += "\n    event: " + ev;
+  for (size_t k = 0; k < f.exchanges.size(); ++k)
+    out += "\n    request " + num(k + 1) + ": " + num(f.exchanges[k].requestBytes) + " B, " + num(f.exchanges[k].ms) +
+           " ms, HTTP " + num(f.exchanges[k].httpStatus);
+  return out;
+}
+
+// The items a turn adds around its calls: notes, pointer moves, deliveries, the end.
+std::string quietLine(const tx::Item& it) {
+  switch (it.kind) {
+    case tx::ItemKind::RoundMeta: return "round meta";
+    case tx::ItemKind::DeviceNote: return std::string("device note (") + tx::noteClassSlug(it.note) + "): " + oneLine(it.x, 400);
+    case tx::ItemKind::PointerMove: return "stub pointer to q" + num(it.stub) + " (" + it.why + ")";
+    case tx::ItemKind::Delivery: return "delivered " + num(it.msgIds.size()) + " message(s)";
+    case tx::ItemKind::TurnEnd: return endLine(it.end);
+    default: return std::string();
+  }
+}
+
+std::string itemLine(const tx::Item& it) {
+  std::string out = "q" + num(it.q) + " " + std::string(1, static_cast<char>(it.kind)) + " ";
+  switch (it.kind) {
+    case tx::ItemKind::User: out += "message via " + it.ch + ": " + oneLine(it.x, kItemTextMax); break;
+    case tx::ItemKind::TurnOpen:
+      out += "open by " + it.trigger + ", head " + it.head + ", attempt " + num(it.attempt); break;
+    case tx::ItemKind::Assistant:
+      out += std::string("round ") + num(it.rd) + (it.fin ? " (final): " : ": ") + oneLine(it.x, kItemTextMax); break;
+    case tx::ItemKind::Call: out += it.n + " " + oneLine(it.st.empty() ? it.args : it.st, 400) + " [" + it.id + "]"; break;
+    case tx::ItemKind::Intent: out += "intent [" + it.id + "]"; break;
+    case tx::ItemKind::Result:
+      out += std::string(it.ok ? "ok " : "failed ") + tx::resultClassSlug(it.cls) + " [" + it.id + "] " + num(it.bytes) + " B: " +
+             oneLine(it.x.empty() ? it.st : it.x, 400);
+      break;
+    default: out += quietLine(it); break;
+  }
+  return out;
+}
+
 }  // namespace
 
 std::string lastTurnText(const PlainEngine& e, size_t round, tx::ArenaAllocFn alloc, tx::ArenaFreeFn release, bool& found) {
@@ -120,36 +219,7 @@ std::string turnLogText(const PlainEngine& e, uint64_t row, bool& found) {
       out += "... (cut)\n";
       break;
     }
-    out += "q" + num(it.q) + " " + std::string(1, static_cast<char>(it.kind)) + " ";
-    switch (it.kind) {
-      case tx::ItemKind::User: out += "message via " + it.ch + ": " + oneLine(it.x, kItemTextMax); break;
-      case tx::ItemKind::TurnOpen:
-        out += "open by " + it.trigger + ", head " + it.head + ", attempt " + num(it.attempt); break;
-      case tx::ItemKind::Assistant:
-        out += std::string("round ") + num(it.rd) + (it.fin ? " (final): " : ": ") + oneLine(it.x, kItemTextMax); break;
-      case tx::ItemKind::Call: out += it.n + " " + oneLine(it.st.empty() ? it.args : it.st, 400) + " [" + it.id + "]"; break;
-      case tx::ItemKind::Intent: out += "intent [" + it.id + "]"; break;
-      case tx::ItemKind::Result:
-        out += std::string(it.ok ? "ok " : "failed ") + tx::resultClassSlug(it.cls) + " [" + it.id + "] " + num(it.bytes) + " B: " +
-               oneLine(it.x.empty() ? it.st : it.x, 400);
-        break;
-      case tx::ItemKind::RoundMeta: out += "round meta"; break;
-      case tx::ItemKind::DeviceNote: out += std::string("device note (") + tx::noteClassSlug(it.note) + "): " + oneLine(it.x, 400); break;
-      case tx::ItemKind::PointerMove: out += "stub pointer to q" + num(it.stub) + " (" + it.why + ")"; break;
-      case tx::ItemKind::Delivery: out += "delivered " + num(it.msgIds.size()) + " message(s)"; break;
-      case tx::ItemKind::TurnEnd: {
-        const tx::TurnEndFacts& f = it.end;
-        out += "end: " + f.cause + ", " + num(f.rounds) + " round(s), " + num(f.tools) + " call(s), " + num(f.headRequests) +
-               " request(s), in " + num(f.promptTokens) + " out " + num(f.outputTokens) + " cache " + num(f.cacheReadTokens) +
-               ", " + num(f.microUsd) + " micro-USD, " + num(f.ms) + " ms";
-        for (const std::string& ev : f.events) out += "\n    event: " + ev;
-        for (size_t k = 0; k < f.exchanges.size(); ++k)
-          out += "\n    request " + num(k + 1) + ": " + num(f.exchanges[k].requestBytes) + " B, " + num(f.exchanges[k].ms) +
-                 " ms, HTTP " + num(f.exchanges[k].httpStatus);
-        break;
-      }
-      default: break;
-    }
+    out += itemLine(it);
     out += "\n";
   }
   found = count > 0;
@@ -157,45 +227,15 @@ std::string turnLogText(const PlainEngine& e, uint64_t row, bool& found) {
 }
 
 std::string foldStatusJson(const PlainEngine* e, const std::string& chat, bool held, uint64_t nowEpoch) {
-  auto esc = [](const std::string& s) {
-    std::string o;
-    for (unsigned char c : s) {
-      if (c == '"' || c == '\\') { o += '\\'; o += static_cast<char>(c); }
-      else if (c == '\n') o += "\\n";
-      else if (c < 0x20) o += ' ';
-      else o += static_cast<char>(c);
-    }
-    return o;
-  };
-  std::string summary, day;
-  uint64_t q = 0, thru = 0, when = 0;
-  if (held && e) {
-    const std::vector<tx::DigestEntry>* d = const_cast<PlainEngine*>(e)->digests();
-    if (d)
-      for (const tx::DigestEntry& x : *d)
-        if (tx::isSummaryText(x.text) && x.q >= q) { summary = x.text; day = x.day; q = x.q; thru = x.thru; }
-    const tx::TxArena* a = e->deps().arena;
-    size_t i = 0;
-    tx::Item it;
-    if (q && a && a->find(q, i).ok() && a->get(i, it).ok()) when = it.t;
-  }
-  std::string thruDate;
-  if (thru && e && e->deps().arena) {
-    size_t i = 0;
-    tx::Item it;
-    if (e->deps().arena->find(thru, i).ok() && e->deps().arena->get(i, it).ok()) thruDate = dateOf(it.t);
-  }
+  SummaryFound f;
+  if (held && e) f = newestSummary(*e);
+  const std::string summary = f.text, day = f.day;
+  uint64_t when = f.when;
+  const std::string thruDate = dateOfItem(e, f.thru);
   const bool has = !summary.empty();
   const bool fromItem = when != 0;
   if (has && !when && day.size() == 10) {   // the item left memory: the digest's own day, at noon UTC
-    // Days from 1970-01-01 (the civil calendar), noon UTC: newlib has no timegm.
-    long y = std::atol(day.c_str());
-    const long mth = std::atol(day.c_str() + 5), dd = std::atol(day.c_str() + 8);
-    y -= mth <= 2;
-    const long era = (y >= 0 ? y : y - 399) / 400, yoe = y - era * 400;
-    const long doy = (153 * (mth + (mth > 2 ? -3 : 9)) + 2) / 5 + dd - 1, doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    const long long t = (era * 146097LL + doe - 719468LL) * 86400LL + 12 * 3600;
-    if (t > 0) when = static_cast<uint64_t>(t);
+    when = dayNoon(day);
   }
   double ageH = 0;
   if (has && when && nowEpoch > when) ageH = static_cast<double>(nowEpoch - when) / 3600.0;

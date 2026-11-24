@@ -18,6 +18,7 @@
 
 #include "../support/scripted_provider/scripted_provider.h"
 #include "nimbus/harness/plain/chat_binding.h"
+#include "nimbus/harness/plain/chat_commands.h"
 #include "nimbus/harness/plain/chat_photos.h"
 #include "nimbus/harness/plain/request.h"
 #include "nimbus/harness/plain/surface.h"
@@ -409,20 +410,28 @@ static void test_usage_rows_carry_the_provider_and_the_served_model() {
 static void test_tools_page_and_help_name_only_what_engine_2_has() {
   const std::string mem = readFile("src/net/web_memory.cpp");
   TEST_ASSERT_FALSE(mem.empty());
+  const size_t guard = mem.find("#ifdef NIMBUS_E1_TOOL_ROWS");
+  TEST_ASSERT_TRUE(guard != std::string::npos);
   const size_t dev = mem.find("grp(\"device\", \"device.*\"");
-  TEST_ASSERT_TRUE(dev != std::string::npos);
-  const size_t guard = mem.rfind("#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1", dev);
-  TEST_ASSERT_TRUE_MESSAGE(guard != std::string::npos && dev - guard < 200, "device.* rows are engine 1 only");
   const size_t conn = mem.find("  addConnectorRows(arr, ps, kUnavail);");
-  TEST_ASSERT_TRUE(conn != std::string::npos);
-  const size_t g2 = mem.rfind("#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1", conn);
-  TEST_ASSERT_TRUE_MESSAGE(g2 != std::string::npos && conn - g2 < 200, "connector rows are engine 1 only");
+  const size_t end1 = mem.find("#endif", guard);
+  TEST_ASSERT_TRUE_MESSAGE(dev != std::string::npos && dev > guard && dev < end1, "device.* rows are engine 1 only");
+  const size_t g2 = mem.find("#ifdef NIMBUS_E1_TOOL_ROWS", end1);
+  const size_t end2 = mem.find("#endif", g2);
+  TEST_ASSERT_TRUE_MESSAGE(g2 != std::string::npos && conn > g2 && conn < end2, "connector rows are engine 1 only");
   const std::string cmd = readFile("src/agent/commands_plain.cpp");
-  const size_t h = cmd.find("Owner commands:");
-  TEST_ASSERT_TRUE(h != std::string::npos);
-  const std::string help = cmd.substr(h, cmd.find("/model - which provider", h) - h);
-  for (const char* gone : {"/mcp", "/skill", "/prefs"}) TEST_ASSERT_FALSE_MESSAGE(has(help, gone), gone);
-  for (const char* kept : {"/compact", "/clear", "/usage", "/loops"}) TEST_ASSERT_TRUE_MESSAGE(has(help, kept), kept);
+  TEST_ASSERT_TRUE_MESSAGE(has(cmd, "chatCommandRoute(c) == plain::ChatCommandRoute::NotYet) continue;"),
+                           "/help is derived from the route table");
+  // The route table itself: the three commands that answer "not available" are the ones /help leaves out.
+  nimbus::orch::Command c;
+  for (const char* v : {"mcp", "skill", "prefs"}) {
+    c.verb = v;
+    TEST_ASSERT_EQUAL((int)plain::ChatCommandRoute::NotYet, (int)plain::chatCommandRoute(c));
+  }
+  for (const char* v : {"compact", "clear", "usage", "loops", "model"}) {
+    c.verb = v;
+    TEST_ASSERT_TRUE_MESSAGE(plain::chatCommandRoute(c) != plain::ChatCommandRoute::NotYet, v);
+  }
 }
 
 int main(int, char**) {

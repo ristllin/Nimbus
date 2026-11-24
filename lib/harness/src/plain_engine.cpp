@@ -88,6 +88,11 @@ uint32_t fnv1a(uint32_t h, const std::string& s) {
   return h;
 }
 
+// The model the provider named last (E2-P-SURF); an answer that names none keeps the one before.
+void keepServed(std::string& kept, const std::string& named) {
+  if (!named.empty()) kept = named;
+}
+
 // One turn's state. It lives on the heap so runTurn's frame stays small.
 struct Turn {
   TurnCtx ctx;
@@ -994,7 +999,7 @@ class TurnRun {
     t_.end.cacheReadTokens += u.cacheReadTokens;
     t_.end.cacheWriteTokens += u.cacheWriteTokens;
     t_.end.cacheWrite1hTokens += std::min(u.cacheWrite1hTokens, u.cacheWriteTokens);
-    if (!u.servedModel.empty()) t_.end.servedModel = u.servedModel;   // E2-P-SURF: the usage rows name it
+    keepServed(t_.end.servedModel, u.servedModel);   // E2-P-SURF: the usage rows name it
     // The guards' inputs: size counts every prompt token (cached ones too); spend prices them. An
     // answer that reports no usage at all still counts: a floor from the request's bytes (about 3.5 B
     // a token, kDefaultRequestTokens' rule) at the input rate, named by an event (ruling 79 item 1).

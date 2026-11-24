@@ -3728,6 +3728,12 @@ function applyOrch(d){
   // Tool use switches save on change; one the owner just flipped keeps its state
   // while its save is in flight, so the 5 s poll never puts the old value back.
   _orchSwitch('orchLoop',d.orchLoop);_orchSwitch('midFail',d.midFail);_orchSwitch('codeSbx',d.codeSbx);
+  // Engine 2 (E2-P-SURF): a setting it does not read is hidden, with one line saying so.
+  if(d.engine===2&&d.inert)d.inert.forEach(function(x){var e=$(x[0]);if(!e||e.dataset.inert)return;e.dataset.inert=1;
+    var c=e.tagName==='INPUT'?(e.closest('label')||e):e,t=c,i,n=c.nextElementSibling,p=document.createElement('p');
+    for(i=0;i<x[2];i++){t=t.previousElementSibling;if(t)t.style.display='none';}
+    if(n&&n.classList.contains('tip'))n.style.display='none';
+    c.style.display='none';p.className='hint';p.textContent=x[1];c.parentNode.insertBefore(p,c);});
   if(d.orchTrace!==undefined){_orchSwitch('orchTrace',d.orchTrace);
     GB.trace=!!d.orchTrace;_chatTraceHint();}   // glass-box honesty (no extra poll)
   _sbxStatus(d);
@@ -5233,8 +5239,9 @@ function renderFold(d){
   if(d.thruDate)l.push('It covers the conversation up to '+d.thruDate+'.');
   if(d.uncovered)l.push('Some older messages are not in it yet.');
   if(d.failedCycles&&!d.running)l.push('The last '+(d.failedCycles>1?d.failedCycles+' tries':'try')+' did not finish.'+(w?' It tries again '+(w<120?'in a moment':w<7200?'in '+Math.round(w/60)+' minutes':'in about '+Math.round(w/3600)+' hours')+'.':''));
-  l.push('Summary requests today: '+d.paidToday+' (automatic ones stop at '+d.cap+').');
-  $('foldInfo').innerHTML=l.map(x=>'<div>'+_fesc(x)+'</div>').join('');
+  if(d.engine!==2)l.push('Summary requests today: '+d.paidToday+' (automatic ones stop at '+d.cap+').');
+  else{if(st==='busy')l.length=0;(d.lines||[]).forEach(x=>l.push(x));}   // engine 2: its own lines (E2-P-SURF)
+  $('foldInfo').innerHTML=l.map(x=>'<div>'+_fesc(x)+'</div>').join('')+(d.summary?'<pre style="white-space:pre-wrap;word-break:break-word;font-size:11px;max-height:260px;overflow:auto;margin:6px 0 0">'+_fesc(d.summary)+'</pre>':'');
   run.disabled=!d.canRun;run.style.opacity=d.canRun?'':'.5';
   $('foldMsg').textContent=r?'Summarizing now: provider '+r[0]+' of '+r[1]+(d.rungHost?' ('+d.rungHost+')':'')+'.':d.canRun?'':d.why||'';
 }

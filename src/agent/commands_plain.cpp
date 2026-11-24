@@ -197,23 +197,47 @@ String spending(const nimbus::orch::Command& cmd, const String& chatId, bool own
   return String(r.text.c_str());
 }
 
-void help(const String& chatId) {
-  say(chatId, "Hi - I'm " + String(nimbus::sys::deviceName().c_str()) +
-                  " (firmware " NIMBUS_FW_VERSION
-                  "). Send a message and I'll reply here.\n\nOwner commands:\n"
-                  "/update - install a pending firmware update\n"
-                  "/update back - go back to the stable release (keeps files and history)\n"
-                  "/loops - list routines\n"
-                  "/remind <when> <what> - one-time reminder (e.g. /remind 30m ...)\n"
-                  "/compact - summarize this conversation into memory\n"
-                  "/clear - forget this conversation (keeps memory and files)\n"
-                  "/play [track|stop|pause] - play music from the SD card\n"
-                  "/loop approve|deny|off|on <id> - manage a routine\n"
-                  "/loop grants on|off - may routines use your connectors and start sub-agents\n"
-                  "/usage - this month's spending, limits and what is paused\n"
-                  "/budget <provider|all> <USD> - change a monthly limit (asks you to confirm)\n"
-                  "/model - which provider and model the assistant uses, and what is paused");
+// The lines /help lists, each under its verb. A verb whose route is "not yet" (plain/chat_commands.h) is left
+// out, every other is listed, so a command is named the day its route stops being "not yet" (lane E2-P-SURF).
+struct HelpLine {
+  const char* verb;
+  const char* text;
+};
+const HelpLine kHelpLines[] = {
+    {"update", "/update - install a pending firmware update"},
+    {"update", "/update back - go back to the stable release (keeps files and history)"},
+    {"loops", "/loops - list routines"},
+    {"remind", "/remind <when> <what> - one-time reminder (e.g. /remind 30m ...)"},
+    {"compact", "/compact - summarize this conversation into memory"},
+    {"clear", "/clear - forget this conversation (keeps memory and files)"},
+    {"mcp", "/mcp approve|deny <name> - approve a tool server"},
+    {"play", "/play [track|stop|pause] - play music from the SD card"},
+    {"loop", "/loop approve|deny|off|on <id> - manage a routine"},
+    {"loop", "/loop grants on|off - may routines use your connectors and start sub-agents"},
+    {"skill", "/skill list|show <id> - see saved skills and what waits for you"},
+    {"skill", "/skill approve|deny|delete <id> - decide on the assistant's skill changes"},
+    {"skill", "/skill auto on|off - may the assistant approve its own skill changes"},
+    {"prefs", "/prefs - list your standing rules; /prefs add <rule> saves one"},
+    {"usage", "/usage - this month's spending, limits and what is paused"},
+    {"budget", "/budget <provider|all> <USD> - change a monthly limit (asks you to confirm)"},
+    {"model", "/model - which provider and model the assistant uses, and what is paused"},
+};
+
+String helpText() {
+  String out = "Hi - I'm " + String(nimbus::sys::deviceName().c_str()) +
+               " (firmware " NIMBUS_FW_VERSION "). Send a message and I'll reply here.\n\nOwner commands:";
+  for (const HelpLine& l : kHelpLines) {
+    nimbus::orch::Command c;
+    c.verb = l.verb;
+    c.args = "x";   // a verb with arguments, as /budget <provider> <USD> and /skill list are written
+    if (plain::chatCommandRoute(c) == plain::ChatCommandRoute::NotYet) continue;
+    out += "\n";
+    out += l.text;
+  }
+  return out;
 }
+
+void help(const String& chatId) { say(chatId, helpText()); }
 
 // /update back [yes]: the way back to the earlier engine (lane E2-P-REL, nimbus/ota/way_back.h).
 // The device first leaves the candidate channel (fail closed: a failed switch is stable too), so

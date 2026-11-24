@@ -535,6 +535,10 @@ void handleEpisodicGet(AsyncWebServerRequest* r) {
   sendJsonPsram(r, d);
 }
 
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
+#define NIMBUS_E1_TOOL_ROWS 1   // the device.*, connector and Tavily rows are engine 1's (E2-P-SURF)
+#endif
+
 // ---- GET /api/tools ----
 // The live on-device tool surface, straight from the MCP registry manifest (so it
 // never drifts from what the orchestrator actually advertises to the model + what
@@ -596,6 +600,36 @@ void addConnectorRows(JsonArray& arr, const ProviderState& ps, const char* kUnav
   (void)kUnavail;
 }
 
+// The rows only engine 1 has (E2-P-SURF): the turn contract's device actions, the provider connectors and the
+// Tavily hint. On an engine-2 image both are empty: its tools are the registry's.
+template <class G>
+void addTurnContractRows(G& grp, const char* kDirect) {
+#ifdef NIMBUS_E1_TOOL_ROWS
+  grp("device", "device.*", ORCH_D_DEVICE, "turn contract", false, kDirect);
+  grp("device", "device.led", "Ring pattern: solid/spinner/pulse/flash/rainbow + RGB + brightness", "turn action", false, kDirect);
+  grp("device", "device.lights", "Turn the ring on (full) or off", "turn action", false, kDirect);
+  grp("device", "device.config", "Adjust ring level, brightness, theme, power profile, voice", "turn action", false, kDirect);
+  grp("device", "device.tts", "Speak text to the owner (Telegram voice / desk speaker)", "turn action", false, kDirect);
+#endif
+  (void)grp;
+  (void)kDirect;
+}
+
+template <class G>
+void addConnectorTail(JsonArray& arr, const ProviderState& ps, const char* kUnavail, G& grp) {
+#ifdef NIMBUS_E1_TOOL_ROWS
+  addConnectorRows(arr, ps, kUnavail);
+  // The same live gate the registry listing uses (CUM-508), so this hint and the web.search row never disagree.
+  if (!mem::registry().gateOpen("web.search"))
+    grp("connector", "web.search (Tavily)", "Live web search - add a Tavily key to enable.",
+        "needs Tavily key", false, kUnavail);
+#endif
+  (void)arr;
+  (void)ps;
+  (void)kUnavail;
+  (void)grp;
+}
+
 void handleToolsGet(AsyncWebServerRequest* r) {
   if (authBlocked(r)) return;  // strict gate (owner R2)
   mem::WebLock card;   // the stored skills are read off the card: tried (web_guard.h)
@@ -633,13 +667,7 @@ void handleToolsGet(AsyncWebServerRequest* r) {
   // One authoritative doc row generated from the ORCH_D_DEVICE macro - the same
   // string the model's schema carries, so this list can never drift from the wire
   // (the four rows below are just friendly headings).
-#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 2 has no turn contract: its tools are the registry's (E2-P-SURF)
-  grp("device", "device.*", ORCH_D_DEVICE, "turn contract", false, kDirect);
-  grp("device", "device.led", "Ring pattern: solid/spinner/pulse/flash/rainbow + RGB + brightness", "turn action", false, kDirect);
-  grp("device", "device.lights", "Turn the ring on (full) or off", "turn action", false, kDirect);
-  grp("device", "device.config", "Adjust ring level, brightness, theme, power profile, voice", "turn action", false, kDirect);
-  grp("device", "device.tts", "Speak text to the owner (Telegram voice / desk speaker)", "turn action", false, kDirect);
-#endif
+  addTurnContractRows(grp, kDirect);
 #if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
   // Skill capsules (readable via skill.get; stored skills also inject at spawn).
   // Rendered in their own panel, not the availability-badged tool table.
@@ -653,18 +681,7 @@ void handleToolsGet(AsyncWebServerRequest* r) {
   for (const auto& c : agent::skills::list())
     grp("skill", ("skill:" + c.id).c_str(), c.title.c_str(), skillTag(c).c_str(), false, nullptr);
 #endif
-#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 2 registers no connector tool (E2-P-SURF)
-  addConnectorRows(arr, ps, kUnavail);
-#else
-  (void)kUnavail;
-#endif
-  // The same live gate the registry listing uses (CUM-508), so this hint and the
-  // web.search row can never disagree.
-#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 2 names its search tool web_search and lists it above
-  if (!mem::registry().gateOpen("web.search"))
-    grp("connector", "web.search (Tavily)", "Live web search - add a Tavily key to enable.",
-        "needs Tavily key", false, kUnavail);
-#endif
+  addConnectorTail(arr, ps, kUnavail, grp);
   d["count"] = d["tools"].as<JsonArray>().size();
   String out; serializeJson(d, out); sendJson(r, 200, out);
 }

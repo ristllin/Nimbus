@@ -472,6 +472,13 @@ plain::ChatBinding* residentFor(const String& chatId, const std::string& model, 
 
 void onResumed(const std::string& chat, const plain::ResumeReport& r);   // E2-FIX12, below
 
+// Lane E2-P-SURF: a call the rails refused or put on the shelf is an entry on the Safety tab.
+void noteRail(const plain::TurnCtx& t, const plain::ToolCall& c, bool kept) {
+  agent::safety::record(kept ? nimbus::orch::SafetyVerdict::Suspected : nimbus::orch::SafetyVerdict::Blocked,
+                        "outside-content-rail", localChat(String(t.chatId.c_str())) ? "web" : "telegram", t.chatId,
+                        kept ? "rails: kept for approval" : "rails: refused", c.name + " " + c.argsJson);
+}
+
 // The chat's binding for this model and role, booted (null when it could not start).
 plain::ChatBinding* chatFor(const String& chatId, const std::string& model, nimbus::orch::Role role) {
   s_noStartWhy = nullptr;
@@ -528,12 +535,7 @@ plain::ChatBinding* chatFor(const String& chatId, const std::string& model, nimb
         notesdev::notebook().keep(args.as<JsonObjectConst>(), *t.who, nimbus::orch::notes::Origin::Tainted);
     return r.success ? plain::Status::success() : plain::Status::fail(nimbus::orch::tx::Err::InvalidArgument, "e2.rails.kept");
   };
-  // Lane E2-P-SURF: a call the rails refused or put on the shelf is an entry on the Safety tab.
-  d.railNoted = [](const plain::TurnCtx& t, const plain::ToolCall& c, bool kept) {
-    agent::safety::record(kept ? nimbus::orch::SafetyVerdict::Suspected : nimbus::orch::SafetyVerdict::Blocked,
-                          "outside-content-rail", localChat(String(t.chatId.c_str())) ? "web" : "telegram", t.chatId,
-                          kept ? "rails: kept for approval" : "rails: refused", c.name + " " + c.argsJson);
-  };
+  d.railNoted = noteRail;
   d.recentFiles = [](const nimbus::orch::Principal& who) -> nimbus::orch::tx::RecentFilesBlock::Source {
     return [who](std::vector<nimbus::orch::tx::RecentFile>& out) { return files::recentFiles(who, out); };
   };
