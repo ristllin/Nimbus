@@ -221,7 +221,7 @@ images_max = { v = 1500, src = "oai-vision", read = "2026-11-24", ver = "docs" }
 image_in_tool_result = { v = false, src = "lib/harness/src/providers/image_parts.cpp:213-224", read = "2026-11-24", ver = "code", note = "engine 1 sends a looked photo in one user message after the outputs (O13)" }
 tools = { v = true, src = "oai-fc", read = "2026-11-24", ver = "docs" }
 tool_choice = { v = ["auto", "none", "required", "named"], src = "oai-responses", read = "2026-11-24", ver = "docs" }
-id_rule = { v = "passthrough", src = "oai-fc", read = "2026-11-24", ver = "docs" }
+id_rule = { v = "anthropic_pattern", src = "oai-fc", read = "2026-11-24", ver = "default", note = "the docs name no call_id pattern; a foreign id outside [A-Za-z0-9_-] (another engine's dotted id) is sent by the one-to-one hex rule, never as is (lane E2-R7)" }
 structured = { v = "responses_text_format", src = "oai-responses", read = "2026-11-24", ver = "docs" }
 summarizer_structured = { v = "none", src = "design", read = "2026-11-24", ver = "default", note = "Lines form until a structured summary is recorded working (R10 S8)" }
 thinking = { v = "off", src = "oai-reasoning", read = "2026-11-24", ver = "docs", note = "OpenAI has no thinking field; reasoning is set by effort" }

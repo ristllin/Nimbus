@@ -379,6 +379,79 @@ inline void chatCases(std::vector<Case>& out) {
   out.push_back(make("summarizer_lines", summarizerSlice(), f, kCustomChat));
 }
 
+// Lane E2-R7: stored Responses reasoning items, tagged as the engine stamps them for a direct
+// gpt-5.6 head, in a closed turn and in the open turn (before the call it came with); then one
+// tagged for the routed head and one with no tag (Anthropic's reading): both left out.
+inline Tx openTurnReasoning() {
+  const std::string tag = plain::replayTag(plain::Dialect::OpenAIResponses, false, "gpt-5.6");
+  Tx t;
+  t.open();
+  t.owner("Which bed gets the most sun?");
+  t.meta(R"({"type":"reasoning","id":"rs_old01","summary":[],"encrypted_content":"b2xkLXJlYXNvbmluZw"})");
+  t.items.back().wr = tag;
+  t.say("Bed 2 gets the most sun.");
+  t.close();
+  t.advance(200);
+  t.open();
+  t.owner("Then put the tomatoes there and check the note.");
+  t.meta(R"({"type":"reasoning","id":"rs_open01","summary":[{"type":"summary_text","text":"Read the note."}],"encrypted_content":"b3Blbi1yZWFzb25pbmc"})");
+  t.items.back().wr = tag;
+  t.call("call_R7a", "read_note", R"({"path":"notes/bed2.md"})");
+  t.receipt("call_R7a", "read_note", "bed 2: empty, full sun");
+  t.next();
+  t.meta(R"({"type":"reasoning","id":"rs_routed1","summary":[],"encrypted_content":"cm91dGVk"})");
+  t.items.back().wr = plain::replayTag(plain::Dialect::OpenAIResponses, true, "gpt-5.6");
+  t.meta(R"({"type":"reasoning","id":"rs_untag1","summary":[],"encrypted_content":"dW50YWdnZWQ"})");
+  t.call("call_R7b", "read_note", R"({"path":"notes/bed3.md"})");
+  t.receipt("call_R7b", "read_note", "bed 3: shade");
+  t.next();
+  return t;
+}
+
+// The Responses rows' requests (lane E2-R7): the common fixtures direct, two routed.
+inline void responsesCases(std::vector<Case>& out) {
+  Facts f;
+  f.maxTokens = 0;   // the exchange's cap for an OpenAI head (tableCap 0); the pre-flight decides
+  const Facts base = f;
+  const char* sig = kResponsesDirect;
+  out.push_back(make("text_only", firstMessage(), f, sig));
+  f.effort = "";
+  out.push_back(make("text_only_no_effort", firstMessage(), f, sig));
+  f = base;
+  out.push_back(make("one_call", oneCall(), f, sig));
+  out.push_back(make("two_parallel_calls", twoParallelCalls(), f, sig));
+  out.push_back(make("three_rounds", threeRounds(), f, sig));
+  out.push_back(make("second_turn_after_tools", secondTurnAfterTools(), f, sig));
+  out.push_back(make("stored_cut_answer", storedCutAnswer(), f, sig));
+  out.push_back(make("photo_in_view", photoInView(), f, sig));
+  out.push_back(make("near_cap_photo_turn", nearCapPhotoTurn(), f, sig));
+  f.viewBound = true;
+  out.push_back(make("photo_three_turns_later", photoThreeTurnsLater(), f, sig));
+  f = base;
+  out.push_back(make("stub_and_bulk_result", stubAndBulk(), f, sig));
+  const Tx ladder = ladderState();
+  f.ladder.omitThrough = lastQOf(ladder, 2);
+  f.ladder.omissionLine = kOmission;
+  out.push_back(make("ladder_rung3_omit_through", ladder, f, sig));
+  f = base;
+  out.push_back(make("open_turn_reasoning", openTurnReasoning(), f, sig));
+  out.push_back(make("foreign_k_item", foreignMeta(), f, sig));
+  out.push_back(make("foreign_ids", foreignIds(), f, sig));
+  out.push_back(make("digest_covers_earlier_turns", digestCovers(), f, sig));
+  out.push_back(make("restart_mid_turn", restartMidTurn(), f, sig));
+  f.toolChoiceNone = true;
+  out.push_back(make("guard_round", guardRound(), f, sig));
+  f = base;
+  f.system = Sys::Summarizer;
+  f.noTools = true;
+  f.schema = true;
+  out.push_back(make("summarizer_structured", summarizerSlice(), f, sig));
+  f.schema = false;
+  out.push_back(make("summarizer_lines", summarizerSlice(), f, sig));
+  out.push_back(make("text_only", firstMessage(), base, kResponsesRouted));
+  out.push_back(make("one_call", oneCall(), base, kResponsesRouted));
+}
+
 inline std::vector<Case> requestCases() {
   std::vector<Case> out;
   Facts f;
@@ -442,6 +515,7 @@ inline std::vector<Case> requestCases() {
   out.push_back(make("text_only", firstMessage(), f, kRouted));
   out.push_back(make("one_call", oneCall(), f, kRouted));
   chatCases(out);
+  responsesCases(out);
   return out;
 }
 

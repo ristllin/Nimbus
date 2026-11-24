@@ -1,0 +1,20 @@
+# route golden parse responses-openai-direct/incomplete_reasoning_only.txt served at HTTP 200
+parse ok
+parse stop cut
+parse text 0 B fnv64=14650fb0739d0383 head=""
+parse refusal ""
+parse calls 0
+parse meta 1
+parse   meta 0 beforeCall=0 112 B fnv64=9d5d588dcfd02aa1 head="{\"type\":\"reasoning\",\"id\":\"rs_syn_01\",\"summary\":["
+parse usage prompt=176 completion=4096 cacheRead=1024 cacheWrite=0 cacheWrite1h=0 responses=1 maxRequestIn=1200 served="gpt-5.6"
+exchange err=cut http=200 requests=1 retries=0 climbs=0 cutRetried=0 failOver=0 parkHost=0 maxTokens=0 requestBytes=1129 ms=0 waitedMs=0 statusLine=4
+exchange line "The reply above was cut at the length limit."
+exchange line stored "The reply above was cut at the length limit."
+exchange request 0 1129 B fnv64=aa6f4f795f9866d9
+exchange step stop cut
+exchange step text 0 B fnv64=14650fb0739d0383 head=""
+exchange step refusal ""
+exchange step calls 0
+exchange step meta 1
+exchange step   meta 0 beforeCall=0 112 B fnv64=9d5d588dcfd02aa1 head="{\"type\":\"reasoning\",\"id\":\"rs_syn_01\",\"summary\":["
+exchange step usage prompt=176 completion=4096 cacheRead=1024 cacheWrite=0 cacheWrite1h=0 responses=1 maxRequestIn=1200 served="gpt-5.6"

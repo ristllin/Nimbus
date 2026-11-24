@@ -35,9 +35,15 @@ inline bool callId(const std::string& id, C& c, const std::string& w) {
   return true;
 }
 
+// A cache breakpoint on an input_text part, {"mode":"explicit"} (gpt-5.6 and later; the prompt
+// caching guide as research-provider-wire-facts.md section 10 read it, and engine 1's
+// prompt_layout.cpp putOpenAIInput; lane E2-R7).
 inline bool inputText(JsonObjectConst p, C& c, const std::string& w) {
   if (!visible(str(p["text"]))) return c.fail(w + ": text empty or whitespace only");
-  return onlyKeys(p, {"type", "text"}, c, w);
+  JsonVariantConst bp = p["prompt_cache_breakpoint"];
+  if (!bp.isNull() && (str(bp["mode"]) != "explicit" || !onlyKeys(bp.as<JsonObjectConst>(), {"mode"}, c, w + ".prompt_cache_breakpoint")))
+    return c.fail(w + ": prompt_cache_breakpoint is not {\"mode\":\"explicit\"}");
+  return onlyKeys(p, {"type", "text", "prompt_cache_breakpoint"}, c, w);
 }
 
 inline bool inputImage(JsonObjectConst p, C& c, const std::string& w) {

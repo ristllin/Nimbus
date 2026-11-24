@@ -195,7 +195,11 @@ inline void readResponses(JsonObjectConst d, RequestView& v) {
     msg.blocks.push_back(textBlock(in.as<const char*>()));
     v.messages.push_back(msg);
   }
-  for (JsonObjectConst it : in.as<JsonArrayConst>()) v.messages.push_back(responsesItem(it));
+  for (JsonObjectConst it : in.as<JsonArrayConst>()) {
+    Message m = responsesItem(it);
+    if (m.role != "developer" && m.role != "system") v.messages.push_back(std::move(m));
+    else v.systemBlocks.push_back(contentText(it["content"]));   // system text, as on the chat wire
+  }
 }
 
 inline void chatContent(JsonVariantConst c, Message& msg) {

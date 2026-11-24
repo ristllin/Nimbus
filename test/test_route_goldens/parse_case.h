@@ -21,6 +21,7 @@ namespace route_goldens {
 inline constexpr const char* kAnswers = "test/support/fixtures/anthropic_wire_2026-11/";
 inline constexpr const char* kMistralAnswers = "test/support/fixtures/mistral_wire_synthetic/";
 inline constexpr const char* kZaiAnswers = "test/support/fixtures/zai_wire_synthetic/";
+inline constexpr const char* kOpenAIAnswers = "test/support/fixtures/openai_wire_synthetic/";
 
 struct Answer {
   const char* file;   // under dir
@@ -52,7 +53,17 @@ inline std::vector<Answer> answers() {
           {"sensitive.txt", 200, kZai, kZaiAnswers},
           {"model_context_window_exceeded.txt", 200, kZai, kZaiAnswers},
           {"error_1113_no_balance.txt", 429, kZai, kZaiAnswers},
-          {"error_1301_unsafe_content.txt", 400, kZai, kZaiAnswers}};
+          {"error_1301_unsafe_content.txt", 400, kZai, kZaiAnswers},
+          // Lane E2-R7: the synthetic Responses answers.
+          {"reasoning_encrypted_then_text.txt", 200, kResponsesDirect, kOpenAIAnswers},
+          {"function_call_two_ids.txt", 200, kResponsesDirect, kOpenAIAnswers},
+          {"incomplete_max_output_tokens.txt", 200, kResponsesDirect, kOpenAIAnswers},
+          {"incomplete_cut_call.txt", 200, kResponsesDirect, kOpenAIAnswers},
+          {"incomplete_reasoning_only.txt", 200, kResponsesDirect, kOpenAIAnswers},
+          {"incomplete_content_filter.txt", 200, kResponsesDirect, kOpenAIAnswers},
+          {"failed_server_error.txt", 200, kResponsesDirect, kOpenAIAnswers},
+          {"error_insufficient_quota.txt", 429, kResponsesDirect, kOpenAIAnswers},
+          {"error_context_length_exceeded.txt", 400, kResponsesDirect, kOpenAIAnswers}};
 }
 
 // The answer as the transport serves it (the parse suite's own reading: trailing newlines off).

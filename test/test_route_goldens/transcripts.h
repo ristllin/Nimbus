@@ -199,6 +199,9 @@ inline constexpr const char* kMistralRouted = "chat-mistral-routed";
 inline constexpr const char* kZai = "chat-zai-direct";
 inline constexpr const char* kZaiRouted = "chat-zai-routed";
 inline constexpr const char* kCustomChat = "chat-custom_chat-direct";
+// The Responses rows (lane E2-R7): OpenAI direct and routed.
+inline constexpr const char* kResponsesDirect = "responses-openai-direct";
+inline constexpr const char* kResponsesRouted = "responses-openai-routed";
 
 // The head a signature names: the dialect, the turn's host (a provider slug) and model, the
 // endpoint host, and whether the render goes through the route and pre-flight (every chat row; the
@@ -219,6 +222,9 @@ inline RowFacts rowOf(const std::string& sig, bool routedFact) {
   if (sig == kZai) return {chat, "zai", "glm-5.3", "api.z.ai", false, true};
   if (sig == kZaiRouted) return {chat, "cumulo", "zai/glm-5.3", "router.cumulo.test", true, true};
   if (sig == kCustomChat) return {chat, "custom", "local-model", "llm.example.test", false, true};
+  const plain::Dialect responses = plain::Dialect::OpenAIResponses;
+  if (sig == kResponsesDirect) return {responses, "openai", "gpt-5.6", "api.openai.com", false, true};
+  if (sig == kResponsesRouted) return {responses, "cumulo", "openai/gpt-5.6", "router.cumulo.test", true, true};
   RowFacts r;
   if (routedFact) {
     r.turnHost = "cumulo";

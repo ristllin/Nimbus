@@ -151,4 +151,14 @@ inline std::string renderCase(const Case& c) {
   return head + requestText(req);
 }
 
+// One request of `c` as renderCase renders it, for the shape checker (lane E2-R7). The request's
+// photo splices point into `w`, which outlives it.
+inline tx::Status renderRequest(const Case& c, World& w, agent::HttpRequest& req) {
+  tx::Status st = w.load(c);
+  const plain::WireCodec* wire = nullptr;
+  if (st.ok()) st = plain::wireFor(w.row.dialect, wire);
+  if (st.ok() && w.row.route && (st = plain::resolveRoute(w.head, w.turn, w.route)).ok()) plain::preflight(w.route, 0, w.own, w.in);
+  return st.ok() ? wire->render(w.in, req) : st;
+}
+
 }  // namespace route_goldens

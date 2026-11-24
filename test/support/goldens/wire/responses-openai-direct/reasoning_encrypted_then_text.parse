@@ -1,0 +1,20 @@
+# route golden parse responses-openai-direct/reasoning_encrypted_then_text.txt served at HTTP 200
+parse ok
+parse stop end
+parse text 27 B fnv64=fe251ae020aab0fa head="Your boat is the Nereid II."
+parse refusal ""
+parse calls 0
+parse meta 1
+parse   meta 0 beforeCall=0 112 B fnv64=9d5d588dcfd02aa1 head="{\"type\":\"reasoning\",\"id\":\"rs_syn_01\",\"summary\":["
+parse usage prompt=176 completion=40 cacheRead=1024 cacheWrite=0 cacheWrite1h=0 responses=1 maxRequestIn=1200 served="gpt-5.6"
+exchange err=ok http=200 requests=1 retries=0 climbs=0 cutRetried=0 failOver=0 parkHost=0 maxTokens=0 requestBytes=1129 ms=0 waitedMs=0 statusLine=0
+exchange line ""
+exchange line stored ""
+exchange request 0 1129 B fnv64=aa6f4f795f9866d9
+exchange step stop end
+exchange step text 27 B fnv64=fe251ae020aab0fa head="Your boat is the Nereid II."
+exchange step refusal ""
+exchange step calls 0
+exchange step meta 1
+exchange step   meta 0 beforeCall=0 112 B fnv64=9d5d588dcfd02aa1 head="{\"type\":\"reasoning\",\"id\":\"rs_syn_01\",\"summary\":["
+exchange step usage prompt=176 completion=40 cacheRead=1024 cacheWrite=0 cacheWrite1h=0 responses=1 maxRequestIn=1200 served="gpt-5.6"

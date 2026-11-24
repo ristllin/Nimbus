@@ -7,15 +7,12 @@
 # First holder: lane RB-B0b (the battery's property suites).
 
 # test_tx_prefix
-test_tx_prefix::test_wire_prefix_responses RB-W2
 test_tx_prefix::test_wire_prefix_flat RB-W4
 
 # test_tx_pairing
-test_tx_pairing::test_wire_pairing_responses RB-W2
 test_tx_pairing::test_wire_pairing_flat RB-W4
 
 # test_tx_coverage
-test_tx_coverage::test_wire_coverage_responses RB-W2
 test_tx_coverage::test_wire_coverage_flat RB-W4
 test_tx_coverage::test_a_floor_head_names_what_the_ladder_omits RB-W3
 
@@ -26,15 +23,11 @@ test_tx_coverage::test_a_floor_head_names_what_the_ladder_omits RB-W3
 # test_tx_crash
 
 # test_tx_overhead
-test_tx_overhead::test_wire_overhead_responses RB-W2
 test_tx_overhead::test_wire_overhead_flat RB-W4
-test_tx_overhead::test_wire_overhead_night_responses RB-W2 ruling:68
 test_tx_overhead::test_wire_overhead_night_flat RB-W4 ruling:68
 
 # test_plain_conformance
-test_plain_conformance::test_loop_shape_responses RB-W2
 test_plain_conformance::test_loop_shape_flat RB-W4
-test_plain_conformance::test_guard_last_round_responses RB-W2
 test_plain_conformance::test_guard_last_round_flat RB-W4
 
 # test_delivery_bytes

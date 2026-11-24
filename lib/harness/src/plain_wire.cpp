@@ -23,7 +23,7 @@ Status found(const WireCodec& w, const WireCodec*& out) {
 Status wireFor(Dialect dialect, const WireCodec*& out) {
   out = nullptr;
   switch (dialect) {
-    case Dialect::OpenAIResponses: return Status::pending("plain::wireFor responses");   // lane R7
+    case Dialect::OpenAIResponses: return found(responsesWire(), out);   // lane R7
     case Dialect::AnthropicMessages: return found(anthropicWire(), out);
     case Dialect::Flat:   // the Chat codec with the row's tools bit off (router design section 2 C10)
     case Dialect::ChatCompletions:   // lane R6

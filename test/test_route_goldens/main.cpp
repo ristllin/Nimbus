@@ -30,6 +30,7 @@
 #include "golden_io.h"
 #include "parse_case.h"
 #include "render_case.h"
+#include "../support/wire_shape/responses_shape.h"
 
 namespace rg = route_goldens;
 
@@ -162,6 +163,28 @@ static void test_a_one_byte_change_is_caught_and_located() {
   TEST_ASSERT_TRUE(rg::checkGolden(scratch, good).find("is missing") != std::string::npos);
 }
 
+// Lane E2-R7: every Responses request golden is a body the documented-shape checker accepts.
+static void test_every_responses_request_has_the_documented_shape() {
+  size_t n = 0;
+  for (const rg::Case& c : rg::requestCases()) {
+    if (rg::rowOf(c.signature, false).dialect != rg::plain::Dialect::OpenAIResponses) continue;
+    rg::World w;
+    agent::HttpRequest req;
+    const rg::tx::Status st = rg::renderRequest(c, w, req);
+    TEST_ASSERT_TRUE_MESSAGE(st.ok(), (c.signature + "/" + c.name + ": " + st.where).c_str());
+    wire_shape::Request r;
+    r.method = req.method;
+    r.path = req.path;
+    r.headers = req.headers;
+    r.tls = req.tls;
+    r.body = agent::materializeBody(req);
+    std::string why;
+    TEST_ASSERT_TRUE_MESSAGE(wire_shape::responsesRequest(r, why), (c.signature + "/" + c.name + ": " + why).c_str());
+    ++n;
+  }
+  TEST_ASSERT_TRUE(n >= 20);
+}
+
 int main(int, char**) {
   if (rg::writeMode()) std::printf("ROUTE_GOLDENS_WRITE=1: every golden is rewritten, nothing is compared\n");
   UNITY_BEGIN();
@@ -170,5 +193,6 @@ int main(int, char**) {
   RUN_TEST(test_the_manifest_names_every_golden_and_no_other_file_is_there);
   RUN_TEST(test_a_render_is_the_same_bytes_every_time_and_in_any_order);
   RUN_TEST(test_a_one_byte_change_is_caught_and_located);
+  RUN_TEST(test_every_responses_request_has_the_documented_shape);
   return UNITY_END();
 }
