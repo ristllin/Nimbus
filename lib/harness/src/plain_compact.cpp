@@ -1393,6 +1393,7 @@ Status askRung(const CompactDeps& d, const SummarizerRung& rung, const RungMessa
   req.deadlineMs = window;
   req.capCeiling = kSummarizerMaxTokens;
   req.retryCeiling = kSummarizerRetryMaxTokens;
+  req.summary = true;   // E2-REP5: RoundKind::Fold, the design's summary kind (section 6 item 8)
   ExchangeResult r;
   s = runExchange(ExchangeDeps{d.transport, d.platform}, req, r);
   ans.requests = (uint8_t)std::min<uint32_t>(255, ans.requests + r.requests);

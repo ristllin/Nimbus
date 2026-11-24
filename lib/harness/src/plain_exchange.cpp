@@ -187,6 +187,7 @@ class Exchange {
   }
 
   providers::RoundKind kind() const {
+    if (req_.summary) return providers::RoundKind::Fold;   // router design section 6 item 8
     return base_.toolChoiceNone ? providers::RoundKind::FinalRound : providers::RoundKind::ToolRound;
   }
 

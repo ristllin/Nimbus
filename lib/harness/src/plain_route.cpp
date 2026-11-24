@@ -152,6 +152,7 @@ uint16_t preflight(const Route& route, uint32_t capCeiling, PreflightState& own,
   in.turn = &own.turn;
   in.head = &own.head;
   in.route = &route;
+  in.lateDropped = &own.lateDropped;
   uint16_t d = capRule(route, capCeiling, in);
   if (!route.caps.provider) return d;   // a host no table slot names: the wire's defaults, as before
   const caps::ModelRow& row = route.caps.row;

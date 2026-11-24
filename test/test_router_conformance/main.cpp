@@ -399,6 +399,7 @@ struct PlanOpts {
   const plain::LadderState* ladder = nullptr;
   uint32_t bodyCap = 0;
   const std::map<std::string, std::string>* photoBytes = nullptr;
+  uint16_t* lateDropped = nullptr;   // the pre-flight's late bits (route.h)
 };
 
 // Plan `c` for row `r` with the request's model `model` (its route resolved as the exchange does), open turn
@@ -422,6 +423,7 @@ void planFor(const txb::Row& r, const txb::Convo& c, const std::string& model, u
   in.route = &route;
   in.ladder = opt.ladder;
   in.bodyCap = opt.bodyCap;
+  in.lateDropped = opt.lateDropped;
   if (photoBytes)
     in.photo = [photoBytes](const std::string& ref, plain::PhotoBytes& o) {
       auto it = photoBytes->find(ref);
@@ -606,10 +608,14 @@ void test_a_routed_request_over_its_real_bytes_stubs_the_oldest_photos_first() {
     PlanOpts opt;
     opt.bodyCap = 85000;
     opt.photoBytes = &photos;
+    uint16_t late = 0;
+    opt.lateDropped = &late;
     planFor(r, c, r.model, 4, p, opt);
     size_t pixels = 0;
     for (const plain::plan::Piece& pc : p.plan.pieces) pixels += pc.kind == plain::plan::PieceKind::Photo;
     TEST_ASSERT_EQUAL_MESSAGE(r.routed ? 2 : 4, (int)pixels, r.name.c_str());
+    // E2-REP5: the request's dropped-settings record names the photos it sent as lines (and only then).
+    TEST_ASSERT_EQUAL_MESSAGE(r.routed ? plain::dropped::kPhotos : 0, late, r.name.c_str());
     if (!r.routed) continue;
     TEST_ASSERT_EQUAL(2, (int)p.lines.size());
     TEST_ASSERT_TRUE_MESSAGE(p.lines[0].find("p00000001") != std::string::npos, p.lines[0].c_str());

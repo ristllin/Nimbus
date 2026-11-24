@@ -38,6 +38,7 @@
 #include "nimbus/orch/tool_registry.h"
 #include "nimbus/harness/platform.h"
 #include "nimbus/harness/turn_memory.h"
+#include "nimbus/orch/model_caps_data.h"   // the table rows (E2-REP5)
 #include "nimbus/orch/tx/arena.h"
 #include "nimbus/orch/tx/digest.h"
 #include "nimbus/orch/tx/log.h"
@@ -3220,6 +3221,30 @@ void test_the_change_list_reads_back_as_lines() {
 }
 
 
+// Lane E2-REP5 (the empty-change-list rule, lane E2-R4b): an empty change list is taken only from a row whose
+// structured summary is Anthropic's; elsewhere it is not taken and asked as lines (kNotTakenEmpty). Every row
+// of today's table whose summarizer is asked the structured form is Anthropic's, so the not-taken half has no
+// row: the sweep names the first row that records another form, and the Anthropic row's empty list is taken
+// with one request, as "no change".
+void test_an_empty_change_list_is_taken_only_from_an_anthropic_structured_row() {
+  namespace caps = nimbus::orch::caps;
+  for (const caps::ModelRow& r : caps::kCapsModels)
+    TEST_ASSERT_TRUE_MESSAGE(r.summarizerStructured == caps::Structured::None ||
+                                 r.summarizerStructured == caps::Structured::AnthropicOutputConfig,
+                             "a row records a structured summary that is not Anthropic's: test its empty list here");
+  agent::hlog::setSink(recordLog);
+  gLogLines.clear();
+  Chat c;
+  oneSliceDays(c);
+  c.answer([] { return sp::say("{\"changes\":[]}"); });
+  const plain::CompactOutcome out = c.step();
+  TEST_ASSERT_EQUAL(plain::CompactStep::Stored, out.step);
+  TEST_ASSERT_EQUAL(1, (int)out.requests);
+  TEST_ASSERT_TRUE(c.model.requests()[0].answerSchema);   // asked the structured form
+  TEST_ASSERT_FALSE(logged("an empty change list"));
+  agent::hlog::setSink(nullptr);
+}
+
 // A host that refuses the form (HTTP 400) is asked once more as lines, logged; a host that ignores it and
 // answers lines has them read as lines at once (one request); a failure that is not the answer's (the
 
@@ -3428,6 +3453,7 @@ int main(int, char**) {
   RUN_TEST(test_an_urgent_attempt_never_waits_longer_than_one_ask_did);
   RUN_TEST(test_adds_that_name_an_id_are_taken_as_adds);
   RUN_TEST(test_the_change_list_reads_back_as_lines);
+  RUN_TEST(test_an_empty_change_list_is_taken_only_from_an_anthropic_structured_row);
   RUN_TEST(test_the_form_refused_or_ignored_and_storage_failures);
   RUN_TEST(test_a_model_that_refuses_the_form_is_asked_in_lines_from_then_on);
   RUN_TEST(test_every_summarizer_request_is_counted);

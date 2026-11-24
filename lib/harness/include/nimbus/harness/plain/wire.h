@@ -121,6 +121,9 @@ struct RenderInput {
   // exchange's pre-flight on every render; null: the wire's defaults (a direct Anthropic head as before).
   const Route* route = nullptr;
   uint32_t bodyCap = 0;                               // the body cap this request is held to (0 = not given)
+  // Lane E2-REP5: the pre-flight's late bits (route.h PreflightState::lateDropped): the planner marks a
+  // photo it sent as its line for the route's real-byte limit (dropped::kPhotos). Null: not recorded.
+  uint16_t* lateDropped = nullptr;
 };
 
 // Why the model stopped. Context (lane E2-R4a): the window filled, so a larger output cap cannot

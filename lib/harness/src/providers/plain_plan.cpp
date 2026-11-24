@@ -748,6 +748,7 @@ void fitRealBytes(Builder& b) {
     p.src = Src::Line;
     p.line = b.line(std::move(stub));
     p.flags &= kOpens;
+    if (b.in.lateDropped) *b.in.lateDropped |= dropped::kPhotos;   // the e item's record (E2-REP5)
   }
 }
 
