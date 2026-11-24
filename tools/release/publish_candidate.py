@@ -21,6 +21,8 @@ Subcommands:
     make --tag T --repository R --key K --target DIR --out manifest-candidate.json
             [--notes N] [--build B] [--images-dir DIR]
         every refusal, then make_manifest.py over the candidate pairs
+    plan and make take --table FILE (default tools/release/variants.json): a local dry run of an
+    engine-2 candidate passes a copy with a candidate entry and leaves the committed table alone.
 Exit 0 = done, 1 = refused (a ::error:: line says why).
 
 Refusals: a malformed table; a type that is not a stable row; an env that is not a device env of
@@ -422,6 +424,7 @@ def _args(argv):
         s.add_argument("--tag", required=True)
     for s in (p, m):
         s.add_argument("--repository", required=True, help="$GITHUB_REPOSITORY")
+        s.add_argument("--table", default=TABLE, help="the variant table (a local dry run may pass a copy)")
     return ap.parse_args(argv)
 
 
@@ -438,7 +441,7 @@ def _run(a) -> None:
         stable = check_target(a.tag, a.target, a.latest_tag)
         print(f"candidate {a.tag} is newer than the latest full release {a.latest_tag} ({stable['version']!r})")
         return
-    plan = make_plan(load_table(), a.tag, a.repository)
+    plan = make_plan(load_table(a.table), a.tag, a.repository)
     if a.cmd == "plan":
         _print_plan(plan)
         with open(a.github_env, "a", encoding="utf-8") as f:

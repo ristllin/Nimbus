@@ -26,6 +26,7 @@
 #include "nimbus/orch/media.h"      // validMusicName
 #include "nimbus/orch/rbac.h"
 #include "nimbus/ota/ota_channel.h"
+#include "nimbus/ota/way_back.h"    // /update back (lane E2-P-REL)
 #include "orchestrator.h"           // roleOfChat, isChatAllowed, setOtaInstallHook's hook
 #include "orchestrator_common.h"    // deliver
 #include "schedule_device.h"        // /remind through the schedule tool, /loop delete's state (E2-SCHED)
@@ -202,6 +203,7 @@ void help(const String& chatId) {
                   " (firmware " NIMBUS_FW_VERSION
                   "). Send a message and I'll reply here.\n\nOwner commands:\n"
                   "/update - install a pending firmware update\n"
+                  "/update back - go back to the stable release (keeps files and history)\n"
                   "/loops - list routines\n"
                   "/remind <when> <what> - one-time reminder (e.g. /remind 30m ...)\n"
                   "/compact - summarize this conversation into memory\n"
@@ -219,10 +221,47 @@ void help(const String& chatId) {
                   "/model - which provider and model the assistant uses, and what is paused");
 }
 
+// /update back [yes]: the way back to the earlier engine (lane E2-P-REL, nimbus/ota/way_back.h).
+// The device first leaves the candidate channel (fail closed: a failed switch is stable too), so
+// the check and the install both read the stable manifest only. tg_poll only, like every verb.
+bool s_backChecked = false;   // a check this verb started on the stable channel (RAM: a restart asks again)
+
+String updateBack(bool confirm) {
+  if (otaupd::channel() != nimbus::ota::Channel::Stable) {
+    (void)otaupd::setChannel(nimbus::ota::Channel::Stable);
+    s_backChecked = false;
+  }
+  const String latest = otaupd::latestSeen();
+  nimbus::ota::BackAsk ask;
+  ask.confirm = confirm;
+  ask.installing = otaupd::installing() || otaupd::pollJob() == nimbus::ota::OtaJob::Install;
+  ask.checkedOnStable = s_backChecked;
+  ask.state = otaupd::statusStr();
+  ask.running = NIMBUS_FW_VERSION;
+  ask.latest = latest.c_str();
+  const nimbus::ota::BackStep step = nimbus::ota::backStep(ask);
+  const char* why = "";
+  if (step == nimbus::ota::BackStep::StartCheck) {
+    if (!otaupd::requestCheck(&why)) return nimbus::ota::checkRefusalCopy(why);
+    s_backChecked = true;
+  } else if (step == nimbus::ota::BackStep::CheckFailed) {
+    s_backChecked = false;
+  } else if (step == nimbus::ota::BackStep::Install) {
+    if (!otaupd::requestInstall(/*dry=*/false, /*force=*/true, &why))
+      return String("Couldn't start the install (") + (why && why[0] ? why : "busy") + "). Try again in a moment.";
+    alogf("ota: way back to %s requested by the owner", latest.c_str());
+  }
+  return String(nimbus::ota::backLine(step, latest.c_str(), NIMBUS_FW_VERSION).c_str());
+}
+
 void shared(const nimbus::orch::Command& cmd, const String& chatId, bool owner, bool pseudo) {
   const std::string& v = cmd.verb;
   if (v == "help" || v == "start") return help(chatId);
   if (v == "update") {
+    String arg = String(cmd.args.c_str());
+    arg.trim();
+    arg.toLowerCase();
+    if (arg == "back" || arg == "back yes") return say(chatId, selfTag() + updateBack(arg == "back yes"));
     say(chatId, selfTag() + (cmd.args.empty() ? otaInstallReply() : String("Send /update on its own to install a pending update.")));
     return;
   }

@@ -451,6 +451,28 @@ def test_local_dry_run_signs_with_the_test_key_and_leaves_manifest_json(tmp_path
     assert r.returncode != 0
 
 
+def test_cli_dry_run_of_an_engine2_candidate_reads_a_table_copy(tmp_path):
+    """Lane E2-P-REL (D1): `make --table` on a local copy with an e2 candidate entry writes a signed
+    manifest-candidate.json with the hold; the committed table stays as shipped and, read instead,
+    refuses the same tag."""
+    committed = sha(pc.TABLE)
+    t = json.loads(pathlib.Path(pc.TABLE).read_text())
+    t["candidate"] = dict(CAND, hold_line="e2")
+    copy_path = tmp_path / "variants.json"
+    copy_path.write_text(json.dumps(t))
+    target = write_stable(tmp_path / "latest")
+    imgs = images(tmp_path / "imgs")
+    out = target / "manifest-candidate.json"
+    argv = ["make", f"--tag={CAND_TAG}", f"--repository={SOURCE}", f"--key={KEY}", f"--target={target}"]
+    argv += [f"--out={out}", f"--images-dir={imgs}"]
+    assert pc.main(argv) == 1 and not out.exists()  # the committed table has no candidate
+    assert pc.main(argv + [f"--table={copy_path}"]) == 0
+    man = json.loads(out.read_text())
+    assert man["version"] == CAND_TAG and list(man["variants"]) == ["freenove-28"] and man["holdHeads"]
+    assert man["variants"]["freenove-28"]["sha256"] == sha(imgs / "firmware-freenove.bin")
+    assert sha(pc.TABLE) == committed
+
+
 def test_hold_line_rides_the_candidate(tmp_path):
     man, _, _ = make(tmp_path, candidate=dict(CAND, hold_line="e2"))
     assert isinstance(man["holdHeads"], list) and man["holdHeads"]
