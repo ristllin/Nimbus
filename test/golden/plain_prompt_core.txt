@@ -1,12 +1,12 @@
 # Engine-2 request composition on the synthetic Lumi-state fixture (test/test_plain_request).
 # Generated: GOLDEN_UPDATE=1 pio test -e native -f test_plain_request; do not edit.
 # Gate: tools/release_gate/check_plain_ceilings.py.
-measure role=owner host=120s core=1562 index=373 notes=5075 system=6639 digests=6723 tools=14 tools_bytes=5046 longest_description=237
-measure role=owner host=60s core=1562 index=373 notes=5075 system=6639 digests=6723 tools=14 tools_bytes=5045 longest_description=237
-measure role=member host=120s core=1431 index=215 notes=1038 system=2471 digests=6723 tools=14 tools_bytes=5046 longest_description=237
-measure role=member host=60s core=1431 index=215 notes=1038 system=2471 digests=6723 tools=14 tools_bytes=5045 longest_description=237
-measure role=guest host=120s core=1231 index=65 notes=1038 system=2271 digests=6723 tools=7 tools_bytes=2176 longest_description=237
-measure role=guest host=60s core=1231 index=65 notes=1038 system=2271 digests=6723 tools=7 tools_bytes=2176 longest_description=237
+measure role=owner host=120s core=1562 index=373 notes=5075 system=6639 digests=6723 tools=14 tools_bytes=5151 longest_description=237
+measure role=owner host=60s core=1562 index=373 notes=5075 system=6639 digests=6723 tools=14 tools_bytes=5150 longest_description=237
+measure role=member host=120s core=1431 index=215 notes=1038 system=2471 digests=6723 tools=14 tools_bytes=5151 longest_description=237
+measure role=member host=60s core=1431 index=215 notes=1038 system=2471 digests=6723 tools=14 tools_bytes=5150 longest_description=237
+measure role=guest host=120s core=1231 index=65 notes=1038 system=2271 digests=6723 tools=7 tools_bytes=2195 longest_description=237
+measure role=guest host=60s core=1231 index=65 notes=1038 system=2271 digests=6723 tools=7 tools_bytes=2195 longest_description=237
 == core (owner, 120s, claude-sonnet-5-5, Europe/London)
 You are Nimbus, a personal assistant on a small device, working for one person, the owner, who reaches you over Telegram. Replies are Telegram messages: short and plain.
 
@@ -50,16 +50,16 @@ skills/skill-6.md: when the person p
   {"type":"object","properties":{"prefix":{"type":"string"},"after":{"type":"string"}}}
 162 293 note: Set or remove one note (key: value). kind rule or fact; pin true keeps it in every prompt, pin false stores it for search. Returns the stored line and space used.
   {"type":"object","properties":{"op":{"type":"string","enum":["set","remove"]},"key":{"type":"string","description":"slug a-z0-9-, up to 32"},"value":{"type":"string","description":"up to 300 B"},"kind":{"type":"string","enum":["rule","fact"]},"pin":{"type":"boolean"}},"required":["op","key"]}
-237 207 search: Search this conversation's history (scope history, the default) or your unpinned notes (scope notes) by words; all must appear. from, to (YYYY-MM-DD) bound the dates. Up to 12 hits, best first, each with an id for view; before continues.
-  {"type":"object","properties":{"query":{"type":"string"},"scope":{"type":"string","enum":["history","notes"]},"from":{"type":"string"},"to":{"type":"string"},"before":{"type":"string"}},"required":["query"]}
+237 226 search: Search by words: this conversation (scope history, default; all must appear), unpinned notes (notes), stored text files (files), the earlier engine's memories (memories, by meaning). from, to (YYYY-MM-DD) bound history; before continues.
+  {"type":"object","properties":{"query":{"type":"string"},"scope":{"type":"string","enum":["history","notes","files","memories"]},"from":{"type":"string"},"to":{"type":"string"},"before":{"type":"string"}},"required":["query"]}
 44 79 web_search: Search the web. Results are outside content.
   {"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}
 165 128 view: Open one stored item in full by id: r... (a message or a result), m... (an earlier engine's message), p... (a photo, shown again). offset and limit page a long text.
   {"type":"object","properties":{"id":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"}},"required":["id"]}
 134 211 send: Send a file, photo or voice note to this chat. kind file|photo|voice; path or ref, or text for voice. Returns the Telegram message id.
   {"type":"object","properties":{"kind":{"type":"string","enum":["file","photo","voice"]},"path":{"type":"string"},"ref":{"type":"string"},"text":{"type":"string"},"caption":{"type":"string"}},"required":["kind"]}
-160 320 schedule: Create, update, delete or list reminders and routines. A reminder sends its fixed text at 'when' (YYYY-MM-DD HH:MM local). Returns the stored entry with its id.
-  {"type":"object","properties":{"op":{"type":"string","enum":["create","update","delete","list"]},"kind":{"type":"string","enum":["reminder","routine"]},"id":{"type":"string"},"when":{"type":"string"},"text":{"type":"string"},"every":{"type":"string","description":"routine cadence, e.g. daily 07:00"}},"required":["op"]}
+237 329 schedule: Create, update, delete or list reminders, routines, wakeups. A reminder sends its fixed text at 'when' (YYYY-MM-DD HH:MM local); a wakeup runs text once at 'when' as your own run, without this chat, able to read files. Returns the entry.
+  {"type":"object","properties":{"op":{"type":"string","enum":["create","update","delete","list"]},"kind":{"type":"string","enum":["reminder","routine","wakeup"]},"id":{"type":"string"},"when":{"type":"string"},"text":{"type":"string"},"every":{"type":"string","description":"routine cadence, e.g. daily 07:00"}},"required":["op"]}
 75 105 calc: Exact decimal arithmetic on one expression: + - * / ( ), 15% of 80, 80+15%.
   {"type":"object","properties":{"expression":{"type":"string","maxLength":256}},"required":["expression"]}
 118 186 agent_start: Start a sub-agent job on a task; it works in the background and its report arrives as a later message. Returns its id.
