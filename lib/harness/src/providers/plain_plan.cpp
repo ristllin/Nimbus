@@ -819,17 +819,24 @@ void openaiTools(const std::vector<orch::ConnectorInfo>& cs, const orch::BearerF
   for (JsonVariantConst t : d["tools"].as<JsonArrayConst>()) joinOne(t, out.tools);
 }
 
+// The head the request reaches, when it is one whose own connectors engine 1 attached: "anthropic" on
+// the Messages wire, "openai" on Responses; "" for every other head (Mistral, Z.ai, a custom endpoint).
+std::string attachingHead(const RenderInput& in) {
+  const Dialect d = in.route ? in.route->dialect : in.turn->dialect;
+  const std::string provider = in.route ? in.route->provider : providerSlugOf(*in.turn, *in.head);
+  if (d == Dialect::AnthropicMessages && provider == "anthropic") return provider;
+  return d == Dialect::OpenAIResponses && provider == "openai" ? provider : std::string();
+}
+
 }  // namespace
 
 void providerTools(const RenderInput& in, ProviderTools& out) {
   out = ProviderTools{};
   if (!in.turn || !in.head || !in.head->connectors || !in.tools || in.tools->empty()) return;
   if (in.route ? in.route->routed : in.head->routed) return;   // engine 1's router route: no connector, no sandbox
-  const Dialect d = in.route ? in.route->dialect : in.turn->dialect;
-  const std::string provider = in.route ? in.route->provider : providerSlugOf(*in.turn, *in.head);
-  const bool messages = d == Dialect::AnthropicMessages && provider == "anthropic";
-  const bool responses = d == Dialect::OpenAIResponses && provider == "openai";
-  if (!messages && !responses) return;
+  const std::string head = attachingHead(in);
+  if (head.empty()) return;
+  const bool messages = head == "anthropic";
   const orch::ConnectorGrantScope grant(turnGrant(*in.turn));
   const std::vector<orch::ConnectorInfo> cs = in.head->connectors();
   const orch::BearerFn bearer = in.head->bearer ? orch::BearerFn(in.head->bearer) : orch::BearerFn();

@@ -325,6 +325,14 @@ void placePoints(std::vector<Point> points, bool longCache, HttpRequest& out) {
 
 // Where the request goes and its headers: the route's path, version and auth style (lane E2-R4a);
 // with no route, a direct head's defaults as before.
+// The betas a request needs, comma-separated in one header: the Files API for a file source, the MCP
+// connector for mcp_servers (lane E2-P-CONN2). Neither: no header.
+void betaHeader(bool fileRef, bool mcp, HttpRequest& out) {
+  if (!fileRef && !mcp) return;
+  out.headers.emplace_back("anthropic-beta", fileRef && mcp ? std::string(kFilesBeta) + "," + kMcpBeta
+                                                            : std::string(fileRef ? kFilesBeta : kMcpBeta));
+}
+
 void coordinates(const RenderInput& in, bool fileRef, bool mcp, HttpRequest& out) {
   const Route* r = in.route;
   out.method = "POST";
@@ -334,9 +342,7 @@ void coordinates(const RenderInput& in, bool fileRef, bool mcp, HttpRequest& out
   out.path = r ? r->path : (in.head->basePath.empty() ? std::string("/v1") : in.head->basePath) + "/messages";
   out.headers.emplace_back("content-type", "application/json");
   out.headers.emplace_back("anthropic-version", r && *r->version ? r->version : kVersion);
-  if (fileRef || mcp)   // one header, the betas comma-separated
-    out.headers.emplace_back("anthropic-beta", fileRef && mcp ? std::string(kFilesBeta) + "," + kMcpBeta
-                                                              : std::string(fileRef ? kFilesBeta : kMcpBeta));
+  betaHeader(fileRef, mcp, out);
   const std::string key = in.head->key ? in.head->key() : std::string();
   if (key.empty() || !in.head->tls) return;   // a key never rides a cleartext socket
   const bool bearer = r ? r->auth == nimbus::orch::caps::Auth::Bearer : in.head->routed;

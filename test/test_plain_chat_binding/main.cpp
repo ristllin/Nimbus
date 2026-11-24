@@ -563,6 +563,37 @@ sp::Step connectorThenNote(const std::string& provider, bool ran) {
                           R"({"type":"function_call","id":"fc_1","call_id":"call_c2","name":"note","arguments":")" + note + R"("}],)"
                           R"("usage":{"input_tokens":20,"output_tokens":9,"input_tokens_details":{"cached_tokens":0}}})");
 }
+// What the head's first request carries, per head.
+void expectAttached(const std::string& p, const sp::Recorded& first, const std::string& ctx) {
+  if (p == "anthropic") {
+    TEST_ASSERT_TRUE_MESSAGE(has(first.body, R"("mcp_servers":[{"type":"url","url":"https://mcp.docs.example.test/mcp","name":"docs"}])"), ctx.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(has(first.body, R"({"type":"mcp_toolset","mcp_server_name":"docs"})"), ctx.c_str());
+    bool beta = false;
+    for (const auto& hd : first.req.headers) beta = beta || (hd.first == "anthropic-beta" && hd.second == "mcp-client-2025-11-20");
+    TEST_ASSERT_TRUE_MESSAGE(beta, ctx.c_str());
+  } else if (p == "openai") {
+    TEST_ASSERT_TRUE_MESSAGE(has(first.body, R"({"type":"mcp","require_approval":"never","server_label":"github","server_url":"https://mcp.github.example.test/"})"), ctx.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(has(first.body, R"("connector_id":"connector_gmail","authorization":"tok-gmail")"), ctx.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(has(first.body, R"({"type":"code_interpreter","container":{"type":"auto"}})"), ctx.c_str());
+  } else {
+    TEST_ASSERT_FALSE_MESSAGE(has(first.body, "connector") || has(first.body, "code_interpreter") || has(first.body, "mcp"), ctx.c_str());
+  }
+}
+
+// A member's turn on head `p`: none of the owner's connectors (OpenAI: the sandbox, a provider built-in, only).
+void expectMemberGetsNone(const std::string& p, const char* model) {
+  Device mem;
+  mem.provider = p;
+  mem.role = nimbus::orch::Role::User;
+  mem.connectors = ownerConnectors;
+  addReadFile(mem.reg);   // a request with tools (one without tools carries no provider tool either)
+  TEST_ASSERT_TRUE_MESSAGE(mem.boot(model).ok(), p.c_str());
+  mem.model.push(sp::say("Hello."));
+  TEST_ASSERT_TRUE_MESSAGE(mem.say("hi").ok(), p.c_str());
+  const std::string& body = mem.model.requests()[0].body;
+  TEST_ASSERT_FALSE_MESSAGE(has(body, "mcp") || has(body, "gmail") || has(body, "docs.example"), p.c_str());
+  TEST_ASSERT_EQUAL_MESSAGE(p == "openai", has(body, "code_interpreter"), p.c_str());
+}
 }  // namespace
 
 static void test_the_owners_provider_connectors_ride_each_head_and_their_answer_taints_the_turn() {
@@ -593,38 +624,14 @@ static void test_the_owners_provider_connectors_ride_each_head_and_their_answer_
       else dev.model.push(connectorThenNote(p, ran));
       dev.model.push(sp::say("Done."));
       TEST_ASSERT_TRUE_MESSAGE(dev.say("check the beds").ok(), h.provider);
-      const sp::Recorded& first = dev.model.requests()[0];
       const std::string ctx = p + (ran ? " ran" : " clean");
-      if (p == "anthropic") {
-        TEST_ASSERT_TRUE_MESSAGE(has(first.body, R"("mcp_servers":[{"type":"url","url":"https://mcp.docs.example.test/mcp","name":"docs"}])"), ctx.c_str());
-        TEST_ASSERT_TRUE_MESSAGE(has(first.body, R"({"type":"mcp_toolset","mcp_server_name":"docs"})"), ctx.c_str());
-        bool beta = false;
-        for (const auto& hd : first.req.headers) beta = beta || (hd.first == "anthropic-beta" && hd.second == "mcp-client-2025-11-20");
-        TEST_ASSERT_TRUE_MESSAGE(beta, ctx.c_str());
-      } else if (p == "openai") {
-        TEST_ASSERT_TRUE_MESSAGE(has(first.body, R"({"type":"mcp","require_approval":"never","server_label":"github","server_url":"https://mcp.github.example.test/"})"), ctx.c_str());
-        TEST_ASSERT_TRUE_MESSAGE(has(first.body, R"("connector_id":"connector_gmail","authorization":"tok-gmail")"), ctx.c_str());
-        TEST_ASSERT_TRUE_MESSAGE(has(first.body, R"({"type":"code_interpreter","container":{"type":"auto"}})"), ctx.c_str());
-      } else {
-        TEST_ASSERT_FALSE_MESSAGE(has(first.body, "connector") || has(first.body, "code_interpreter") || has(first.body, "mcp"), ctx.c_str());
-      }
+      expectAttached(p, dev.model.requests()[0], ctx);
       // The summarizer and later rounds: the head's later requests carry the same connectors (a stable prefix).
       if (p != "mistral") TEST_ASSERT_TRUE_MESSAGE(has(dev.model.last().body, p == "anthropic" ? "mcp_servers" : "code_interpreter"), ctx.c_str());
       TEST_ASSERT_EQUAL_MESSAGE(ran ? 0 : 1, noteRuns, ctx.c_str());
       TEST_ASSERT_EQUAL_MESSAGE(ran ? 1 : 0, (int)shelf.size(), ctx.c_str());
     }
-    // A member's turn: none of the owner's connectors (OpenAI: the sandbox, a provider built-in, only).
-    Device mem;
-    mem.provider = p;
-    mem.role = nimbus::orch::Role::User;
-    mem.connectors = ownerConnectors;
-    addReadFile(mem.reg);   // a request with tools (one without tools carries no provider tool either)
-    TEST_ASSERT_TRUE_MESSAGE(mem.boot(h.model).ok(), h.provider);
-    mem.model.push(sp::say("Hello."));
-    TEST_ASSERT_TRUE_MESSAGE(mem.say("hi").ok(), h.provider);
-    const std::string& body = mem.model.requests()[0].body;
-    TEST_ASSERT_FALSE_MESSAGE(has(body, "mcp") || has(body, "gmail") || has(body, "docs.example"), h.provider);
-    TEST_ASSERT_EQUAL_MESSAGE(p == "openai", has(body, "code_interpreter"), h.provider);
+    expectMemberGetsNone(p, h.model);
   }
 }
 
