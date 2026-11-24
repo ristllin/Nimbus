@@ -19,11 +19,14 @@
 // before the person is told anything, so a restart during the read-in loses nothing. A message
 // leaves it only after its turn ran (or the person got one true line instead). A restart between
 // the turn and that removal is caught by `taken`: the transcript already holds the message (its
-// day-stream row m or its Telegram update ids), so it is not answered a second time.
+// day-stream row m or its Telegram update ids), so it is not answered a second time. A restart in the
+// middle of that turn counts the same way, as for any message: the person's item is stored, and the
+// engine's resume at boot (plain_resume.cpp) answers it or sends its line.
 //
 // A file that cannot be read is not an empty one (ruling 116): nothing is answered, nothing is
 // held over it, and the read is tried again. A file that reads but does not decode is set aside
-// whole (renamed, never removed) and the chat starts with an empty list.
+// whole (renamed to <file>.unread-<n>, never removed or written over) and the chat starts with an empty
+// list.
 // Host-tested in test_plain_waiting with a real ChatBinding.
 namespace agent {
 namespace plain {
@@ -70,6 +73,7 @@ class WaitingInbox {
   const std::string& chatId() const { return chatId_; }
   const std::vector<WaitingMessage>& messages() const { return msgs_; }
   bool empty() const { return msgs_.empty(); }
+  bool ramOnly() const { return files_ == nullptr; }
   // Is any of these update ids kept already (a re-served update)?
   bool holds(const std::vector<uint64_t>& src) const;
   HoldVerdict hold(const WaitingMessage& m);
@@ -81,6 +85,7 @@ class WaitingInbox {
   Status save(const std::vector<WaitingMessage>& msgs);
   bool listed(bool& present) const;
   bool onCard() const;
+  bool asideName(std::string& out) const;
   nimbus::orch::tx::TxFiles* files_;
   std::string chatId_;
   std::vector<WaitingMessage> msgs_;

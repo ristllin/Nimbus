@@ -71,6 +71,12 @@ void stageUpdateNotice(const String& text);
 
 bool   turnInFlight();       // true while a runTurn() is executing (drives the spinner)
 uint32_t                 turnCount();      // non-empty turns since boot
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+// Lane E2-FIX13: a message kept during the read-in is being answered now, outside any web turn. Its
+// delivery to the web chat is async (the page re-renders its history), never a booked turn's reply
+// and never the legacy slot (tg_poll only).
+bool   answeringKept();
+#endif
 // What holds paid requests to provider `p` off now on `seam` (the pause switch, a refusal
 // park covering that seam, its monthly budget). The orch_model guard and [THIS TURN RUNS ON]
 // read Chat; the catalog, the PDF route and the spawn advice read Spawn (CUM-821).

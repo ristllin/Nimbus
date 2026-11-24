@@ -3,8 +3,6 @@
 
 #include <ArduinoJson.h>
 
-#include <ctime>
-
 #include "nimbus/harness/log.h"
 
 namespace agent {
@@ -108,8 +106,8 @@ Status WaitingInbox::load() {
       return Status::fail(Err::Io, "plain::WaitingInbox::load.read");
     if (!waitingFromText(text, msgs)) {
       // Read whole but not a list: set aside as it is (never removed), and start empty.
-      const std::string aside = path + ".unread-" + std::to_string((unsigned long)time(nullptr));
-      if (!files_->rename(path, aside)) return Status::fail(Err::Io, "plain::WaitingInbox::load.aside");
+      std::string aside;
+      if (!asideName(aside) || !files_->rename(path, aside)) return Status::fail(Err::Io, "plain::WaitingInbox::load.aside");
       hlog::logf("e2: the waiting messages of %s did not decode: set aside as %s", chatId_.c_str(), aside.c_str());
       msgs.clear();
     }
@@ -128,6 +126,22 @@ bool WaitingInbox::listed(bool& present) const {
   const std::string name = path.substr(std::string(tx::kTxRoot).size() + 1);
   for (const std::string& n : names) present = present || n == name;
   return true;
+}
+
+// A name beside the list that the card does not hold yet (a rename never replaces an earlier one).
+bool WaitingInbox::asideName(std::string& out) const {
+  std::vector<std::string> names;
+  if (!files_->list(tx::kTxRoot, names)) return false;
+  const std::string base = waitingPathFor(chatId_).substr(std::string(tx::kTxRoot).size() + 1) + ".unread-";
+  for (unsigned n = 1; n < 1000; ++n) {
+    bool used = false;
+    for (const std::string& name : names) used = used || name == base + std::to_string(n);
+    if (!used) {
+      out = std::string(tx::kTxRoot) + "/" + base + std::to_string(n);
+      return true;
+    }
+  }
+  return false;
 }
 
 // The file is there, or the card could not tell (a removal is then not taken as done).

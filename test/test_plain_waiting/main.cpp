@@ -410,10 +410,13 @@ static void test_an_unread_list_is_never_empty_and_a_refused_removal_is_not_lost
   plain::WaitingInbox torn(&dev.files, kChat);
   TEST_ASSERT_TRUE(torn.load().ok());
   TEST_ASSERT_TRUE(torn.empty());
-  int aside = 0;
-  for (const auto& kv : dev.card.files)
-    aside += kv.first.rfind(kWaitPath + ".unread-", 0) == 0 && kv.second == "{\"v\":1,\"msgs\":[{\"text\":";
-  TEST_ASSERT_EQUAL(1, aside);
+  // A second one later: set aside beside the first, never over it.
+  dev.card.files[kWaitPath] = "not a list";
+  plain::WaitingInbox torn2(&dev.files, kChat);
+  TEST_ASSERT_TRUE(torn2.load().ok());
+  TEST_ASSERT_EQUAL_STRING("{\"v\":1,\"msgs\":[{\"text\":", dev.card.files[kWaitPath + ".unread-1"].c_str());
+  TEST_ASSERT_EQUAL_STRING("not a list", dev.card.files[kWaitPath + ".unread-2"].c_str());
+  TEST_ASSERT_EQUAL(0, (int)dev.card.files.count(kWaitPath));
 }
 
 // The list's own bounds: kWaitingMax messages, the next one is refused (none dropped); no card: RAM.

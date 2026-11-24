@@ -921,7 +921,11 @@ static bool orchSendSink(const String& chatId, const String& text) {
     bool legacy;
     {
       std::lock_guard<std::mutex> lk(g_webChatMx);
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2   // E2-FIX13: a kept message's answer is async too
+      legacy = agent::deliverToWebChat(g_webChat, reply, agent::loops::firing() || agent::orchestrator::answeringKept());
+#else
       legacy = agent::deliverToWebChat(g_webChat, reply, agent::loops::firing());
+#endif
       if (legacy) g_webSlot.deliver(reply);
     }
     if (legacy) {

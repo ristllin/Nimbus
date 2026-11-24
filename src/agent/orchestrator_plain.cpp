@@ -691,21 +691,38 @@ bool turnFor(plain::ChatBinding& b, const String& chatId, const plain::ChatMessa
 // its day-stream row at once, tagged e2 (its turn stores it later, so the import never takes it).
 static_assert(plain::kWaitingMax == 32, "kReadingFullLine names the bound");
 std::vector<std::unique_ptr<plain::WaitingInbox>> s_waiting;   // one list per chat (tg_poll only)
+bool s_answeringKept = false;     // a kept message's turn runs (tg_poll; the web sink reads it there)
+uint32_t s_keptRetryAt = 0;       // a chat that could not start: the next try (millis; 0 = none)
+std::vector<std::string> s_keptStallTold;   // chats told they could not start while messages wait
 
-// The chat's list, read from the card (a list not read yet is read again on each call).
-plain::WaitingInbox* waitingFor(const std::string& chat) {
-  plain::WaitingInbox* in = nullptr;
+// The chat's list as known now (null: none made this boot).
+plain::WaitingInbox* existingWaiting(const std::string& chat) {
   for (auto& w : s_waiting)
-    if (w->chatId() == chat) in = w.get();
-  if (!in) {
+    if (w->chatId() == chat) return w.get();
+  return nullptr;
+}
+
+// The chat's list, read from the card (a list not read yet is read again on each call). A list made
+// before the card was mounted, still empty, is made again on the card.
+plain::WaitingInbox* waitingFor(const std::string& chat) {
+  plain::WaitingInbox* in = existingWaiting(chat);
+  const bool remake = in && in->ramOnly() && in->empty() && memory::haveSd();
+  if (!in || remake) {
     std::unique_ptr<plain::WaitingInbox> w(
         new (std::nothrow) plain::WaitingInbox(memory::haveSd() ? &txdev::cardTxFiles() : nullptr, chat));
     if (!w) return nullptr;
-    s_waiting.push_back(std::move(w));
-    in = s_waiting.back().get();
+    for (auto& old : s_waiting)
+      if (old->chatId() == chat) old.swap(w);
+    if (!remake) s_waiting.push_back(std::move(w));
+    in = existingWaiting(chat);
   }
   if (!in->loaded() && !in->load().ok()) alogf("e2: the waiting messages of %s could not be read: read again later", chat.c_str());
   return in;
+}
+
+bool hasKept(const String& chatId) {
+  const plain::WaitingInbox* in = existingWaiting(chatId.c_str());
+  return in && !in->empty();
 }
 
 // The lists a restart left on the card, read once (a listing that fails is tried again in 30 s).
@@ -760,24 +777,42 @@ bool keepMessage(const String& text, const String& fromName, const String& chatI
   return line ? sayInstead(chatId, line) : true;
 }
 
-// The binding a kept message is answered on (null: no turn can run; `line` is the person's line).
-plain::ChatBinding* keptBinding(const String& chatId, const char*& line) {
+// The binding a kept message is answered on (null: no turn can run; `line` is the person's line and
+// `setting` says whether a setting is the cause: no key, not Claude, the monthly limit).
+plain::ChatBinding* keptBinding(const String& chatId, const char*& line, bool& setting) {
   const String host = store::resolvedOrchHost();
   line = refusalFor(host);
+  setting = line != nullptr;
   if (line) return nullptr;
   plain::ChatBinding* b = chatFor(chatId, std::string(store::orchModel(host).c_str()), roleOfChat(chatId));
   if (!b) line = s_noStartWhy ? s_noStartWhy : kNoStartLine;
   return b;
 }
 
-// One kept message, answered once the read-in ended: its turn, or one true line instead.
+// The chat could not start (the card, memory, a held conversation): the messages stay kept and are
+// tried again in a minute; the person is told the cause once while it lasts (ruling 116).
+plain::WaitingAnswer keptStalled(const String& chatId, const char* line) {
+  s_keptRetryAt = millis() | 1;
+  for (const std::string& c : s_keptStallTold)
+    if (c == chatId.c_str()) return plain::WaitingAnswer::Later;
+  s_keptStallTold.push_back(chatId.c_str());
+  alogf("e2: chat %s could not start: its kept messages wait and are tried again in a minute", chatId.c_str());
+  sayInstead(chatId, line);
+  return plain::WaitingAnswer::Later;
+}
+
+// One kept message, answered once the read-in ended: its turn, or one true line instead when a
+// setting holds every turn back (as for a new message).
 plain::WaitingAnswer answerKept(const plain::WaitingMessage& w, const String& chatId) {
   const char* line = nullptr;
-  plain::ChatBinding* b = keptBinding(chatId, line);
-  if (!b) {
+  bool setting = false;
+  plain::ChatBinding* b = keptBinding(chatId, line, setting);
+  if (!b && setting) {
     sayInstead(chatId, line);
     return plain::WaitingAnswer::Done;
   }
+  if (!b) return keptStalled(chatId, line);
+  s_keptStallTold.clear();
   plain::ChatMessage msg;
   msg.text = w.text;
   msg.ch = w.ch;
@@ -796,7 +831,8 @@ plain::WaitingAnswer answerKept(const plain::WaitingMessage& w, const String& ch
 // Did a turn take this message before a restart (its row or update ids are in the conversation)?
 bool keptTaken(const plain::WaitingMessage& w, const String& chatId) {
   const char* line = nullptr;
-  plain::ChatBinding* b = keptBinding(chatId, line);
+  bool setting = false;
+  plain::ChatBinding* b = keptBinding(chatId, line, setting);
   return b && b->holdsMessage(w.src, w.m);
 }
 
@@ -805,18 +841,22 @@ bool keptTaken(const plain::WaitingMessage& w, const String& chatId) {
 void answerKeptMessages() {
   static uint32_t last = 0;
   if ((uint32_t)(millis() - last) < 5000) return;
+  if (s_keptRetryAt && (uint32_t)(millis() - s_keptRetryAt) < 60000) return;
   last = millis();
+  s_keptRetryAt = 0;
   for (size_t i = 0; i < s_waiting.size(); ++i) {
-    plain::WaitingInbox* in = s_waiting[i].get();
-    const String chatId(in->chatId().c_str());
-    if (!in->loaded()) (void)waitingFor(in->chatId());
-    if (!in->loaded() || in->empty() || waitsForHistory(chatId, /*quiet=*/true)) continue;
+    const std::string chat = s_waiting[i]->chatId();
+    plain::WaitingInbox* in = waitingFor(chat);   // read again when the card did not answer before
+    const String chatId(chat.c_str());
+    if (!in || !in->loaded() || in->empty() || waitsForHistory(chatId, /*quiet=*/true)) continue;
     plain::WaitingDrainFns f;
     f.taken = [&chatId](const plain::WaitingMessage& w) { return keptTaken(w, chatId); };
     f.answer = [&chatId](const plain::WaitingMessage& w) { return answerKept(w, chatId); };
     s_inTurn.store(true, std::memory_order_relaxed);
     s_turnChat = chatId;
+    s_answeringKept = true;
     const size_t n = plain::answerWaiting(*in, f);
+    s_answeringKept = false;
     s_turnChat = String();
     s_inTurn.store(false, std::memory_order_relaxed);
     alogf("e2: %u kept message(s) of %s answered after the read-in, %u still waiting", (unsigned)n, chatId.c_str(),
@@ -834,8 +874,7 @@ bool runOne(const String& text, const String& fromName, const String& chatId) {
   }
   // E2-FIX13: kept while the earlier conversation is read in, and after it behind the messages kept
   // before (answered in order on this task's next pass).
-  plain::WaitingInbox* kept = waitingFor(chatId.c_str());
-  if (waitsForHistory(chatId) || (kept && !kept->empty())) return keepMessage(text, fromName, chatId);
+  if (hasKept(chatId) || waitsForHistory(chatId)) return keepMessage(text, fromName, chatId);
   const std::string model(store::orchModel(host).c_str());
   plain::ChatBinding* b = chatFor(chatId, model, roleOfChat(chatId));
   if (!b) {
@@ -1325,6 +1364,7 @@ void stageUpdateNotice(const String& text) {
 // ---- status for the web and the tools ---------------------------------------
 
 bool turnInFlight() { return s_inTurn.load(std::memory_order_relaxed); }
+bool answeringKept() { return s_answeringKept; }
 uint32_t turnCount() { return s_turns.load(std::memory_order_relaxed); }
 nimbus::orch::HeadPause providerPause(const std::string&, nimbus::orch::PaidSeam) { return {}; }
 bool toolRidesLoop(const std::string&) { return false; }
