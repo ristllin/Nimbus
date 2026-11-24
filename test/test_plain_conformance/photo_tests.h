@@ -13,7 +13,9 @@
 #include "../support/tx_battery/fixtures.h"
 #include "../support/tx_battery/props.h"
 #include "engine_tests.h"
+#include "nimbus/harness/providers.h"
 #include "nimbus/orch/tx/photo_text.h"
+#include "nimbus/orch/turn_images.h"
 
 namespace photo_tests {
 
@@ -312,6 +314,108 @@ inline void test_a_photo_the_provider_refuses_ends_in_a_reply_with_a_true_line()
   TEST_ASSERT_TRUE(has(lastBody(b), tx::kPhotoRefused));
 }
 
+// Lane E2-REP4: on a direct Anthropic head a photo is uploaded once (the Files API, the released
+// engine's uploader) and named by its file id after: an album's own turn sends no pixels on any round,
+// the next turn names the same ids, no second upload is made, and the bytes ahead of the closed turns
+// stay byte for byte. A photo whose upload failed goes inline and stays inline (never re-uploaded: its
+// bytes would turn into an id inside the cached part). A provider that no longer holds an id gets the
+// round once more with the bytes inline.
+inline bool hasHeader(const sp::Recorded& r, const std::string& name, const std::string& part) {
+  for (const auto& h : r.req.headers)
+    if (h.first == name && h.second.find(part) != std::string::npos) return true;
+  return false;
+}
+inline void test_a_photo_is_uploaded_once_and_named_by_its_file_id_after() {
+  txb::Battery b;
+  const char fills[] = {'a', 'b', 'c', 'd'};
+  std::unique_ptr<nimbus::orch::TurnImages> arriving;
+  int uploads = 0;
+  std::string failRef;   // a photo whose upload the provider refuses
+  const auto upload = [&](nimbus::orch::TurnImages& set) {
+    int n = 0;
+    for (nimbus::orch::TurnImage& it : set.items) {
+      ++uploads;
+      if (it.ref == failRef) continue;
+      it.fileId = "file_" + it.ref;
+      it.fileHost = "anthropic";
+      ++n;
+    }
+    return n;
+  };
+  b.photoFileId = [&](const std::string& ref, plain::PhotoBytes& px) {
+    px.fileId = agent::providers::photoFileId(b.chatKey, arriving.get(), ref, upload, b.ms);
+  };
+  const auto album = [&](std::vector<std::string> refs, const char* fill) {
+    arriving.reset(new nimbus::orch::TurnImages());
+    std::vector<tx::Part> parts;
+    for (size_t i = 0; i < refs.size(); ++i) {
+      b.photoStore["p" + refs[i]] = jpeg(fill[i], 60000);
+      nimbus::orch::TurnImage it;
+      it.ref = refs[i];
+      it.mime = "image/jpeg";
+      it.bytes = reinterpret_cast<const uint8_t*>(b.photoStore["p" + refs[i]].data());
+      it.len = 60000;
+      arriving->items.push_back(it);
+      parts.push_back(photoPart("p" + refs[i], 60000));
+    }
+    return parts;
+  };
+  plain::TurnOutcome out;
+  // The album's own turn: two rounds, one upload of each photo, ids on both rounds, no pixels.
+  const std::vector<std::string> refs = {"0000000a", "0000000b", "0000000c", "0000000d"};
+  std::vector<tx::Part> parts = album(refs, fills);
+  b.model.push(sp::call("clock_now"));
+  b.model.push(sp::say("Four meter photos."));
+  TXB_OK(b.owner("four meters", out, parts));
+  TEST_ASSERT_EQUAL(2, (int)b.model.requests().size());
+  TEST_ASSERT_EQUAL_MESSAGE(4, uploads, "the album was not uploaded exactly once");
+  for (const sp::Recorded& r : b.model.requests()) {
+    for (char f : fills) TEST_ASSERT_FALSE_MESSAGE(has(r.body, pixelsOf(f)), "a round re-sent a photo's pixels");
+    for (const std::string& ref : refs)
+      TEST_ASSERT_TRUE_MESSAGE(has(r.body, "\"file_id\":\"file_" + ref + "\""), "a round did not name the photo's id");
+    TEST_ASSERT_TRUE_MESSAGE(hasHeader(r, "anthropic-beta", "files-api"), "a request naming a file has no Files beta");
+  }
+  // The next turn: the same ids, no upload, the closed part byte for byte.
+  arriving.reset();
+  std::string prev = lastBody(b);
+  b.advance(120);
+  b.model.push(sp::say("The second read 18,251."));
+  TXB_OK(b.owner("what did the second read?", out));
+  TEST_ASSERT_EQUAL(4, uploads);
+  TEST_ASSERT_TRUE(has(lastBody(b), "\"file_id\":\"file_0000000b\""));
+  TEST_ASSERT_TRUE_MESSAGE(stripCacheMarks(fromSystem(lastBody(b))).compare(0, aheadOfClosed(prev).size(), aheadOfClosed(prev)) == 0,
+                           "a photo by id rewrote the bytes ahead of the closed turns");
+  // A photo whose upload failed: inline now and on the next turn, never uploaded again.
+  failRef = "0000000e";
+  parts = album({"0000000e"}, "e");
+  b.advance(60);
+  b.model.push(sp::say("A fifth."));
+  TXB_OK(b.owner("one more", out, parts));
+  TEST_ASSERT_EQUAL(5, uploads);
+  TEST_ASSERT_TRUE_MESSAGE(has(lastBody(b), pixelsOf('e')), "a photo whose upload failed was not sent inline");
+  arriving.reset();
+  prev = lastBody(b);
+  b.advance(60);
+  b.model.push(sp::say("ok"));
+  TXB_OK(b.owner("and now?", out));
+  TEST_ASSERT_EQUAL_MESSAGE(5, uploads, "a photo already sent inline was uploaded later");
+  TEST_ASSERT_TRUE(has(lastBody(b), pixelsOf('e')));
+  TEST_ASSERT_TRUE(stripCacheMarks(fromSystem(lastBody(b))).compare(0, aheadOfClosed(prev).size(), aheadOfClosed(prev)) == 0);
+  // The provider no longer holds an id: the round goes once more with that photo inline.
+  b.advance(60);
+  b.model.push(sp::httpError(404, R"({"type":"error","error":{"type":"not_found_error","message":"File not found: file_0000000a"}})"));
+  b.model.push(sp::say("Still here."));
+  const size_t before = b.model.requests().size();
+  TXB_OK(b.owner("the last meter again?", out));
+  TEST_ASSERT_TRUE(out.delivered);
+  TEST_ASSERT_EQUAL(before + 2, b.model.requests().size());
+  TEST_ASSERT_TRUE(has(b.model.requests()[before].body, "file_0000000a"));
+  TEST_ASSERT_TRUE_MESSAGE(has(lastBody(b), pixelsOf('a')), "a photo whose id the provider no longer holds was not sent inline");
+  TEST_ASSERT_FALSE(has(lastBody(b), "file_0000000a"));
+  TEST_ASSERT_TRUE(has(lastBody(b), "file_0000000b"));
+  TEST_ASSERT_EQUAL(5, uploads);
+}
+
 inline void run() {
   RUN_TEST(test_a_photo_stays_in_view_across_turns_time_and_a_restart);
   RUN_TEST(test_a_photo_past_the_caps_gets_a_true_line_and_names_no_unbound_tool);
@@ -321,6 +425,7 @@ inline void run() {
   RUN_TEST(test_a_photo_in_view_keeps_the_cached_prefix_byte_for_byte);
   RUN_TEST(test_an_album_of_ten_is_seen_whole_when_it_arrives);
   RUN_TEST(test_a_photo_the_provider_refuses_ends_in_a_reply_with_a_true_line);
+  RUN_TEST(test_a_photo_is_uploaded_once_and_named_by_its_file_id_after);
 }
 
 }  // namespace photo_tests

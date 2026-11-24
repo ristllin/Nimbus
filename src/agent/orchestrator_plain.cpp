@@ -114,7 +114,8 @@
 #include "nimbus/orch/model_caps.h"           // caps::slotName - a slot's key (E2-R8a)
 #include "nimbus/orch/model_catalog.h"        // parseModelStore - an unknown model marked unusable (E2-R8a)
 #include "telegram.h"           // telegram::ownerChat, sendPart, turnUpdateIds, seenIndex
-#include "transport_tls.h"      // deviceTransport
+#include "nimbus/harness/providers.h"   // uploadTurnPhotos, photoFileId (E2-REP4)
+#include "transport_tls.h"      // deviceTransport, deviceProviderDeps
 #include "tx_store_device.h"    // txdev::cardTxFiles
 #include "tools_plain_device.h"  // tools::switchHead - device_control's deferred head switch (E2-P-TOOLS)
 #include "nimbus/harness/jobs.h"  // keyFromTag - the head arc's ring key (E2-P-TOOLS)
@@ -411,10 +412,19 @@ plain::Status carriedPhoto(const std::string& ref, plain::PhotoBytes& out) {
   return plain::Status::success();
 }
 
-// The photo hook: this message's photos, else an earlier one from the card.
+// Lane E2-REP4: the running turn's chat key when its head is Anthropic on a direct key ("" otherwise):
+// a photo is then uploaded once (the Files API) and named by its file id while the provider holds it.
+std::string s_fileIdChat;   // tg_poll only
+
+// The photo hook: this message's photos, else an earlier one from the card; on a direct Anthropic head
+// also its file id (the bytes stay, so a route that takes no file id sends them inline).
 plain::Status photoFor(const std::string& ref, plain::PhotoBytes& out) {
-  if (plain::photoBytesFrom(s_photos.get(), ref, out).ok()) return plain::Status::success();
-  return carriedPhoto(ref, out);
+  const plain::Status st =
+      plain::photoBytesFrom(s_photos.get(), ref, out).ok() ? plain::Status::success() : carriedPhoto(ref, out);
+  if (!st.ok() || s_fileIdChat.empty()) return st;
+  const auto upload = [](nimbus::orch::TurnImages& set) { return providers::uploadTurnPhotos(deviceProviderDeps(), set); };
+  out.fileId = providers::photoFileId(s_fileIdChat, s_photos.get(), ref, upload, (uint32_t)millis());
+  return st;
 }
 
 // ---- a context skill too large for the pinned block: told once per boot --------------
@@ -904,10 +914,13 @@ bool turnFor(plain::ChatBinding& b, const String& chatId, const plain::ChatMessa
   // next boot, where the engine resumes it once (bootLostChat).
   journalTurn(chatId, msg);
   engineSetHeadArc(true);   // E2-P-TOOLS: the ring shows the turn working, as engine 1's TurnGuard does
+  const bool direct = b.config().provider == "anthropic" && !b.config().routed;
+  s_fileIdChat = direct ? b.config().chatKey : std::string();   // E2-REP4: photos by file id
   {
     PsramFirstScope psramFirst;
     st = b.turn(msg, out);
   }
+  s_fileIdChat.clear();
   engineSetHeadArc(false);
   nimbus::crash::turnEnded();
   if (status) *status = st;

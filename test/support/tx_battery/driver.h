@@ -158,6 +158,8 @@ class Battery {
   // The binding's photo hook (TurnSetup::photo; lane E2-FIX4): the stored bytes of a photo by ref, as the
   // device reads them back from the card. Empty: no hook (every photo renders as its line).
   std::map<std::string, std::string> photoStore;
+  // After the photo hook found a photo's bytes: the binding's file id step (lane E2-REP4). Null: none.
+  std::function<void(const std::string& ref, plain::PhotoBytes&)> photoFileId;
 
   // The head a turn of this battery names (host and model), for a test that builds its own TurnInput.
   plain::TurnCtx headCtx() const { return turnCtx(0, plain::Trigger::Owner); }
@@ -401,6 +403,7 @@ class Battery {
         o.bytes = reinterpret_cast<const uint8_t*>(it->second.data());
         o.len = it->second.size();
         o.mime = "image/jpeg";
+        if (photoFileId) photoFileId(ref, o);
         return tx::Status::success();
       };
     return tx::Status::success();

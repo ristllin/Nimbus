@@ -774,5 +774,23 @@ bool keptUploadsDue(uint32_t nowMs) {
 
 int tendKeptUploads(uint32_t nowMs) { return imageparts::expireKept(nowMs); }
 
+int uploadTurnPhotos(const ProviderDeps& pd, nimbus::orch::TurnImages& imgs) { return imageparts::antUploadImages(pd, imgs); }
+
+std::string photoFileId(const std::string& chatKey, nimbus::orch::TurnImages* arriving, const std::string& ref,
+                        const std::function<int(nimbus::orch::TurnImages&)>& upload, uint32_t nowMs) {
+  const auto holds = [&ref](const nimbus::orch::TurnImage& it) { return it.bytes && it.len && "p" + it.ref == ref; };
+  if (arriving && upload && arriving->uploadOnce && !arriving->uploadTried &&
+      std::any_of(arriving->items.begin(), arriving->items.end(), holds)) {
+    arriving->uploadTried = true;
+    upload(*arriving);
+    for (nimbus::orch::TurnImage& it : arriving->items) {
+      if (it.fileId.empty() || it.fileHost != "anthropic") continue;
+      imageparts::keepFileId(chatKey, "p" + it.ref, it.fileId, nowMs);
+      it.fileId.clear();   // the kept list owns the id (its deletion included)
+    }
+  }
+  return imageparts::heldFileId(chatKey, ref, nowMs);
+}
+
 }  // namespace providers
 }  // namespace agent
