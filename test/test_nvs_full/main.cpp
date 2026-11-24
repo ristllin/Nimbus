@@ -1644,9 +1644,9 @@ static void test_store_setter_verdicts_are_never_silently_dropped() {
       // consumes each setter's verdict (did a stored value change?), so only the
       // reviewed (void) discards remain.
       // E2-P-TOOLS moved two of them (setOrchHostModel's host and model writes, 4 -> 2) into the
-      // common half for engine 2's head switch: the same two discards, the total unchanged.
+      // common half for engine 2's head switch: the same two discards, the total unchanged. E2-REP1:
+      // orchestrator_common.cpp checks both now (2 -> 0), so the switch reports a refused write.
       {"src/agent/orchestrator_e1.cpp", 2},    {"src/agent/provider_verify.cpp", 6},
-      {"src/agent/orchestrator_common.cpp", 2},
       {"src/agent/store_config.cpp", 1},
       {"src/agent/transport_tls.cpp", 2},   {"src/main.cpp", 22},
       {"src/net/cloud_mint.cpp", 2},        {"src/net/relay_client.cpp", 6},

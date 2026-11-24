@@ -836,8 +836,9 @@ void fillDeviceApplyDeps(DeviceApplyDeps& d) {
   d.modelMiss = [](const std::string& p, const std::string& m) { return agent::model_refresh::missText(p, m); };
   d.providerHasKey = [](const std::string& p) { return store::providerHasKey(String(p.c_str())); };
   d.setOrchHostModel = [](const std::string& p, const std::string& m) {
-    store::setOrchHost(String(p.c_str()));
-    store::setOrchModel(String(p.c_str()), String(m.c_str()));
+    const bool host = store::setOrchHost(String(p.c_str()));
+    const bool model = store::setOrchModel(String(p.c_str()), String(m.c_str()));
+    return host && model;
   };
 }
 

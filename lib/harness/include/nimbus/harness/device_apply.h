@@ -45,7 +45,8 @@ struct DeviceApplyDeps {
   // orch_model validation + write (validation data lives device-side).
   std::function<bool(const std::string& prov, const std::string& model)> modelIsValid;
   std::function<bool(const std::string& prov)> providerHasKey;
-  std::function<void(const std::string& prov, const std::string& model)> setOrchHostModel;
+  // True when both the head provider and its model were stored (E2-REP1: a refused write is told).
+  std::function<bool(const std::string& prov, const std::string& model)> setOrchHostModel;
   // An orch_model the provider's cached list does not hold: the device asks for
   // one list refresh (at most one per provider per hour, never a connection here)
   // and returns the head's answer, "not in <provider> list cached <date>; refresh

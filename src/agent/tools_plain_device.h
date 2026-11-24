@@ -43,7 +43,7 @@ nimbus::orch::ToolResult selfTest(ArduinoJson::JsonObjectConst a, const nimbus::
 void registerPlainDevice(nimbus::orch::ToolRegistry& reg);
 void registerPlainModels(nimbus::orch::ToolRegistry& reg, const nimbus::orch::ModelsToolHandlers& h);
 // A head switch device_control deferred ("provider/model"), after the turn: the head setting is
-// written by engine 1's executor. False for an argument of another shape.
+// written by engine 1's executor. False for an argument of another shape or a refused write.
 bool switchHead(const std::string& providerModel);
 }  // namespace tools
 namespace memory {
@@ -102,7 +102,10 @@ inline nimbus::orch::ToolResult deviceControl(ArduinoJson::JsonObjectConst a, co
     if (va.kind == nimbus::orch::ActionKind::Reboot) restart = true;
     else if (stage) stage(va);
   };
-  d.setOrchHostModel = [&head](const std::string& p, const std::string& m) { head = p + "/" + m; };
+  d.setOrchHostModel = [&head](const std::string& p, const std::string& m) {
+    head = p + "/" + m;
+    return true;   // deferred: written after the reply (switchHead)
+  };
   std::string json, risk;
   serializeJson(a["action"], json);
   const DeviceOutcome dev = applyDeviceAction(json, who, unattended, chat, d, &risk);
@@ -137,6 +140,15 @@ inline void registerDeviceFamilies(nimbus::orch::ToolRegistry& reg, const Handle
   bindDeclared(reg, "device.control", [c](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) {
     return deviceControl(a, who, c.unattended && c.unattended(), c.chat ? c.chat() : std::string(), c.apply());
   });
+}
+
+// A head switch device_control deferred ("provider/model"), written through `d` after the turn. False
+// for an argument of another shape, a device with no writer, or a store that refused the write
+// (E2-REP1: the chat is told the truth).
+inline bool switchHeadWith(const std::string& providerModel, const DeviceApplyDeps& d) {
+  const size_t slash = providerModel.find('/');
+  if (slash == std::string::npos || slash == 0 || slash + 1 >= providerModel.size()) return false;
+  return d.setOrchHostModel && d.setOrchHostModel(providerModel.substr(0, slash), providerModel.substr(slash + 1));
 }
 
 }  // namespace plaindevice

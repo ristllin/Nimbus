@@ -77,13 +77,9 @@ void registerPlainModels(nimbus::orch::ToolRegistry& reg, const nimbus::orch::Mo
 }
 
 bool switchHead(const std::string& providerModel) {
-  const size_t slash = providerModel.find('/');
-  if (slash == std::string::npos || slash == 0 || slash + 1 >= providerModel.size()) return false;
   DeviceApplyDeps d;
   orchestrator::fillDeviceApplyDeps(d);
-  if (!d.setOrchHostModel) return false;
-  d.setOrchHostModel(providerModel.substr(0, slash), providerModel.substr(slash + 1));
-  return true;
+  return plaindevice::switchHeadWith(providerModel, d);
 }
 
 }  // namespace tools

@@ -134,6 +134,9 @@ constexpr const char* kTextModeLine =
 constexpr const char* kFrozenLine = "The monthly spend limit is reached. Raise it in Settings to continue.";
 // Lane E2-P-TOOLS: after a head switch the owner asked for, the model that answers from now on.
 constexpr const char* kHeadSwitchedLine = "Now answering with ";
+// Lane E2-REP1: the switch was accepted but the device could not store it (the head is unchanged).
+constexpr const char* kHeadNotSwitchedLine =
+    "The model was not changed: the setting could not be saved. Try again, or change it under Assistant > Models.";
 // Lane E2-FIX13: a message that arrives while the earlier conversation is read in is kept and answered
 // by itself when the reading is done. The person is told once per chat (the first message kept).
 constexpr const char* kReadingLine =
@@ -768,8 +771,9 @@ void runDeferred(const plain::DeferredEffects& d, const String& chatId) {
   if (d.has(plain::Deferred::HeadSwitch)) {
     const std::string& to = d.arg[static_cast<size_t>(plain::Deferred::HeadSwitch)];
     const bool ok = tools::switchHead(to);
-    alogf("e2: head switch to %s: %s", to.c_str(), ok ? "done" : "not a provider/model");
+    alogf("e2: head switch to %s: %s", to.c_str(), ok ? "done" : "not stored");
     if (ok) sayInstead(chatId, (String(kHeadSwitchedLine) + (to.c_str() + to.find('/') + 1) + ".").c_str());
+    else sayInstead(chatId, kHeadNotSwitchedLine);   // E2-REP1: the truth, never a switch that did not happen
   }
   if (d.has(plain::Deferred::Install) && s_otaInstallHook) alogf("e2: install: %s", s_otaInstallHook().c_str());
   if (d.has(plain::Deferred::Restart)) {

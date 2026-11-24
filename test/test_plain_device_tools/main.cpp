@@ -162,7 +162,10 @@ struct Device {
       d.stageDevice = [this](const orch::ValidatedAction&) { exec.staged++; };
       d.modelIsValid = [](const std::string& p, const std::string& m) { return p == "anthropic" && m == "claude-haiku-4-5"; };
       d.providerHasKey = [](const std::string& p) { return p == "anthropic"; };
-      d.setOrchHostModel = [this](const std::string&, const std::string&) { exec.switches++; };
+      d.setOrchHostModel = [this](const std::string&, const std::string&) {
+        exec.switches++;
+        return true;
+      };
       return d;
     };
     pd::registerDeviceFamilies(reg, fakes.handlers(), c);
@@ -275,6 +278,25 @@ static void test_device_control_applies_now_and_defers_restart_and_switch() {
   TEST_ASSERT_EQUAL(0, (int)dev.out.deferred.mask);
 }
 
+// E2-REP1 (E2-INT1's finding): the switch after the turn reports what the store did. A refused write
+// is not a switch, so the chat is never told a model answers now that does not.
+static void test_a_head_switch_the_store_refuses_is_not_reported_done() {
+  agent::DeviceApplyDeps d;
+  std::vector<std::string> written;
+  bool stores = true;
+  d.setOrchHostModel = [&](const std::string& p, const std::string& m) {
+    written.push_back(p + "/" + m);
+    return stores;
+  };
+  TEST_ASSERT_TRUE(pd::switchHeadWith("openai/gpt-5.6-luna", d));
+  stores = false;   // NVS full: the host or the model write refused
+  TEST_ASSERT_FALSE(pd::switchHeadWith("openai/gpt-5.6-luna", d));
+  TEST_ASSERT_EQUAL(2, (int)written.size());
+  TEST_ASSERT_FALSE(pd::switchHeadWith("no-slash", d));   // no write for another shape
+  TEST_ASSERT_EQUAL(2, (int)written.size());
+  TEST_ASSERT_FALSE(pd::switchHeadWith("openai/gpt-5.6-luna", agent::DeviceApplyDeps{}));
+}
+
 static void test_device_control_refuses_a_member() {
   Device dev(orch::Role::User);
   TEST_ASSERT_TRUE(dev.boot().ok());
@@ -338,5 +360,6 @@ int main(int, char**) {
   RUN_TEST(test_models_family_reaches_models_list);
   RUN_TEST(test_docs_family_reaches_search_and_read);
   RUN_TEST(test_deferred_code_round_trip);
+  RUN_TEST(test_a_head_switch_the_store_refuses_is_not_reported_done);
   return UNITY_END();
 }
