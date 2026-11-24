@@ -528,6 +528,8 @@ class JobEngine {
   // Lane E2-P-SUB2 (reportTurns): park again, once per boot, the results the finished ring marks
   // unreported from before this boot.
   void restoreUnreported();
+  // A failure line parked as `chatId`'s result (failed: the engine's own line), for the report.
+  void parkFailure(const char* tag, const std::string& label, const std::string& chatId, const std::string& text);
   bool restoredUnreported_ = false;
   // Where a spawn runs: the provider (explicit hint, connector routing, then
   // firstSubProvider), its adapter and the model. A provider with no key of its

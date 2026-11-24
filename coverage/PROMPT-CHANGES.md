@@ -1539,3 +1539,12 @@ PC-0175, PC-0176: not used.
 - lane: RB-R4 (lane E2-P-FO, router design lane P-FO)
 - prd: router design (P/analysis-2026-11-24/ROUTER-DESIGN.md) section 9 "Fail-over" (one line per switch: "<Provider A> failed (<class>); this answer came from <model B>"), section 6 item 7; AGENTS.md rule 9
 - why: lib/harness/include/nimbus/harness/plain/texts.h stubs. kFailedOver and kAnswerFrom (PC-0263): the person's status line when a round failed on one provider and another head answered (plain::failoverLine; the class is the frozen exchangeErrSlug). It is the turn's status line, so its stored copy is the chat's history row; no request text, tool result or device note changes. Kept in stubs because device_notes is at its ceiling. PC-0264: not used. Planned work, not a fix (CUM-1001).
+### PC-0267: a sub-agent's failure and a report a restart left waiting reach engine 2's report turn (engine 1 catalog)
+- catalog: e1
+- class: device_notes
+- kind: remove
+- bytes: 54663 -> 54655
+- sha8: 1193384b -> bace59ab
+- lane: E2-P-SUB2
+- prd: PRD section 6 (sub-agents on engine 2); inventory parity row PC-0267; rulings 115, 116 (every failure has a true line); AGENTS.md rule 9
+- why: lib/harness/src/jobs.cpp. With JobEngine::Deps::reportTurns (engine 2 on the device and on nimbusd) a job's failure is parked as its result ("FAILED: " + the engine's existing failure line) and arrives as a report turn, and a result the finished ring marks unreported at a boot is parked again: its saved file read back whole, or, when it failed or the file cannot be read, the existing line "The result of [<job>] was lost when the device restarted, so it will not arrive.". No new sentence: the two "FAILED: " literals fold into one helper (parkFailure) and the lost line into lostAtRestartLine, so the class shrinks by 8 B and the lost line moves within the file (CUM-1006).
