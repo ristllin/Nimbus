@@ -23,6 +23,7 @@
 #include "../support/tx_battery/pending.h"
 #include "../support/tx_battery/render.h"
 #include "../support/tx_battery/rows.h"
+#include "nimbus/orch/psram_alloc.h"
 #include "../support/wire_shape/chat_shape.h"
 #include "row_props.h"
 
@@ -366,6 +367,25 @@ void test_p10_history_never_shrinks() {
 // Read on the shared planner, which decides for every codec what a request carries, so it runs on every row
 // whether or not the row's codec has landed.
 namespace {
+
+// Lane E2-STACK2: the plan's state lives in the working set; when that allocation fails the plan
+// says so instead of planning.
+static void test_the_plan_state_refusal_is_a_true_line() {
+  plain::TurnCtx turn;
+  plain::SystemBlocks sys;
+  tx::TxArena arena;
+  plain::RenderInput in;
+  in.turn = &turn;
+  in.system = &sys;
+  in.items = &arena;
+  plain::plan::Plan p;
+  nimbus::orch::setWorkingAllocators([](std::size_t) -> void* { return nullptr; }, nullptr);
+  const tx::Status st = plain::plan::plan(in, [](const std::string&) { return true; }, p);
+  nimbus::orch::setWorkingAllocators(nullptr, nullptr);
+  TEST_ASSERT_TRUE(st.err == tx::Err::TooLarge);
+  TEST_ASSERT_EQUAL_STRING("plain::plan: no memory for the plan state", st.where);
+  TEST_ASSERT_TRUE(p.pieces.empty());
+}
 
 struct PlanRun {
   plain::plan::Plan plan;
@@ -773,6 +793,7 @@ void test_zz_waiting_cases_are_counted() {
 
 int main(int, char**) {
   UNITY_BEGIN();
+  RUN_TEST(test_the_plan_state_refusal_is_a_true_line);
   RUN_TEST(test_rows_are_the_capability_table);
   RUN_TEST(test_counter_each_property_catches_its_break);
   RUN_TEST(test_fixtures_carry_their_source_and_replay_verbatim);

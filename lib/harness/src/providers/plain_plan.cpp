@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <new>
 #include <string>
 #include <vector>
 
@@ -18,6 +19,7 @@
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/orch/connector_grant.h"    // whose connectors ride (CUM-828, lane E2-P-CONN2)
 #include "nimbus/orch/connectors_wire.h"    // engine 1's attach builders (lane E2-P-CONN2)
+#include "nimbus/orch/psram_alloc.h"   // workingAlloc: the plan state off the stack
 #include "nimbus/orch/tx/arena.h"
 #include "nimbus/orch/tx/item.h"
 #include "nimbus/orch/tx/rules.h"
@@ -756,10 +758,31 @@ void messageMarks(Plan& out, uint32_t openTurn) {
 
 }  // namespace
 
+namespace {
+// The plan's working state (the facts and one stored item) lives in the working set (PSRAM on the
+// device), not on the stack: a request is planned at the bottom of the Telegram task's deepest
+// chain (lane E2-STACK2). Freed on every way out.
+struct PlanState {
+  Facts f;
+  tx::Item it;
+};
+struct OwnedPlanState {
+  PlanState* p;
+  ~OwnedPlanState() {
+    if (!p) return;
+    p->~PlanState();
+    nimbus::orch::workingFree(p);
+  }
+};
+}  // namespace
+
 Status plan(const RenderInput& in, FragmentOk sendable, Plan& out) {
   out = Plan{};
   if (!in.turn || !in.system || !in.items || !sendable) return Status::fail(Err::InvalidArgument, "plain::plan");
-  Facts f;
+  void* mem = nimbus::orch::workingAlloc(sizeof(PlanState));
+  if (!mem) return Status::fail(Err::TooLarge, "plain::plan: no memory for the plan state");
+  const OwnedPlanState owned{new (mem) PlanState()};
+  Facts& f = owned.p->f;
   f.sendable = sendable;
   f.rules = rowRules(in);
   f.tag = replayTag(in.turn->dialect, in.head && in.head->routed, in.turn->model);
@@ -773,7 +796,7 @@ Status plan(const RenderInput& in, FragmentOk sendable, Plan& out) {
   out.pieces.reserve(order.size() + 1);
   Builder b{in, f, out};
   if (omissionNamed(in)) linePiece(b, 0, 0, true, in.ladder->omissionLine);   // it opens the request
-  tx::Item it;
+  tx::Item& it = owned.p->it;
   for (size_t idx : order)
     if (in.items->get(idx, it).ok()) itemPieces(b, it, (uint32_t)idx, f.rows[idx]);
   fitRealBytes(b);
