@@ -126,3 +126,12 @@ def test_planted_cross_provider_change_fails_staged_and_in_range(repo, monkeypat
     git(repo, "add", "-A")
     commit(repo, "openai bytes\n\nGolden-scope: openai\n")
     assert gs.main(["--range", "HEAD~1..HEAD"]) == 0
+
+
+def test_only_the_releasable_route_needs_a_ruling():
+    codec = "lib/harness/src/providers/plain_wire_anthropic.cpp"
+    routed = G + "messages-anthropic-routed/one_call.req"
+    assert gs.verdict([codec, routed], set(), set(), {}, {"anthropic-direct"}) == []
+    assert len(gs.verdict([codec, ANT], set(), set(), {}, {"anthropic-direct"})) == 1
+    record = {"providers": {"anthropic": {"direct": {"releasable": True}, "routed": {"releasable": False}}}}
+    assert gs.releasable_slots(record) == {"anthropic-direct"}

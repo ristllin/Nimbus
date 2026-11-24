@@ -14,7 +14,7 @@ to something the change names:
     (anthropic), a dialect (chat), a signature (chat-mistral-direct) or one golden
     (chat-mistral-direct/one_call.req). A planner, classifier or exchange change names nothing by
     itself, so it lists what it moved this way.
-A golden of a slot marked releasable in tools/router/release_record.json also needs a ruling:
+A golden of a route marked releasable in tools/router/release_record.json also needs a ruling:
 `Golden-ruling: <slot> <ruling id>` (same places; GOLDEN_RULING for a staged commit).
 
 Usage:
@@ -108,7 +108,13 @@ def parse_names(texts) -> "tuple[set, dict]":
 
 
 def releasable_slots(record: dict) -> set:
-    return {s for s, p in record.get("providers", {}).items() if p.get("releasable")}
+    """'<slot>-<route>' for every route the record marks releasable (schema 2, per route)."""
+    return {
+        f"{s}-{r}"
+        for s, p in record.get("providers", {}).items()
+        for r, e in p.items()
+        if isinstance(e, dict) and e.get("releasable")
+    }
 
 
 def verdict(changed, models_slots, names, rulings, releasable) -> "list[str]":
@@ -130,7 +136,7 @@ def verdict(changed, models_slots, names, rulings, releasable) -> "list[str]":
                 f"{path}: moves {slot} bytes, but the change names only "
                 f"{sorted(models_slots | dialects | names) or 'nothing'} (add 'Golden-scope: {slot}' if meant)"
             )
-        elif slot in releasable and slot not in rulings:
+        elif (slot in releasable or f"{slot}-{sig.split('-', 2)[2]}" in releasable) and slot not in rulings:
             errors.append(
                 f"{path}: {slot} is releasable; its goldens move only with 'Golden-ruling: {slot} <ruling id>'"
             )
