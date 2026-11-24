@@ -13,6 +13,7 @@
 #include "../support/tx_battery/fixtures.h"
 #include "../support/tx_battery/props.h"
 #include "engine_tests.h"
+#include "nimbus/orch/tx/photo_text.h"
 
 namespace photo_tests {
 
@@ -245,6 +246,72 @@ inline void test_a_photo_in_view_keeps_the_cached_prefix_byte_for_byte() {
   TEST_ASSERT_TRUE(pairs >= 12);
 }
 
+inline size_t imagesIn(const std::string& body) {
+  size_t n = 0;
+  for (size_t at = body.find("\"type\":\"image\""); at != std::string::npos; at = body.find("\"type\":\"image\"", at + 1)) ++n;
+  return n;
+}
+
+// Lane E2-P-PHOTO D1: an album of ten 200 KB photos is seen whole in the turn it arrives (engine 1
+// shows ten; this engine showed four and stubbed six), inside the body cap; one turn later the
+// four-photo and 600,000 B caps hold again (three of 200 KB). The worst-case request is printed.
+inline void test_an_album_of_ten_is_seen_whole_when_it_arrives() {
+  txb::Battery b;
+  const char fills[] = {'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'k'};
+  std::vector<tx::Part> parts;
+  for (size_t i = 0; i < 10; ++i) {
+    const std::string ref = "p" + std::string(7, '0') + std::to_string(i);
+    b.photoStore[ref] = jpeg(fills[i], 200000);
+    parts.push_back(photoPart(ref, 200000));
+  }
+  b.model.push(sp::say("Ten meter readings."));
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("Here are ten meter photos: what is the difference between the first and the last?", out, parts));
+  TEST_ASSERT_TRUE_MESSAGE(out.delivered, "the album turn ended without the model's reply");
+  const std::string first = lastBody(b);
+  TEST_ASSERT_EQUAL_MESSAGE(10, (int)imagesIn(first), "the arrival turn did not show the whole album");
+  for (char f : fills) TEST_ASSERT_TRUE_MESSAGE(has(first, pixelsOf(f)), "a photo of the album is missing its pixels");
+  TEST_ASSERT_FALSE_MESSAGE(has(first, "[photo p"), "a photo of the arriving album rendered as its line");
+  TEST_ASSERT_EQUAL(1, (int)b.model.requests().size());   // no ladder climb, no refusal: inside the body cap
+  char msg[160];
+  std::snprintf(msg, sizeof msg, "E2-P-PHOTO worst case: ten 200,000 B photos, request body %u B (text %u B)",
+                (unsigned)first.size(), (unsigned)(first.size() - 10 * ((200000 + 2) / 3 * 4)));
+  TEST_MESSAGE(msg);
+  b.model.push(sp::say("The second read 18,251."));
+  TXB_OK(b.owner("what did the second one read?", out));
+  const std::string next = lastBody(b);
+  TEST_ASSERT_TRUE_MESSAGE(imagesIn(next) <= tx::kInlinePhotosInViewMax, "a later turn carried more than four photos");
+  TEST_ASSERT_EQUAL_MESSAGE(3, (int)imagesIn(next), "a later turn did not hold 600,000 B of the album");
+  TEST_ASSERT_TRUE(has(next, "[photo p00000009"));
+}
+
+// Lane E2-P-PHOTO D3: a provider that refuses the photo for its format (a 400 naming the image) never
+// ends the turn in silence or an error line alone: the round goes once more with the photo as its true
+// line, the model answers, and the photo is not sent as pixels again in this conversation.
+inline void test_a_photo_the_provider_refuses_ends_in_a_reply_with_a_true_line() {
+  txb::Battery b;
+  b.photoStore["pab12cd34"] = jpeg('j', 60000);
+  b.model.push(sp::httpError(400, R"({"type":"error","error":{"type":"invalid_request_error","message":)"
+                                  R"("messages.0.content.1.image.source.base64: The image format is not supported."}})"));
+  b.model.push(sp::say("I could not open that photo: the provider refused its format. Could you send it as a JPEG?"));
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("What is on this label?", out, {photoPart("pab12cd34", 60000)}));
+  TEST_ASSERT_TRUE_MESSAGE(out.delivered, "the refused photo ended the turn without a reply");
+  TEST_ASSERT_TRUE(has(out.text, "could not open that photo"));
+  TEST_ASSERT_EQUAL(2, (int)b.model.requests().size());
+  TEST_ASSERT_TRUE(has(b.model.requests()[0].body, pixelsOf('j')));
+  const std::string resent = lastBody(b);
+  TEST_ASSERT_FALSE_MESSAGE(has(resent, pixelsOf('j')), "the re-sent round carried the refused photo again");
+  TEST_ASSERT_TRUE_MESSAGE(has(resent, "[photo pab12cd34") && has(resent, tx::kPhotoRefused),
+                           "the re-sent round does not say the provider refused the photo");
+  TEST_ASSERT_FALSE(has(resent, "shown earlier"));
+  b.model.push(sp::say("Noted."));
+  TXB_OK(b.owner("ok, never mind", out));
+  TEST_ASSERT_EQUAL(3, (int)b.model.requests().size());
+  TEST_ASSERT_FALSE_MESSAGE(has(lastBody(b), pixelsOf('j')), "the refused photo was sent again a turn later");
+  TEST_ASSERT_TRUE(has(lastBody(b), tx::kPhotoRefused));
+}
+
 inline void run() {
   RUN_TEST(test_a_photo_stays_in_view_across_turns_time_and_a_restart);
   RUN_TEST(test_a_photo_past_the_caps_gets_a_true_line_and_names_no_unbound_tool);
@@ -252,6 +319,8 @@ inline void run() {
   RUN_TEST(test_a_photo_stays_until_compaction_passes_its_turn);
   RUN_TEST(test_a_photo_the_card_cannot_give_back_renders_as_its_line);
   RUN_TEST(test_a_photo_in_view_keeps_the_cached_prefix_byte_for_byte);
+  RUN_TEST(test_an_album_of_ten_is_seen_whole_when_it_arrives);
+  RUN_TEST(test_a_photo_the_provider_refuses_ends_in_a_reply_with_a_true_line);
 }
 
 }  // namespace photo_tests
