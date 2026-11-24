@@ -193,6 +193,9 @@ void test_a_floor_head_names_what_the_ladder_omits() {
   TXB_WAITS_FOR("PENDING RB-W3", "RB-E1a", "RB-TXT");   // a custom head is text mode until its verify (E2-R6)
   txb::Battery b(plain::Dialect::ChatCompletions);
   b.hostOverride = "custom";   // a floor head by its class (tx::budgetFor), never by a default (RB-T4)
+  // E2-REP5: with the real chat codec the summarizer keeps every request under the cap (17 summaries, at most
+  // 55,389 B), so the ladder is never asked; its summaries fail here, which leaves the ladder the only way.
+  b.summarizer.respondWith([](const sp::Recorded&, size_t) { return sp::httpError(400); });
   TXB_OK(txb::runTurns(b, longChat(40, 4000)));
   bool omitted = false;
   for (const auto& r : b.model.requests()) omitted |= txb::detail::omittedTurnsNamed(r.view) > 0;

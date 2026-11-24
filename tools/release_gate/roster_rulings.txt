@@ -10,4 +10,3 @@
 # Ruling 59 (the narrow check of round three, carried by RB-E1b).
 
 # Ruling 68 (the day start reaches the wires): owner messages inside the night window on every wire.
-68 test_tx_overhead::test_wire_overhead_night_flat

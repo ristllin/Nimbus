@@ -161,8 +161,8 @@ void guardLastRound(plain::Dialect d) {
   TXB_OK(b.owner("keep reading", out));
   const auto& reqs = b.model.requests();
   TEST_ASSERT_EQUAL(plain::kHardRounds + 1, (int)reqs.size());
-  TEST_ASSERT_EQUAL_STRING("none", reqs.back().view.toolChoice.c_str());
-  for (size_t i = 0; i + 1 < reqs.size(); ++i) TEST_ASSERT_TRUE(reqs[i].view.toolChoice != "none");
+  TEST_ASSERT_TRUE_MESSAGE(txb::lastRoundOf(reqs.back().view), reqs.back().view.toolChoice.c_str());
+  for (size_t i = 0; i + 1 < reqs.size(); ++i) TEST_ASSERT_FALSE(txb::lastRoundOf(reqs[i].view));
   TEST_ASSERT_TRUE(out.trip == plain::GuardTrip::Rounds);
   TEST_ASSERT_EQUAL_STRING("I stopped: the round limit.", out.text.c_str());
   std::vector<tx::Item> items;

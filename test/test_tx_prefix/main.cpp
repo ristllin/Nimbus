@@ -101,7 +101,8 @@ void test_checker_counts_named_change_points() {
 }
 
 // ---- wire level ---------------------------------------------------------------------
-void expectSameMessagesExceptResult(const sp::RequestView& a, const sp::RequestView& b, const std::string& id) {
+void expectSameMessagesExceptResult(const sp::RequestView& a, const sp::RequestView& b, const std::string& id,
+                                    const std::string& tool) {
   TEST_ASSERT_TRUE(a.systemBlocks == b.systemBlocks && a.toolsJson == b.toolsJson);
   TEST_ASSERT_TRUE(a.messages.size() <= b.messages.size());
   for (size_t i = 0; i < a.messages.size(); ++i) {
@@ -109,7 +110,10 @@ void expectSameMessagesExceptResult(const sp::RequestView& a, const sp::RequestV
     for (size_t k = 0; k < a.messages[i].blocks.size(); ++k) {
       const sp::Block& x = a.messages[i].blocks[k];
       const bool sameOrOutside = (k < b.messages[i].blocks.size() && x == b.messages[i].blocks[k]) ||
-                                 (x.kind == sp::BlockKind::ToolResult && x.id == id);
+                                 (x.kind == sp::BlockKind::ToolResult && x.id == id) ||
+                                 // E2-REP5: in text mode the outside result is its "[device] earlier I ran" line
+                                 (txb::detail::textMode(a) && x.kind == sp::BlockKind::Text &&
+                                  x.text.rfind(txb::detail::ranLine(tool, ""), 0) == 0);
       TEST_ASSERT_TRUE_MESSAGE(sameOrOutside, "the outside change point changed more than the outside result");
     }
   }
@@ -134,10 +138,10 @@ void wirePrefix(plain::Dialect d) {
     TEST_ASSERT_TRUE_MESSAGE(sp::isPrefix(r[i - 1].view, r[i].view, why), (snaps[i].name + ": " + why).c_str());
   }
   const txb::Snapshot& last = snaps.back();
-  std::string outsideId;
+  std::string outsideId, outsideTool;
   for (const tx::Item& it : last.c.items)
-    if (it.kind == tx::ItemKind::Result && it.cls == tx::ResultClass::Outside) outsideId = it.id;
-  expectSameMessagesExceptResult(r[r.size() - 2].view, r.back().view, outsideId);
+    if (it.kind == tx::ItemKind::Result && it.cls == tx::ResultClass::Outside) outsideId = it.id, outsideTool = it.n;
+  expectSameMessagesExceptResult(r[r.size() - 2].view, r.back().view, outsideId, outsideTool);
 }
 
 // A restart reads every item back from its stored line: the same request, byte for byte.

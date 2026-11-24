@@ -202,6 +202,35 @@ inline std::set<uint64_t> supersededSet(const std::vector<tx::Item>& items) {
     if (tx::stubList(it)) s.insert(it.sup.begin(), it.sup.end());   // E2-VERB: never a superseded-read list
   return s;
 }
+// Text mode (lane E2-REP5, sentinel RB-TXT): a request that offers no tool and holds no call or result
+// block carries each stored call with its result as one line in their place, "[device] earlier I ran
+// <tool>: <the result as it renders>" (lane E2-R4b, plain_plan.cpp resultPiece; texts.h kEarlierRan). The
+// checkers read that line as the call and its result.
+inline constexpr const char* kRanLine = "[device] earlier I ran ";
+inline bool textMode(const sp::RequestView& v) {
+  if (!v.tools.empty()) return false;
+  for (const sp::Message& m : v.messages)
+    for (const sp::Block& b : m.blocks)
+      if (b.kind == sp::BlockKind::ToolCall || b.kind == sp::BlockKind::ToolResult) return false;
+  return true;
+}
+inline std::string ranLine(const std::string& tool, const std::string& text) { return kRanLine + tool + ": " + text; }
+// The text blocks that are exactly `line`.
+inline size_t textBlocksEqual(const sp::RequestView& v, const std::string& line) {
+  size_t n = 0;
+  for (const sp::Message& m : v.messages)
+    for (const sp::Block& b : m.blocks) n += b.kind == sp::BlockKind::Text && b.text == line;
+  return n;
+}
+// The calls (and so the results) a request carries: its call blocks, or in text mode its ran lines.
+inline size_t ranCount(const sp::RequestView& v, sp::BlockKind k) {
+  size_t n = 0;
+  const bool text = textMode(v);
+  for (const sp::Message& m : v.messages)
+    for (const sp::Block& b : m.blocks)
+      n += text ? (b.kind == sp::BlockKind::Text && b.text.rfind(kRanLine, 0) == 0) : b.kind == k;
+  return n;
+}
 inline std::vector<const sp::Block*> blocksOf(const sp::RequestView& v, sp::BlockKind k, const std::string& id) {
   std::vector<const sp::Block*> out;
   for (const sp::Message& m : v.messages)
@@ -248,8 +277,21 @@ inline long omittedTurnsNamed(const sp::RequestView& v) {
 namespace detail {
 inline bool coverResult(const sp::RequestView& v, const tx::Item& r, const CoverInput& in, const std::set<uint64_t>& sup,
                         std::string& why) {
-  auto blocks = blocksOf(v, sp::BlockKind::ToolResult, r.id);
   const std::string tag = "r" + std::to_string(r.q) + " (" + r.n + ")";
+  if (textMode(v)) {   // E2-REP5: the call and its result as one line, whole or as its stored stub
+    const bool stub = expectedShow(r, in, sup) == Shown::Stub;
+    const std::string want = stub ? r.st : resultWhole(r, in);
+    // The overflow ladder sends bulk as its stored stub on the rung before it omits turns: a request that
+    // names an omission may carry a bulk result as its stub.
+    const bool rungStub = !stub && r.cls == tx::ResultClass::Bulk && !r.st.empty() && omittedTurnsNamed(v) > 0 &&
+                          textBlocksEqual(v, ranLine(r.n, r.st)) > 0;
+    if (!rungStub && textBlocksEqual(v, ranLine(r.n, want)) == 0) {
+      why = "result " + tag + " should render in text mode as '" + ranLine(r.n, want).substr(0, 80) + "'";
+      return false;
+    }
+    return true;
+  }
+  auto blocks = blocksOf(v, sp::BlockKind::ToolResult, r.id);
   if (blocks.size() != 1) {
     why = "result " + tag + " is rendered " + std::to_string(blocks.size()) + " times";
     return false;
@@ -289,6 +331,7 @@ inline bool coverItem(const sp::RequestView& v, const tx::Item& it, const CoverI
       if (!textIn(v, "", it.x)) why = "device note " + tag + " is missing";
       break;
     case tx::ItemKind::Call: {
+      if (textMode(v)) break;   // E2-REP5: its result's line says it
       auto calls = blocksOf(v, sp::BlockKind::ToolCall, it.id);
       if (calls.size() != 1 || calls[0]->name != it.n) why = "call " + tag + " (" + it.n + ") is not rendered once";
       break;
@@ -490,16 +533,20 @@ inline bool noUnstoredText(const sp::RequestView& v, const std::vector<tx::Item>
                            uint16_t dayStartMin = 240) {
   std::vector<std::pair<std::string, std::string>> owner;   // text, its stamp
   std::vector<std::string> other;
+  std::set<std::string> ran;   // E2-REP5: in text mode, a stored result's line opens "[device] earlier I ran <tool>: "
   for (const tx::Item& it : items) {
     if (it.kind == tx::ItemKind::User) owner.emplace_back(it.x, stampOf(it, dayStartMin));
     if (it.kind == tx::ItemKind::Assistant || it.kind == tx::ItemKind::DeviceNote || it.kind == tx::ItemKind::RoundMeta)
       other.push_back(it.x);
+    if (it.kind == tx::ItemKind::Result && detail::textMode(v)) ran.insert(detail::ranLine(it.n, ""));
   }
   std::sort(owner.begin(), owner.end(), [](const auto& a, const auto& b) { return a.first.size() > b.first.size(); });
   std::sort(other.begin(), other.end(), [](const std::string& a, const std::string& b) { return a.size() > b.size(); });
   for (const sp::Message& m : v.messages)
     for (const sp::Block& b : m.blocks) {
       if (b.kind != sp::BlockKind::Text) continue;
+      // A call and its result as one line: the result's text, which this checker reads in no result block either.
+      if (std::any_of(ran.begin(), ran.end(), [&b](const std::string& p) { return b.text.rfind(p, 0) == 0; })) continue;
       std::string rest = b.text;
       for (const auto& t : owner)
         if (detail::takeOut(rest, t.first)) detail::takeOut(rest, t.second);
@@ -582,6 +629,16 @@ inline size_t countKind(const sp::RequestView& v, sp::BlockKind k) {
 }
 }  // namespace detail
 
+// A guard's last round: tool choice none, or in text mode (no tool offered at all, E2-REP5) the request
+// that carries the guard's device note "[device] limit reached".
+inline bool lastRoundOf(const sp::RequestView& v) {
+  return v.toolChoice == "none" || (detail::textMode(v) && detail::textIn(v, "user", "[device] limit reached"));
+}
+// The tool choice of a loop round: "auto", or none sent in text mode.
+inline bool loopChoiceOk(const sp::RequestView& v) {
+  return v.toolChoice == "auto" || (v.toolChoice.empty() && detail::textMode(v));
+}
+
 // The plain loop: a step with no call ends the turn, so requests = rounds with calls + 1;
 // each request carries the previous request's calls and results plus the previous step's
 // new ones; text that came with a call is kept and the loop continues; the delivered text
@@ -599,10 +656,10 @@ inline bool loopShapeHolds(const std::vector<StepShape>& steps, const std::vecto
       return false;
     }
   for (size_t i = 1; i < reqs.size(); ++i) {
-    const size_t wantCalls = detail::countKind(*reqs[i - 1], sp::BlockKind::ToolCall) + steps[i - 1].calls;
-    const size_t wantResults = detail::countKind(*reqs[i - 1], sp::BlockKind::ToolResult) + steps[i - 1].calls;
-    const size_t gotCalls = detail::countKind(*reqs[i], sp::BlockKind::ToolCall);
-    const size_t gotResults = detail::countKind(*reqs[i], sp::BlockKind::ToolResult);
+    const size_t wantCalls = detail::ranCount(*reqs[i - 1], sp::BlockKind::ToolCall) + steps[i - 1].calls;
+    const size_t wantResults = detail::ranCount(*reqs[i - 1], sp::BlockKind::ToolResult) + steps[i - 1].calls;
+    const size_t gotCalls = detail::ranCount(*reqs[i], sp::BlockKind::ToolCall);
+    const size_t gotResults = detail::ranCount(*reqs[i], sp::BlockKind::ToolResult);
     if (gotCalls != wantCalls || gotResults != wantResults) {
       why = "request " + std::to_string(i) + " carries " + std::to_string(gotCalls) + " calls and " +
             std::to_string(gotResults) + " results; the round before it leaves " + std::to_string(wantCalls) +

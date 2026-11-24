@@ -88,7 +88,7 @@ inline void loopShapeOn(plain::Dialect d) {
       const sp::RequestView& v = b.model.requests()[i].view;
       TEST_ASSERT_TRUE_MESSAGE(v.parsed, v.parseError.c_str());
       TEST_ASSERT_TRUE(v.tools.size() <= plain::kMaxAlwaysOnTools);
-      TEST_ASSERT_EQUAL_STRING("auto", v.toolChoice.c_str());
+      TEST_ASSERT_TRUE_MESSAGE(txb::loopChoiceOk(v), v.toolChoice.c_str());   // none sent in text mode (E2-REP5)
       reqs.push_back(&v);
     }
     std::string why;
@@ -335,7 +335,7 @@ inline void test_the_fill_after_a_restart_renders_the_same_transcript() {
 
 // ---- the round budget and the wall clock ------------------------------------------------------
 inline sp::Step untilNone(const sp::Recorded& r, uint32_t takesMs) {
-  sp::Step s = r.view.toolChoice == "none" ? sp::say("Stopped at the limit.")
+  sp::Step s = txb::lastRoundOf(r.view) ? sp::say("Stopped at the limit.")
                                            : sp::call("read_file", "{\"path\":\"notes/a.md\",\"offset\":" +
                                                                        std::to_string(r.step) + "}");
   s.takesMs = takesMs;
@@ -2092,9 +2092,9 @@ inline void expectOneTrip(txb::Battery& b, const plain::TurnOutcome& out, plain:
     }
   TEST_ASSERT_EQUAL_MESSAGE(1, (int)notes, msg);
   size_t none = 0;
-  for (const auto& r : b.model.requests()) none += r.view.toolChoice == "none";
+  for (const auto& r : b.model.requests()) none += txb::lastRoundOf(r.view);
   TEST_ASSERT_EQUAL_MESSAGE(1, (int)none, msg);
-  TEST_ASSERT_EQUAL_STRING_MESSAGE("none", b.model.last().view.toolChoice.c_str(), msg);
+  TEST_ASSERT_TRUE_MESSAGE(txb::lastRoundOf(b.model.last().view), msg);
   TEST_ASSERT_EQUAL_STRING_MESSAGE("Stopped at the limit.", out.text.c_str(), msg);
   TEST_ASSERT_EQUAL_MESSAGE(2, (int)b.sent.size(), msg);
   TEST_ASSERT_EQUAL_STRING_MESSAGE("Stopped at the limit.", b.sent[0].text.c_str(), msg);
