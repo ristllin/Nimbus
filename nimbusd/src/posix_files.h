@@ -343,10 +343,12 @@ class PosixFiles {
     }
     return shown;
   }
-  // Store an uploaded file (any bytes) under the same traversal gate as the tools.
-  bool put(const std::string& p, const std::string& n, const std::string& bytes, std::string& err) {
+  // Store an uploaded file (any bytes) under the same traversal gate as the tools. `owner`: whose
+  // file it is (a Principal namespace; "" = the owner's), lane E2-P-SUB2.
+  bool put(const std::string& p, const std::string& n, const std::string& bytes, std::string& err,
+           const std::string& owner = std::string()) {
     std::lock_guard<std::recursive_mutex> g(mu_);
-    return save(p, n, bytes, err);
+    return save(p, n, bytes, err, owner);
   }
   bool fetch(const std::string& p, const std::string& n, std::string& out) const {
     std::lock_guard<std::recursive_mutex> g(mu_); return read(p, n, out); }
@@ -431,7 +433,7 @@ class PosixFiles {
   // blocker, the oldest regenerable copies (chat-attachment copies only) are
   // evicted first so the save lands; owner artifacts are never evicted.
   bool save(const std::string& p, const std::string& n, const std::string& text,
-            std::string& err) {
+            std::string& err, const std::string& owner = std::string()) {
     if (!nimbus::orch::FileStore::validSegment(p, 24) ||
         !nimbus::orch::FileStore::validSegment(n, 48)) {
       err = "invalid project or name";
@@ -449,6 +451,7 @@ class PosixFiles {
     e.bytes = (uint32_t)text.size();
     e.createdAt = vclock::epoch32();
     e.kind = nimbus::orch::fileKindForName(n);
+    e.owner = owner.c_str();
     if (!store_.add(e, err)) {
       if (!replacing) ::unlink(bytesPath(p, n).c_str());   // a late refusal leaves no new file behind
       return false;

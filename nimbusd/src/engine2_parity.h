@@ -193,13 +193,15 @@ inline std::string hostedReadDoc(PosixFiles& files, const nimbus::orch::Principa
 }
 
 // The JobEngine's persistResult on engine 2 (the device's jobFileDeps): a report of the agents project saved
-// whole as agents/<id>-<name>.md; the outcome line the JobEngine appends ("" for any other project).
+// whole as agents/<id>-<name>.md; the outcome line the JobEngine appends ("" for any other project). `ns`:
+// whose report it is (the spawning chat's namespace, "" = the owner's; lane E2-P-SUB2), as the device files it.
 inline std::string persistAgentReport(PosixFiles& files, const std::string& project, const std::string& name,
-                                      const std::string& tag, const std::string& text) {
+                                      const std::string& tag, const std::string& text,
+                                      const std::string& ns = std::string()) {
   std::string path, err;
   if (project != agent::plain::kAgentsProject || !agent::plain::agentReportPath(tag, name, path).ok())
     return std::string();
-  if (!files.put(project, path.substr(project.size() + 1), text, err)) return "[persist FAILED: " + err + "]";
+  if (!files.put(project, path.substr(project.size() + 1), text, err, ns)) return "[persist FAILED: " + err + "]";
   return "[saved: " + path + "]";
 }
 

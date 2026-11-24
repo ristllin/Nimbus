@@ -5,12 +5,14 @@
 //   (b) the slash commands as on the device: /clear, /compact and /budget act on engine 2 for the owner; /help
 //       and a member's owner verb get the instance's own answer, never a model turn;
 //   (c) sub-agents: the agent tools are offered; a finished report is saved whole under agents/ and runs as
-//       its own turn, outside content (its note change waits on the pending shelf);
+//       its own turn, outside content (its note change waits on the pending shelf); a member's report is filed
+//       under that member (lane E2-P-SUB2);
 //   (d) search scope files finds a stored file by its words; scope memories answers through engine 1's search;
 //   (e) a read from inbox/ or of another person's file marks the turn as outside content (the note change
 //       waits); a read of the owner's own file does not;
 //   (f) the engine choice: mem/engine.json wins, else NIMBUSD_ENGINE, else 1; each engine-2 turn leaves its
 //       rows in engine 1's day stream, tagged e2 (the way back), and the binding's lines name no card;
+//   (h) lane E2-P-SUB2: a routine a member set runs on the member's binding and posts to the member's chat;
 //   (g) /api/state says which engine answers, engine 2's version line and turn count; POST /api/engine stores
 //       the next start's choice; engine 1's state is as before.
 #include <sys/stat.h>
@@ -52,6 +54,7 @@ struct Host {
   std::vector<std::string> members = {"777", "888"};
   std::function<bool(const nimbus::orch::Principal&, const std::string&, std::string&)> memories;
   agent::JobEngine* jobs = nullptr;
+  nimbusd::HostedLoops* loops = nullptr;   // the routines table (lane E2-P-SUB2's case)
   nimbusd::Engine2Stats stats;
 
   explicit Host(const std::string& d) : dir(d), files(d + "/mem/files") {}
@@ -91,6 +94,7 @@ struct Host {
     };
     o.memories = memories;
     o.jobs = jobs;
+    o.loops = loops;
     o.stats = &stats;
     host.reset(new nimbusd::Engine2Host(o));
     return host->start();
@@ -196,6 +200,15 @@ void caseAgents(ndtest::Ctx& c) {
   c.eq(nimbusd::persistAgentReport(h.files, "agents", "tea-shops", "j7", "Three shops sell oolong."),
        "[saved: agents/j7-tea-shops.md]", "a report is saved whole under agents/");
   c.eq(slurp(dir + "/mem/files/agents/j7-tea-shops.md"), "Three shops sell oolong.", "...with every byte");
+  // Lane E2-P-SUB2: a member's report is filed under that member: they read it, another member does not.
+  const nimbus::orch::Principal m777 = nimbus::orch::principalForRole("777", nimbus::orch::Role::User);
+  const nimbus::orch::Principal m888 = nimbus::orch::principalForRole("888", nimbus::orch::Role::User);
+  c.eq(nimbusd::persistAgentReport(h.files, "agents", "scan", "j8", "Member findings.", m777.ns),
+       "[saved: agents/j8-scan.md]", "a member's report is saved under agents/");
+  const nimbus::orch::FileEntry* row = h.files.toolsIndex().find("agents", "j8-scan.md");
+  c.ok(row && std::string(row->owner.c_str()) == m777.ns, "...filed under that member");
+  c.eq(nimbusd::hostedReadDoc(h.files, m777, "agents", "j8-scan.md"), "Member findings.", "...who reads it");
+  c.eq(nimbusd::hostedReadDoc(h.files, m888, "agents", "j8-scan.md"), "", "...and another member does not");
   const agent::plain::Status st = h.host->reportTurn("owner", "Agent tea-shops finished: three shops sell oolong.");
   c.ok(st.ok(), "the report runs as its own turn");
   c.ok(has(h.model.last().body, "three shops sell oolong"), "...carrying the report");
@@ -369,6 +382,45 @@ void caseState(ndtest::Ctx& c) {
   }
 }
 
+// (h) Lane E2-P-SUB2: a routine a member set runs in and posts to that member's chat, never the owner's.
+void caseMemberRoutine(ndtest::Ctx& c) {
+  std::printf("  (h) a member's routine\n");
+  setenv("NIMBUSD_TEST_CLOCK", "1", 1);
+  const std::string dir = ndtest::scratchDir("e2pmemberroutine");
+  Host h(dir);
+  nimbusd::HostedLoops loops;
+  nimbusd::HostedLoopHooks hooks;
+  hooks.world = [] { return nimbus::orch::deliveryWorld("bot-token-fake", "1001,777", "1001"); };   // 777 allowed
+  hooks.fire = [&h](const nimbus::orch::LoopFireRequest& r) { return h.host->fire(r); };
+  loops.begin(dir, hooks);
+  h.loops = &loops;
+  c.eq(h.start(), "", "the host starts with the routines table");
+  // Noon UTC (the test offset is 0): outside quiet hours, so the routine's output goes at once.
+  const uint64_t have = nimbusd::vclock::epoch() % 86400;
+  nimbusd::vclock::advance(have <= 12 * 3600 ? 12 * 3600 - have : 86400 - (have - 12 * 3600));
+  h.model.push(sp::call("schedule", R"({"op":"create","kind":"routine","every":"every 5 min","text":"say the word COMET"})"));
+  h.model.push(sp::say("Set."));
+  (void)h.host->say("777", "every five minutes say COMET", "tg");
+  std::vector<nimbus::orch::LoopRecord> back;
+  c.ok(nimbus::orch::loadLoops(slurp(dir + "/loops.json"), back) && back.size() == 1, "the member's routine is stored");
+  c.ok(!back.empty() && back[0].chatId == "777", "...under the member's chat");
+  c.ok(!back.empty() && loops.approve(back[0].id), "the owner approves it");
+  h.sent.clear();
+  const size_t before = h.model.requests().size();
+  loops.tick(false, nullptr);   // the first sweep: nothing is due
+  h.model.push(sp::say("COMET"));
+  nimbusd::vclock::advance(400);
+  loops.tick(false, nullptr);
+  c.ok(h.model.requests().size() == before + 1, "the routine's fire is one request");
+  c.ok(h.sent.size() == 1 && h.sent[0].chat == "777" && h.sent[0].text == "COMET",
+       "its output goes to the member's chat, not the owner's");
+  c.ok(h.host->memberBinding() && h.host->memberBinding()->config().chatId == "777", "...on the member's binding");
+  std::string why;
+  c.ok(h.model.verify(why), "the script was used exactly (" + why + ")");
+  h.host.reset();
+  ndtest::rmTree(dir);
+}
+
 }  // namespace
 
 int main() {
@@ -383,6 +435,7 @@ int main() {
   caseOutside(c);
   caseChoiceAndWayBack(c);
   caseState(c);
+  caseMemberRoutine(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   return c.failures ? 1 : 0;
 }

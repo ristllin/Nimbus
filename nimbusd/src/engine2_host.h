@@ -418,7 +418,9 @@ class Engine2Host {
   }
 
   // Lane E2-SCHED: the routines tick's fire hook while engine 2 runs (the engine thread, between
-  // turns). Every entry delivers to this chat's owner conversation, as the hosted owner chat is one.
+  // turns). The owner's entries deliver to the owner conversation, as the hosted owner chat is one; lane
+  // E2-P-SUB2: an entry a member set runs in and posts to that member's chat (their binding), and waits
+  // while that chat cannot run a turn.
   nimbus::orch::FireOutcome fire(const nimbus::orch::LoopFireRequest& req) {
     nimbus::orch::FireOutcome o;
     if (!o_.loops || !running()) {
@@ -431,14 +433,26 @@ class Engine2Host {
       o.error = nimbus::orch::kSpendFrozenError;
       return o;
     }
+    plain::ChatBinding* target = binding_.get();
+    const nimbus::orch::Role role = roleOf(req.chatId);
+    const bool member = !req.chatId.empty() && req.chatId != o_.chatId && role != nimbus::orch::Role::Admin;
+    if (member) {
+      std::string line;
+      target = role == nimbus::orch::Role::Unknown ? nullptr : memberFor(req.chatId, role, line);
+      if (!target) {
+        o.deferred = true;   // the member's chat cannot run now (or is not approved): never the owner's
+        o.retryAfterSec = 60;
+        return o;
+      }
+    }
     nimbus::orch::schedule::FireBinding b;
-    b.owner = binding_->ownerSink();
+    b.owner = target->ownerSink();
     b.tzMinutes = tzNow();
     b.dayStartMin = dayStart();
     b.files = &routineFiles_;
     b.grants = o_.loops->routineGrants();
-    b.run = [this](const plain::RoutineFire& f, bool tainted, plain::FireReport& out) {
-      plain::RoutineDeps r = binding_->routineDeps(binding_->config().summarizerModel);
+    b.run = [this, target](const plain::RoutineFire& f, bool tainted, plain::FireReport& out) {
+      plain::RoutineDeps r = target->routineDeps(target->config().summarizerModel);
       r.head.tainted = tainted;
       r.tzMinutes = tzNow();
       r.held = &held_;
@@ -448,7 +462,7 @@ class Engine2Host {
       return st;
     };
     nimbus::orch::LoopFireRequest owner = req;
-    owner.chatId = o_.chatId;
+    if (!member) owner.chatId = o_.chatId;
     o = o_.loops->fireE2(owner, b);
     std::fprintf(stderr, "[nimbusd] engine2: fire %s ok=%d deferred=%d answered=%d\n", req.id.c_str(), int(o.ok),
                  int(o.deferred), int(o.answered));
@@ -635,7 +649,10 @@ class Engine2Host {
     d.transport = &gate_;   // lane E2-R8b: no request leaves while paid calls are paused
     d.files = &txFiles_;
     d.registry = &reg_;
-    d.sendPart = [this](const std::string&, const std::string& part) { return deliverPart(part); };
+    // A member's binding sends to that member's chat (E2-P-SUB2: its routine's output arrives outside its turns);
+    // the owner's to the chat of the running turn.
+    const std::string to = owner ? std::string() : chat;
+    d.sendPart = [this, to](const std::string&, const std::string& part) { return deliverPart(part, to); };
     d.key = o_.key;
     d.pinnedNotes = [this](const nimbus::orch::Principal& who) { return notes_.pinnedBlock(who); };
     d.compactCtl = hostedTextIO(o_.dataDir + "/mem/compact_ctl.txt");
@@ -700,7 +717,7 @@ class Engine2Host {
   }
 
   // One part of the running turn to the chat it came from (a boot's resume or a fire: the owner chat).
-  bool deliverPart(const std::string& raw) {
+  bool deliverPart(const std::string& raw, const std::string& to = std::string()) {
     // Lane E2-R8b: the ceiling stopped the turn: the pause line in place of the failure line, and nothing after it.
     if (pausedTold_) return true;
     std::string text = raw;
@@ -714,7 +731,7 @@ class Engine2Host {
       unsent_.push_back(part);
       return false;
     }
-    o_.deliver(curChat_.empty() ? o_.chatId : curChat_, part);
+    o_.deliver(!to.empty() ? to : curChat_.empty() ? o_.chatId : curChat_, part);
     sent_.push_back(part);
     return true;
   }

@@ -3347,10 +3347,13 @@ class NimbusdRig {
       jd.readDoc = [this](const std::string& chat, const std::string& project, const std::string& name) {
         return hostedReadDoc(*files_, access_->principalFor(chat), project, name);
       };
+      // A member's report is filed under that member (E2-P-SUB2), so their report turn and files read it.
       jd.persistResult = [this](const std::string& project, const std::string& name, const std::string& tag,
-                                const std::string& text, const std::string&) {
-        return persistAgentReport(*files_, project, name, tag, text);
+                                const std::string& text, const std::string& chat) {
+        const orch::Principal who = access_->principalFor(chat);
+        return persistAgentReport(*files_, project, name, tag, text, who.owner ? std::string() : who.ns);
       };
+      jd.reportTurns = true;   // E2-P-SUB2: a failure is a report turn; a report a restart left waiting comes after it
     }
     jd.turnInFlight = [this] { return eng_ && eng_->turnInFlight(); };
     // Lane DEF: a finished sub-agent's reported usage counts toward the monthly spend
