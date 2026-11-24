@@ -584,8 +584,7 @@ class ChatBinding {
       out = turnCtx();
       return Status::success();
     };
-    const Platform* p = d_.platform;
-    r.now = [p] { return p->nowEpoch(); };
+    r.now = d_.platform->nowEpoch;   // a copy: no lambda of the same signature wrapping it (the tg_poll stack gate)
     r.deviceName = d_.deviceName;
     r.done = [this](const ResumeReport& rep) {
       resume_ = rep;
