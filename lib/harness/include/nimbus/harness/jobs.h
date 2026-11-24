@@ -72,6 +72,10 @@ bool freshCreditsASite(const std::string& text);
 // device glue can key its head-turn arc ("head") on the same hash.
 uint32_t keyFromTag(const char* tag);
 
+// The ring's event for the head turn (the "head" key): Running while a turn works, Offline after. Engine 1's
+// TurnEngine::setHeadArc sends the same event; engine 2's turn brackets itself with it (E2-P-TOOLS, E2-REP2).
+nimbus::attn::Event headArcEvent(bool lit);
+
 // The job engine's owner delivery composed with episodic capture (CUM-482).
 // Job-engine messages - spawn acks, "Couldn't start that agent on ...", sub
 // failures, raw fallbacks - bypassed the chat history, so the web chat (which

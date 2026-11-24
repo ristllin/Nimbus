@@ -176,6 +176,14 @@ void JobEngine::deliver(const std::string& chatId, const std::string& text) {
   if (d_.deliver) d_.deliver(chatId, text);
 }
 
+attn::Event headArcEvent(bool lit) {
+  attn::Event e;
+  e.type = attn::Event::Type::JobState;
+  e.key = keyFromTag("head");
+  e.status = (uint8_t)(lit ? solide::ring::Status::Running : solide::ring::Status::Offline);
+  return e;
+}
+
 // Emit one JobState event with the backend accent hue applied.
 void JobEngine::emitJobState(const char* tag, const char* backend, orch::JobState st) {
   if (!d_.event) return;

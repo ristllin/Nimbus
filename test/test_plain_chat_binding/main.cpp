@@ -224,6 +224,7 @@ struct Device {
       t.add(p.c_str(), m.c_str(), u);
       compactUsage.push_back(t);
     };
+    if (onProgress) d.onProgress = onProgress;
     if (progress)
       d.progress.send = [this](const std::string&, const std::string& t, int64_t& id) {
         id = 0;
@@ -300,6 +301,7 @@ struct Device {
   std::vector<nimbus::orch::TurnSpend> usage;
   std::vector<nimbus::orch::TurnSpend> compactUsage;   // lane E2-CMP: the summarizer's requests
   bool progress = false;
+  std::function<void(const plain::ProgressEvent&)> onProgress;
   std::vector<std::string> progressLines;
   // Lane E2-FIX14.
   std::string key = "sk-fake-binding";
@@ -2045,6 +2047,37 @@ static void test_no_binding_names_a_provider() {
   }
 }
 
+// E2-REP2 (E2-P-TOOLS D2): a person's step is reported to the device's progress hook, which on a Telegram chat
+// peeks for a message that arrived meanwhile (telegram::turnAckQueued); the web chat does not peek. The hook
+// is the binding's (a tool round reaches it); the device's wiring and the ring arc around the turn are
+// checked in the source, as test_no_binding_names_a_provider does.
+static std::string sourceOf(const char* path) {
+  FILE* fp = std::fopen(path, "rb");
+  TEST_ASSERT_NOT_NULL_MESSAGE(fp, path);
+  std::string text;
+  char buf[4096];
+  for (size_t n; (n = std::fread(buf, 1, sizeof buf, fp)) > 0;) text.append(buf, n);
+  std::fclose(fp);
+  return text;
+}
+
+static void test_a_step_of_the_turn_reaches_the_progress_hook_that_acknowledges_a_second_message() {
+  Device dev;
+  int steps = 0;
+  dev.reg.add("calc", "Exact decimal arithmetic.", [](ArduinoJson::JsonObjectConst, const nimbus::orch::Principal&) {
+    return nimbus::orch::ToolResult::ok("4");
+  }, R"({"type":"object","properties":{"expression":{"type":"string"}},"required":["expression"]})");
+  dev.onProgress = [&steps](const plain::ProgressEvent&) { ++steps; };
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  dev.model.push(sp::calls({{"calc", R"({"expression":"2+2"})", ""}}));
+  dev.model.push(sp::say("Four."));
+  TEST_ASSERT_TRUE(dev.say("what is 2+2").ok());
+  TEST_ASSERT_TRUE_MESSAGE(steps >= 1, "a tool round reaches the hook");
+  const std::string orch = sourceOf("src/agent/orchestrator_plain.cpp");
+  TEST_ASSERT_TRUE_MESSAGE(has(orch, "if (!localChat(chatId)) d.onProgress = [](const plain::ProgressEvent&) { (void)telegram::turnAckQueued(); };"),
+                           "Telegram chats peek, the web chat does not");
+}
+
 // The custom endpoint (design section 3.3): a LAN base is plain HTTP on its port; without a verified tool
 // call it runs in text mode; its window and tool call come from the verify step.
 static void test_the_custom_endpoint_follows_its_verify() {
@@ -2119,6 +2152,7 @@ int main(int, char**) {
   RUN_TEST(test_compact_now_answers_on_the_chat_and_the_budget_view_is_in_tokens);
   RUN_TEST(test_a_compaction_files_its_summarizer_spend_like_a_turn);
   RUN_TEST(test_the_progress_line_is_bound_and_a_short_turn_sends_none);
+  RUN_TEST(test_a_step_of_the_turn_reaches_the_progress_hook_that_acknowledges_a_second_message);
   RUN_TEST(test_a_failed_exists_at_boot_is_not_an_empty_conversation);
   RUN_TEST(test_an_outage_at_boot_reloads_and_stores_the_ram_turns_once);
   RUN_TEST(test_a_new_chat_opens_empty_and_an_outage_keeps_ram);

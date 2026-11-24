@@ -1936,12 +1936,7 @@ bool engineRunning() { return false; }   // no ring arcs or sub-agents on engine
 bool engineReapStuckTurn(uint32_t) { return false; }
 // The head's ring arc (E2-P-TOOLS): engine 1's event on the attention Router (blue comet, then off).
 void engineSetHeadArc(bool on) {
-  if (!g_sinks.event) return;
-  nimbus::attn::Event e;
-  e.type = nimbus::attn::Event::Type::JobState;
-  e.key = keyFromTag("head");
-  e.status = (uint8_t)(on ? solide::ring::Status::Running : solide::ring::Status::Offline);
-  g_sinks.event(e);
+  if (g_sinks.event) g_sinks.event(headArcEvent(on));
 }
 String withTurnTag(const char* base) { return String(base); }
 void engineNoteToolReplied(const std::string&) {}
