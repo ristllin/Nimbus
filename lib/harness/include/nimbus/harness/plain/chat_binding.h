@@ -409,8 +409,7 @@ class ChatBinding {
       st = Status::fail(tx::Err::TooLarge, "plain::ChatBinding::turn.memory");
     }
     if (engine_->unloaded() && d_.sendPart) (void)d_.sendPart(cfg_.chatId, unloadedLine());
-    if (d_.parkHead)
-      noteHeadOutcome(cfg_.provider, d_.key ? d_.key() : std::string(), out, msg.probe, /*told=*/true, d_.platform->nowMs());
+    noteHead(msg, out);   // E2-FIX14: the shared park learns what the head answered
     breaker_.spent(person, out.end.microUsd, d_.platform->nowMs());
     if (reporter_) reporter_->close(d_.platform->nowMs());
     if (d_.usage) d_.usage(out);
@@ -663,6 +662,11 @@ class ChatBinding {
       resumeRan_ = true;
     };
     return r;
+  }
+  // Lane E2-FIX14: after a turn, the shared park learns what the head answered (parkHead only).
+  void noteHead(const ChatMessage& msg, const TurnOutcome& out) {
+    if (d_.parkHead)
+      noteHeadOutcome(cfg_.provider, d_.key ? d_.key() : std::string(), out, msg.probe, /*told=*/true, d_.platform->nowMs());
   }
   // Lane E2-FIX14: the resume's one request passes engine 1's money gates first. Over the limit, parked or
   // paused, nothing is sent: the resume fails as a refused run does, the turn stays open for a later boot and
