@@ -52,6 +52,7 @@
 #include "nimbus/harness/plain/request.h"
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/orch/mcp_client.h"   // registerServerTools, the parsers (E2-P-CONN1)
+#include "nimbus/orch/connectors_wire.h"   // provider-side connectors (E2-P-CONN2)
 #include "nimbus/orch/media_label.h"
 #include "nimbus/orch/tool_groups.h"   // registerMore
 #include "../test_mcp_client/real_fixtures.h"   // engine 1's fake tool server: a real server's bytes
@@ -188,7 +189,10 @@ struct Device {
       c.summarizers.push_back(plain::rungOf(rs));
     }
     c.timeZone = "Europe/London";
+    c.role = role;
     plain::ChatBindingDeps d;
+    d.connectors = connectors;   // lane E2-P-CONN2
+    d.bearer = bearer;
     d.platform = &platform;
     d.transport = &model_();
     d.files = &files;
@@ -276,6 +280,9 @@ struct Device {
   std::function<nimbus::orch::tx::RecentFilesBlock::Source(const nimbus::orch::Principal&)> recentFiles;
   bool noCardFitted = false;   // the device has no card at all (EngineDeps::noCard)
   plain::RailPendingFn railPending;   // lane E2-FSAFE
+  nimbus::orch::Role role = nimbus::orch::Role::Admin;   // the chat's person (E2-P-CONN2: whose connectors ride)
+  std::function<std::vector<nimbus::orch::ConnectorInfo>()> connectors;   // lane E2-P-CONN2
+  std::function<std::string(const nimbus::orch::ConnectorInfo&)> bearer;
   uint32_t ms = 1000;
   CutModel model;
   Card card;
@@ -509,6 +516,146 @@ static void test_a_tool_servers_tools_are_behind_more_and_its_answer_taints_the_
                              dev.model.requests()[0].body.c_str());
     TEST_ASSERT_EQUAL_MESSAGE(server ? 0 : 1, noteRuns, server ? "tainted turn wrote a note" : "clean turn kept");
     TEST_ASSERT_EQUAL(server ? 1 : 0, (int)shelf.size());
+  }
+}
+
+// Lane E2-P-CONN2 (PC-0265 to PC-0266): the owner's provider-side connectors and the Code sandbox, with the
+// scripted provider on each head's real wire. On an Anthropic head his tool server rides as mcp_servers
+// with its toolset; on an OpenAI head his server, the first-party connector and the sandbox ride tools[]
+// (engine 1's attach entries); on a Mistral head (chat/completions) nothing rides, as engine 1's
+// chat-completions tool loop sent none. An answer in which the provider ran a connector taints the turn:
+// the note the model then asks for goes to the pending shelf and never runs. Counter-tests: the same turn
+// with no connector run writes the note; a member's turn carries none of the owner's connectors (OpenAI:
+// the sandbox only, a built-in). The answers' connector items are written from the providers' documented
+// shapes (no recorded 2xx is committed; the paid end run verifies them).
+namespace {
+std::vector<nimbus::orch::ConnectorInfo> ownerConnectors() {
+  auto one = [](const char* name, const char* prov, const char* kind, const char* url) {
+    nimbus::orch::ConnectorInfo c;
+    c.name = c.type = name;
+    c.prov = prov;
+    c.kind = kind;
+    c.url = url;
+    c.enabled = true;
+    return c;
+  };
+  std::vector<nimbus::orch::ConnectorInfo> cs = {one("docs", "anthropic", "mcp", "https://mcp.docs.example.test/mcp"),
+                                                 one("github", "openai", "mcp", "https://mcp.github.example.test/"),
+                                                 one("gmail", "openai", "connector", ""),
+                                                 one("gcal", "mistral", "connector", "")};
+  cs[2].connectorId = "connector_gmail";
+  nimbus::orch::applyCodeSandbox(cs, true);
+  return cs;
+}
+
+// The head's answer: the provider ran a connector (or not), then the model asks for the note.
+sp::Step connectorThenNote(const std::string& provider, bool ran) {
+  const std::string note = R"({\"op\":\"set\",\"key\":\"pin1\",\"value\":\"from the connector\"})";
+  if (provider == "anthropic")
+    return sp::raw(200, std::string(R"({"id":"msg_c2","type":"message","role":"assistant","model":"claude-haiku-5-5","content":[)") +
+                            (ran ? R"({"type":"mcp_tool_use","id":"mcptoolu_1","name":"search","server_name":"docs","input":{"q":"pin"}},)"
+                                   R"({"type":"mcp_tool_result","tool_use_id":"mcptoolu_1","is_error":false,"content":[{"type":"text","text":"set pin1"}]},)"
+                                 : "") +
+                            R"({"type":"tool_use","id":"toolu_c2","name":"note","input":{"op":"set","key":"pin1","value":"from the connector"}}],)"
+                            R"("stop_reason":"tool_use","stop_sequence":null,"usage":{"input_tokens":20,"output_tokens":9}})");
+  return sp::raw(200, std::string(R"({"object":"response","id":"resp_c2","model":"gpt-5.6-luna","status":"completed","output":[)") +
+                          (ran ? R"({"type":"mcp_call","id":"mcp_1","server_label":"github","name":"search","arguments":"{}","output":"set pin1"},)" : "") +
+                          R"({"type":"function_call","id":"fc_1","call_id":"call_c2","name":"note","arguments":")" + note + R"("}],)"
+                          R"("usage":{"input_tokens":20,"output_tokens":9,"input_tokens_details":{"cached_tokens":0}}})");
+}
+}  // namespace
+
+static void test_the_owners_provider_connectors_ride_each_head_and_their_answer_taints_the_turn() {
+  const struct {
+    const char* provider;
+    const char* model;
+  } heads[] = {{"anthropic", "claude-haiku-5-5"}, {"openai", "gpt-5.6-luna"}, {"mistral", "mistral-large-4-0"}};
+  for (const auto& h : heads) {
+    const std::string p = h.provider;
+    for (int ran = 0; ran < 2; ++ran) {
+      if (p == "mistral" && ran) continue;   // nothing rides a Mistral head, so nothing runs there
+      Device dev;
+      dev.provider = p;
+      dev.connectors = ownerConnectors;
+      dev.bearer = [](const nimbus::orch::ConnectorInfo& c) { return c.name == "gmail" ? std::string("tok-gmail") : std::string(); };
+      int noteRuns = 0;
+      std::vector<std::string> shelf;
+      dev.reg.add("note", "Keep a note.", [&noteRuns](ArduinoJson::JsonObjectConst, const nimbus::orch::Principal&) {
+        ++noteRuns;
+        return nimbus::orch::ToolResult::ok("set pin1");
+      }, R"({"type":"object","properties":{"op":{"type":"string"},"key":{"type":"string"},"value":{"type":"string"}},"required":["op","key"]})");
+      dev.railPending = [&shelf](const plain::TurnCtx&, const plain::ToolCall& c) {
+        shelf.push_back(c.name);
+        return plain::Status::success();
+      };
+      TEST_ASSERT_TRUE_MESSAGE(dev.boot(h.model).ok(), h.provider);
+      if (p == "mistral") dev.model.push(sp::calls({{"note", R"({"op":"set","key":"pin1","value":"x"})", ""}}));
+      else dev.model.push(connectorThenNote(p, ran));
+      dev.model.push(sp::say("Done."));
+      TEST_ASSERT_TRUE_MESSAGE(dev.say("check the beds").ok(), h.provider);
+      const sp::Recorded& first = dev.model.requests()[0];
+      const std::string ctx = p + (ran ? " ran" : " clean");
+      if (p == "anthropic") {
+        TEST_ASSERT_TRUE_MESSAGE(has(first.body, R"("mcp_servers":[{"type":"url","url":"https://mcp.docs.example.test/mcp","name":"docs"}])"), ctx.c_str());
+        TEST_ASSERT_TRUE_MESSAGE(has(first.body, R"({"type":"mcp_toolset","mcp_server_name":"docs"})"), ctx.c_str());
+        bool beta = false;
+        for (const auto& hd : first.req.headers) beta = beta || (hd.first == "anthropic-beta" && hd.second == "mcp-client-2025-11-20");
+        TEST_ASSERT_TRUE_MESSAGE(beta, ctx.c_str());
+      } else if (p == "openai") {
+        TEST_ASSERT_TRUE_MESSAGE(has(first.body, R"({"type":"mcp","require_approval":"never","server_label":"github","server_url":"https://mcp.github.example.test/"})"), ctx.c_str());
+        TEST_ASSERT_TRUE_MESSAGE(has(first.body, R"("connector_id":"connector_gmail","authorization":"tok-gmail")"), ctx.c_str());
+        TEST_ASSERT_TRUE_MESSAGE(has(first.body, R"({"type":"code_interpreter","container":{"type":"auto"}})"), ctx.c_str());
+      } else {
+        TEST_ASSERT_FALSE_MESSAGE(has(first.body, "connector") || has(first.body, "code_interpreter") || has(first.body, "mcp"), ctx.c_str());
+      }
+      // The summarizer and later rounds: the head's later requests carry the same connectors (a stable prefix).
+      if (p != "mistral") TEST_ASSERT_TRUE_MESSAGE(has(dev.model.last().body, p == "anthropic" ? "mcp_servers" : "code_interpreter"), ctx.c_str());
+      TEST_ASSERT_EQUAL_MESSAGE(ran ? 0 : 1, noteRuns, ctx.c_str());
+      TEST_ASSERT_EQUAL_MESSAGE(ran ? 1 : 0, (int)shelf.size(), ctx.c_str());
+    }
+    // A member's turn: none of the owner's connectors (OpenAI: the sandbox, a provider built-in, only).
+    Device mem;
+    mem.provider = p;
+    mem.role = nimbus::orch::Role::User;
+    mem.connectors = ownerConnectors;
+    addReadFile(mem.reg);   // a request with tools (one without tools carries no provider tool either)
+    TEST_ASSERT_TRUE_MESSAGE(mem.boot(h.model).ok(), h.provider);
+    mem.model.push(sp::say("Hello."));
+    TEST_ASSERT_TRUE_MESSAGE(mem.say("hi").ok(), h.provider);
+    const std::string& body = mem.model.requests()[0].body;
+    TEST_ASSERT_FALSE_MESSAGE(has(body, "mcp") || has(body, "gmail") || has(body, "docs.example"), h.provider);
+    TEST_ASSERT_EQUAL_MESSAGE(p == "openai", has(body, "code_interpreter"), h.provider);
+  }
+}
+
+// Lane E2-P-CONN2: a routine is a turn nobody is writing: engine 1's grant (engine.cpp runTurn, RB-Q2a)
+// carries the owner's connectors only with his routine switch on, nothing at all otherwise.
+static void test_a_routine_carries_the_owners_connectors_only_with_his_switch_on() {
+  for (bool grants : {false, true}) {
+    Device dev;
+    dev.connectors = ownerConnectors;
+    addReadFile(dev.reg);
+    TEST_ASSERT_TRUE(dev.boot().ok());
+    std::string heldText;
+    plain::HeldStore held(plain::HeldFile{[&heldText] { return heldText; }, [&heldText](const std::string& t) {
+                                            heldText = t;
+                                            return true;
+                                          }});
+    plain::RoutineDeps rd = dev.binding->routineDeps("claude-haiku-5-5");
+    rd.held = &held;
+    plain::RoutineFire fire;
+    fire.def.id = "lp00c2";
+    fire.def.name = "Morning";
+    fire.def.instruction = "Say good morning.";
+    fire.def.tools = {"read_file"};
+    fire.grants = grants;
+    fire.fireAt = kEpoch0 + dev.ms / 1000u;
+    dev.model.push(sp::say("Good morning."));
+    plain::FireReport rep;
+    TEST_ASSERT_TRUE(plain::runRoutine(rd, fire, rep).ok());
+    const std::string& body = dev.model.last().body;
+    TEST_ASSERT_TRUE_MESSAGE(has(body, "\"read_file\""), "the routine offers its tool");
+    TEST_ASSERT_EQUAL_MESSAGE(grants, has(body, "\"mcp_servers\""), grants ? "switch on" : "switch off");
   }
 }
 
@@ -1946,6 +2093,8 @@ int main(int, char**) {
   RUN_TEST(test_the_arena_and_the_cost_follow_the_head);
   RUN_TEST(test_an_outside_tool_taints_the_turn_and_recent_files_reach_the_request);
   RUN_TEST(test_a_tool_servers_tools_are_behind_more_and_its_answer_taints_the_turn);
+  RUN_TEST(test_the_owners_provider_connectors_ride_each_head_and_their_answer_taints_the_turn);
+  RUN_TEST(test_a_routine_carries_the_owners_connectors_only_with_his_switch_on);
   RUN_TEST(test_a_turn_that_read_an_inbox_file_keeps_its_note_change_pending);
   RUN_TEST(test_a_rebooted_binding_carries_the_earlier_turns);
   RUN_TEST(test_the_seen_index_is_rebuilt_from_the_card);
