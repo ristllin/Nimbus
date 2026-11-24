@@ -44,19 +44,25 @@ namespace hostedsend {
 
 namespace ps = agent::plainsend;
 
+inline bool approved(const HostedSendParts& p, const std::string& chat) { return p.allowed && p.allowed(chat); }
+
+// The chat a send names none for: this chat for words; for a file engine 1's filesSendTarget (this Telegram chat
+// when approved, else the owner's Telegram chat for the owner).
+inline std::string defaultTarget(const HostedSendParts& p, const std::string& cur, const nimbus::orch::Principal& who,
+                                 bool file) {
+  if (!file) return cur;
+  const bool curTelegram = !cur.empty() && cur != p.webChat;
+  return nimbus::orch::filesSendTarget(curTelegram ? cur : std::string(), curTelegram && approved(p, cur),
+                                       who.perms().manageTenants, p.ownerChat ? p.ownerChat() : std::string());
+}
+
 inline std::string target(const HostedSendParts& p, const std::string& asked, const nimbus::orch::Principal& who,
                           bool file) {
   const std::string cur = p.turnChat ? p.turnChat() : std::string();
-  const bool curTelegram = !cur.empty() && cur != p.webChat;
-  std::string cid = asked;
-  if (cid.empty())
-    cid = file ? nimbus::orch::filesSendTarget(curTelegram ? cur : std::string(), curTelegram && p.allowed && p.allowed(cur),
-                                               who.perms().manageTenants, p.ownerChat ? p.ownerChat() : std::string())
-               : cur;
+  const std::string cid = asked.empty() ? defaultTarget(p, cur, who, file) : asked;
   if (cid.empty()) return std::string();
   if (cid == p.webChat) return !file && cur == p.webChat ? cid : std::string();   // the web ring takes words only
-  const bool ok = p.allowed && p.allowed(cid);
-  return ok || (!file && cid == cur) ? cid : std::string();
+  return approved(p, cid) || (!file && cid == cur) ? cid : std::string();
 }
 
 inline ps::FileSent upload(const HostedSendParts& p, const std::string& chat, const std::string& name,
@@ -68,11 +74,10 @@ inline ps::FileSent upload(const HostedSendParts& p, const std::string& chat, co
 }
 
 // A stored file the person may read (the store's read rule), uploaded whole.
-inline ps::FileSent sendFile(const HostedSendParts& p, const std::string& project, const std::string& name,
-                             const std::string& chat, const nimbus::orch::Principal& who, bool photoOnly,
-                             const std::string& caption) {
+inline ps::FileSent sendFile(const HostedSendParts& p, const std::string& path, const std::string& chat,
+                             const nimbus::orch::Principal& who, bool photoOnly, const std::string& caption) {
   if (!p.files) return ps::FileSent::NotFound;
-  const nimbus::orch::StorePath sp = nimbus::orch::storePathFor(project + "/" + name);
+  const nimbus::orch::StorePath sp = nimbus::orch::storePathFor(path);
   if (!sp.ok()) return ps::FileSent::NotFound;
   std::string bytes;
   {
@@ -108,7 +113,7 @@ inline ps::SendDeps deps(const HostedSendParts& p) {
   d.screen = [](const std::string&, std::string&) { return true; };
   d.sendFile = [p](const std::string& project, const std::string& name, const std::string& chat,
                    const nimbus::orch::Principal& who, bool photoOnly, const std::string& caption) {
-    return sendFile(p, project, name, chat, who, photoOnly, caption);
+    return sendFile(p, project + "/" + name, chat, who, photoOnly, caption);
   };
   d.sendPhotoRef = [p](const std::string& ref, const std::string& chat, const std::string& caption) {
     return sendPhotoRef(p, ref, chat, caption);

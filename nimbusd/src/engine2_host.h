@@ -353,14 +353,7 @@ class Engine2Host {
     // Lane E2-REP3: the provider park (the device's gateMessage): a refused key or credit holds the head; the
     // person gets engine 1's notice, then its short answer, then silence, and the message is left to the import.
     const plain::MessageGate gate = plain::gateMessage(gateDeps(), chat, text, /*personWrote=*/true);
-    if (gate.verdict == plain::GateVerdict::Held) {
-      std::fprintf(stderr, "[nimbusd] engine2: %s holds the head (%s): no request\n", head_.slot.provider.c_str(), gate.why);
-      if (o_.captureRow) o_.captureRow(chat, "user", text, plain::ownerRowTags(std::string(), false));
-      if (!gate.line.empty() && o_.deliver) o_.deliver(chat, gate.line);
-      PlainTurn t;
-      t.stated = "plain-rig:held";
-      return t;
-    }
+    if (gate.verdict == plain::GateVerdict::Held) return heldByPark(chat, text, gate);
     plain::ChatMessage msg;
     msg.ch = ch;
     msg.tzMinutes = tzNow();
@@ -590,6 +583,16 @@ class Engine2Host {
     g.key = [this] { return keyOf(head_.slot.provider); };
     g.nowMs = [] { return uint32_t(vclock::steadyMs()); };
     return g;   // no inbound screen (the instance has no classifier) and no per-provider limit
+  }
+  // A person's message the park holds: no request, engine 1's line (or nothing in that episode), and its row
+  // in engine 1's day stream untagged, so the next import brings it into the conversation.
+  PlainTurn heldByPark(const std::string& chat, const std::string& text, const plain::MessageGate& gate) {
+    std::fprintf(stderr, "[nimbusd] engine2: %s holds the head (%s): no request\n", head_.slot.provider.c_str(), gate.why);
+    if (o_.captureRow) o_.captureRow(chat, "user", text, plain::ownerRowTags(std::string(), false));
+    if (!gate.line.empty() && o_.deliver) o_.deliver(chat, gate.line);
+    PlainTurn t;
+    t.stated = "plain-rig:held";
+    return t;
   }
   bool headHeldNow(std::string& why) const {
     return plain::headHeld(head_.slot.provider, keyOf(head_.slot.provider), false, uint32_t(vclock::steadyMs()), why);

@@ -175,12 +175,12 @@ void caseCeiling(ndtest::Ctx& c) {
   const std::string dir = ndtest::scratchDir("e2rep3ceil");
   Host h(dir);
   uint32_t pendingTokens = 0;
-  const uint32_t ceilingTokens = 150;   // the first answer's 120 tokens fit; the turn's spend then crosses it
+  static constexpr uint32_t kCeilingTokens = 150;   // the first answer's 120 tokens fit; the turn's spend then crosses it
   h.o.pendingSpend = [&pendingTokens](const nimbus::orch::TurnSpend& s) {
     const nimbus::orch::TokenUsage u = s.total();
     pendingTokens += u.promptTokens + u.completionTokens;
   };
-  h.o.paused = [&pendingTokens, ceilingTokens] { return pendingTokens >= ceilingTokens; };
+  h.o.paused = [&pendingTokens] { return pendingTokens >= kCeilingTokens; };
   h.model.push(sp::call("calc", R"({"expression":"2+2"})"));
   h.model.push(sp::call("calc", R"({"expression":"3+3"})"));
   h.model.push(sp::say("Four and six."));

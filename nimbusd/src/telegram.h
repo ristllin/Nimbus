@@ -169,24 +169,13 @@ class TelegramChannel {
     std::string boundary = "nimbusd-media-0";
     while (bytes.find(boundary) != std::string::npos || caption.find(boundary) != std::string::npos)
       boundary += "x";
-    std::string safeName;
-    for (char ch : name) safeName += (ch == '"' || ch == '\r' || ch == '\n' || ch == '\\') ? '_' : ch;
-    const auto field = [&boundary](const std::string& key, const std::string& value) {
-      return "--" + boundary + "\r\nContent-Disposition: form-data; name=\"" + key + "\"\r\n\r\n" + value + "\r\n";
-    };
     agent::HttpRequest req;
     req.method = "POST";
     req.host = "api.telegram.org";
     req.path = "/bot" + token_ + (kind == "photo" ? "/sendPhoto" : "/sendDocument");
     req.timeoutMs = 60000;
     req.headers.push_back({"Content-Type", "multipart/form-data; boundary=" + boundary});
-    req.body = field("chat_id", chatId);
-    if (!caption.empty()) req.body += field("caption", caption);
-    req.body += "--" + boundary + "\r\nContent-Disposition: form-data; name=\"" + kind + "\"; filename=\"" +
-                (safeName.empty() ? std::string("file") : safeName) +
-                "\"\r\nContent-Type: application/octet-stream\r\n\r\n";
-    req.body += bytes;
-    req.body += "\r\n--" + boundary + "--\r\n";
+    req.body = mediaBody(boundary, chatId, kind, name, caption) + bytes + "\r\n--" + boundary + "--\r\n";
     agent::HttpResponse resp;
     if (!http_->exec(req, resp, err)) return false;
     if (resp.status != 200) { err = kind + " upload HTTP " + std::to_string(resp.status); return false; }
@@ -196,6 +185,19 @@ class TelegramChannel {
   int32_t offset() const { return offset_; }
 
  private:
+  // The multipart head of one upload: the chat, the caption when there is one, then the file part's header.
+  static std::string mediaBody(const std::string& boundary, const std::string& chatId, const std::string& kind,
+                               const std::string& name, const std::string& caption) {
+    const auto field = [&boundary](const std::string& key, const std::string& value) {
+      return "--" + boundary + "\r\nContent-Disposition: form-data; name=\"" + key + "\"\r\n\r\n" + value + "\r\n";
+    };
+    std::string safeName;
+    for (char ch : name) safeName += (ch == '"' || ch == '\r' || ch == '\n' || ch == '\\') ? '_' : ch;
+    std::string out = field("chat_id", chatId);
+    if (!caption.empty()) out += field("caption", caption);
+    return out + "--" + boundary + "\r\nContent-Disposition: form-data; name=\"" + kind + "\"; filename=\"" +
+           (safeName.empty() ? std::string("file") : safeName) + "\"\r\nContent-Type: application/octet-stream\r\n\r\n";
+  }
   // One part: as HTML, and when Telegram refuses that, the same part plain.
   bool sendPart(const std::string& chatId, const nimbus::orch::TelegramPart& p, std::string& err) {
     const std::string body = std::string("{\"chat_id\":") + jsonNum(chatId) +

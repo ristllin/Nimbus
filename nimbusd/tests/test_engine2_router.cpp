@@ -18,6 +18,7 @@
 #include "../../test/support/scripted_provider/scripted_provider.h"
 #include "engine2_host.h"
 #include "posix_fs.h"
+#include "nimbus/orch/provider_park.h"
 #include "test_util.h"
 
 namespace sp = harness_test::scripted;
@@ -193,6 +194,9 @@ void caseRouted(ndtest::Ctx& c) {
   const nimbusd::PlainTurn t = r.host->say("owner", "Hello", "web");
   c.ok(t.ending != nimbusd::PlainEnding::Reply && r.model.requests().size() == 1, "a refused router key: one request, no retry");
   c.ok(!r.sent.empty(), "...and the owner is told");
+  // Lane E2-REP3: the refusal parks the router (the shared park learns what the head answered); the cases after
+  // this one start with no park, as a new instance would.
+  nimbus::orch::providerPark().clear();
   ndtest::rmTree(dir);
 }
 
