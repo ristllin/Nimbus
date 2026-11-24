@@ -1,0 +1,6 @@
+{
+  "lane": "E2-P-FO",
+  "allowance_bytes": 0,
+  "envs": {"esp32s3-cyd-e2": 14336, "test-cyd-e2": 14336},
+  "why": "Router design section 9 (fail-over at engine-1 parity on engine 2). Same tree, base rb-main d34293f7d against the lane tip, firmware.bin: esp32s3-cyd-e2 6,257,648 -> 6,271,088 B (+13,440): the engine's switch and share code, the binding's targets, and the device's rule walk, which links the owner's fallback rule parser and selectFallback (fallback_rules.cpp) and classifyHttpStatus into the engine-2 image for the first time. test-cyd-e2 6,437,024 B at the tip, its base not built (taken as the same delta). Rounded up to 14 KB. esp32s3-cyd: no file it links changed."
+}

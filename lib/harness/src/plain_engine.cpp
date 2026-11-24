@@ -1425,17 +1425,16 @@ class TurnRun {
     t_.status = s;
     t_.statusRef = &t_.statusText;
   }
-  // E2-P-FO: the answering head's share, once; a reply from it carries the switch lines (a failed last
-  // head: the plain failure line alone).
-  void settleSwitches() {
-    if (!t_.switches || t_.shares.size() != t_.switches) return;
-    closeShare(slotNow(), t_.ctx.model);
-    const bool fromFallback = t_.ex.err == ExchangeErr::None || t_.ex.err == ExchangeErr::Cut;
-    if (t_.reply && fromFallback) switchedLine();
+  // E2-P-FO: the answering head's share, once (settle, also on the refused path).
+  void lastShare() {
+    if (t_.switches && t_.shares.size() == t_.switches) closeShare(slotNow(), t_.ctx.model);
   }
   // E2-P-FO: a reply that came from a fallback head carries one line per switch, before any other line
-  // of the turn (a cut's): the status line is one message.
+  // of the turn (a cut's, a guard's): the status line is one message. A failed last head: the plain
+  // failure line alone.
   void switchedLine() {
+    const bool fromFallback = t_.ex.err == ExchangeErr::None || t_.ex.err == ExchangeErr::Cut;
+    if (t_.switchLines.empty() || !t_.reply || !fromFallback) return;
     if (t_.status == StatusLine::None) return setStatus(StatusLine::ProviderError, t_.switchLines);
     if (t_.statusRef != &t_.statusText) return;
     if (t_.statusStored.empty()) t_.statusStored = t_.statusText;
@@ -1465,7 +1464,7 @@ class TurnRun {
   void settle() {
     t_.replyText = replyOf();
     t_.reply = t_.replyText != nullptr;   // a pointer: the reply is never copied to go out
-    settleSwitches();
+    lastShare();
     if (t_.reply && t_.trip != GuardTrip::None && personTrigger(t_.ctx.trigger))   // the guard that stopped it
       setStatus(StatusLine::LimitReached, std::string(texts::device_notes::kLimitStopped) + guardTripSlug(t_.trip) +
                                               texts::device_notes::kLimitStoppedEnd);
@@ -1886,6 +1885,7 @@ class TurnRun {
   // reply in hand has gone out.
   Status close() {
     settle();
+    switchedLine();
     closingFacts();
     deliver();
     Status st = storeDelivery();   // the d item and afterDeliver, before the scan below allocates
