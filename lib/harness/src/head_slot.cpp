@@ -152,7 +152,7 @@ uint32_t servedWindowOf(const std::string& modelsBody, const std::string& model)
     if (model == (const char*)(r["id"] | r["name"] | "")) pick = r;
   if (pick.isNull() && rows.size() == 1) pick = rows[0].as<JsonObjectConst>();
   if (pick.isNull()) return 0;
-  for (const char* f : {"max_model_len", "context_length", "context_window", "max_context_length"}) {
+  for (const char* f : {"max_model_len", "context_length", "context_window", "max_context_length", "max_input_tokens"}) {
     const uint32_t v = pick[f] | 0u;
     if (v) return v;
   }
@@ -187,6 +187,11 @@ bool answerCalledTool(const std::string& chatBody) {
 
 CustomVerify customVerify(const HeadSlot& slot, const std::string& key, bool messagesConv, const CustomExchangeFn& exchange) {
   CustomVerify v;
+  if (!key.empty() && !slot.endpoint.tls) {   // E2-REP1: a key never rides a cleartext socket (as every codec)
+    v.result = 0;
+    v.cleartextKey = true;
+    return v;
+  }
   HttpRequest req;
   req.method = "GET";
   req.host = slot.endpoint.host;
@@ -194,7 +199,12 @@ CustomVerify customVerify(const HeadSlot& slot, const std::string& key, bool mes
   req.tls = slot.endpoint.tls;
   const std::string base = slot.endpoint.basePath.empty() ? "/v1" : slot.endpoint.basePath;
   req.path = base + "/models";
-  if (!key.empty()) req.headers.push_back({"Authorization", "Bearer " + key});
+  if (messagesConv) {   // E2-REP1: a Messages endpoint's own headers, as the head codec sends them
+    req.headers.push_back({"anthropic-version", "2023-06-01"});
+    if (!key.empty()) req.headers.push_back({"x-api-key", key});
+  } else if (!key.empty()) {
+    req.headers.push_back({"Authorization", std::string("Bearer") + ' ' + key});
+  }
   std::string body;
   const int code = exchange(req, body);
   if (code == 401 || code == 403) v.result = 0;

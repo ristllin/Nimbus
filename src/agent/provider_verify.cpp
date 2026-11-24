@@ -976,7 +976,7 @@ static void closeClient(WiFiClient& c) { c.stop(); }
 // connection each; a connection that does not open answers 0.
 template <class C>
 static int8_t customRound(C& client, const agent::plain::HeadSlot& slot, const String& key, uint32_t& window,
-                          bool& tools) {   // slot: the endpoint and model only (no table is read here)
+                          bool& tools, bool& cleartext) {   // slot: the endpoint and model only (no table is read here)
   const String host(slot.endpoint.host.c_str());
   const String tail = "Accept-Encoding: identity\r\nUser-Agent: Nimbus\r\nConnection: close\r\n\r\n";
   auto exchange = [&](const agent::HttpRequest& req, std::string& body) {
@@ -993,6 +993,7 @@ static int8_t customRound(C& client, const agent::plain::HeadSlot& slot, const S
       agent::plain::customVerify(slot, std::string(key.c_str()), store::customConv() == "anthropic", exchange);
   window = v.window;
   tools = v.tools;
+  cleartext = v.cleartextKey;
   return v.result;
 }
 
@@ -1012,20 +1013,21 @@ static void runCustomVerify(bool refreshOnly) {
     return;
   }
   uint32_t window = 0;
-  bool tools = false;
+  bool tools = false, cleartext = false;
   int8_t result = -1;
   if (slot.endpoint.tls) {
     WiFiClientSecure client;
     tlsSetup(client);
     client.setConnectionTimeout(15000);
-    result = customRound(client, slot, key, window, tools);
+    result = customRound(client, slot, key, window, tools, cleartext);
   } else {
     WiFiClient client;
     client.setConnectionTimeout(15000);
-    result = customRound(client, slot, key, window, tools);
+    result = customRound(client, slot, key, window, tools, cleartext);
   }
   arbiter::releaseWork();
-  recordOutcome("custom", result, "", refreshOnly);
+  recordOutcome("custom", result, cleartext ? "cleartext" : "", refreshOnly);
+  if (cleartext) alog("verify: custom endpoint is http:// and has a key: the key is never sent in clear, not verified");
   if (result != 1) return;
   nimbus::orch::ModelInfo row;
   row.id = slot.model;

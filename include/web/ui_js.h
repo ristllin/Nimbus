@@ -2393,6 +2393,7 @@ const VFYREASON={
   'low-memory':   {cls:'unk', txt:'Verification deferred'},
   connectfail:    {cls:'unk', txt:'Couldn\'t reach the provider'},
   tlsbusy:        {cls:'unk', txt:'Busy now. Retry in a moment.'},
+  cleartext:      {cls:'bad', txt:'Needs an https:// address'},
 };
 )====="
 // CUM-447: the full "what happened, what happens next" line for a low-memory
@@ -2498,6 +2499,7 @@ R"=====(
 function vfyOutcome(p,pv){
   const lbl=PROVLBL[p]||(p==='telegram'?'Telegram':p), con=PROVCONSOLE[p], at=con?' at '+con:'';
   if(pv.verify===1)return {ok:true,txt:'Verified ✓'};
+  if(pv.vfyReason==='cleartext')return {ok:false,txt:'The key is never sent to an http:// address. Use an https:// address, or clear the key.'};
   if(pv.verify===0)return {ok:false,txt:lbl+' rejected this key. Check that you copied all of it, or create a new key'+at+'.'};
   const r=pv.vfyReason;
   if(r==='nocredits')return {ok:false,txt:'The key works, but the '+lbl+' account has no credit. Add credit'+at+', then tap Save & Verify.'};

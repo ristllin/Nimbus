@@ -66,7 +66,8 @@ bool customEndpointOf(const std::string& base, HeadEndpoint& out);
 
 // The custom endpoint's verify step (design section 3.3; src/agent/provider_verify.cpp sends it).
 // The window a server publishes for `model` on its /v1/models answer (the row whose id is `model`,
-// or the only row): max_model_len (vLLM), context_length, context_window or max_context_length; 0
+// or the only row): max_model_len (vLLM), context_length, context_window, max_context_length or
+// max_input_tokens (a Messages endpoint); 0
 // when it publishes none. Which field each server fills is read from documentation, not verified.
 uint32_t servedWindowOf(const std::string& modelsBody, const std::string& model);
 // The one tool-call probe: a chat request that offers one tool and asks for it, and whether a chat
@@ -79,11 +80,13 @@ inline constexpr uint32_t kCustomToolsMinWindow = 12000;
 // client): GET <base>/models for the served window, then, on a chat-convention endpoint (not
 // `messagesConv`), the one tool probe POSTed to <base>/chat/completions. `exchange` sends one request and
 // returns its HTTP status (0: no answer) with the body. result: 1 verified, 0 the key was refused (401,
-// 403), -1 no usable answer to the model list. A probe with no answer leaves tools false.
+// 403) or would ride cleartext (cleartextKey), -1 no usable answer to the model list. A probe with no
+// answer leaves tools false. A Messages endpoint gets x-api-key and anthropic-version, a chat one Bearer.
 struct CustomVerify {
   int8_t result = -1;
   uint32_t window = 0;
   bool tools = false;
+  bool cleartextKey = false;   // an http:// base with a key: nothing sent, result 0 (the key never rides cleartext)
 };
 using CustomExchangeFn = std::function<int(const HttpRequest& req, std::string& body)>;
 CustomVerify customVerify(const HeadSlot& slot, const std::string& key, bool messagesConv, const CustomExchangeFn& exchange);
