@@ -149,6 +149,8 @@ NON_MODEL_FILES: dict = {
     "owner's chat or a web client as device copy, never to a model",
     "src/net/ota_channel_routes.cpp": "RB-OTA2: the route's 401 body for a web client (the same literal every owner "
     "route sends), never sent to a model",
+    "lib/core/include/nimbus/ota/way_back.h": "E2-P-REL: the owner's /update back answers (the way back to the "
+    "stable release), sent to the owner's chat as device copy, never to a model",
     # RB-Q1c: the send seam. Its one literal is the owner-facing overflow line of a reply over
     # kTelegramMaxParts parts (moved byte for byte from src/agent/telegram.cpp send()); it goes
     # to the chat, never into a request (history keeps the engine's reply, not the parts).
