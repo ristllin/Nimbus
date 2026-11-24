@@ -422,13 +422,10 @@ static void test_tools_page_and_help_name_only_what_engine_2_has() {
   const std::string cmd = readFile("src/agent/commands_plain.cpp");
   TEST_ASSERT_TRUE_MESSAGE(has(cmd, "chatCommandRoute(c) == plain::ChatCommandRoute::NotYet) continue;"),
                            "/help is derived from the route table");
-  // The route table itself: the three commands that answer "not available" are the ones /help leaves out.
+  // The route table itself: /help leaves out a NotYet verb; /mcp, /skill and /prefs route on engine 2
+  // since E2-P-CONN1 and E2-P-SKILL, so none is NotYet today.
   nimbus::orch::Command c;
-  for (const char* v : {"mcp", "skill", "prefs"}) {
-    c.verb = v;
-    TEST_ASSERT_EQUAL((int)plain::ChatCommandRoute::NotYet, (int)plain::chatCommandRoute(c));
-  }
-  for (const char* v : {"compact", "clear", "usage", "loops", "model"}) {
+  for (const char* v : {"mcp", "skill", "prefs", "compact", "clear", "usage", "loops", "model"}) {
     c.verb = v;
     TEST_ASSERT_TRUE_MESSAGE(plain::chatCommandRoute(c) != plain::ChatCommandRoute::NotYet, v);
   }
