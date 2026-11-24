@@ -40,8 +40,7 @@ inline constexpr char kStamped[] =
     "Every message starts with the time it was sent; before the day start it also names the day still running.";
 inline constexpr char kHowToWork[] =
     "How to work: when asked for something a tool can do, do it in this reply. Say that "
-    "something happened only when a tool result in this conversation shows it. When a tool fails, say so. "
-    "Totals, sums and counts come from a tool result, not your own arithmetic.";
+    "something happened only when a tool result in this conversation shows it. When a tool fails, say so.";
 inline constexpr char kNoLater[] = "Promise nothing for later that you have not scheduled.";
 inline constexpr char kOneQuestion[] = "Ask at most one question, and only when you cannot act without the answer.";
 inline constexpr char kStubs[] = "What you see: long results from earlier turns show as stubs; view brings one back.";

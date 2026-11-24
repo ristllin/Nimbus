@@ -1318,3 +1318,13 @@ PC-0175, PC-0176: not used.
 - lane: E2-FIX16
 - prd: section 4 (System prompt, how to work), AGENTS.md rule 9
 - why: lib/harness/include/nimbus/harness/plain/texts.h core::kHowToWork opens "when asked for something a tool can do, do it in this reply" instead of "act with your tools in this reply; when asked for something a tool can do, do it now", and core::kNoLater "There is no later unless you schedule it." becomes "Promise nothing for later that you have not scheduled." The old opener told the head to act with tools in every reply, and the no-later line read as a cue to save or schedule now: in the head-to-head of 902391f7f (lanes/E2-H2H, long-chat, where the person says "No need to comment on it, just say you have it") Sonnet wrote 22 journal files in 2 of 3 runs (0.45 USD a run against 0.14 USD), and offered a reminder nobody asked for (recent-compare-plain rep2). Replays of the captured first long-chat request (lanes/E2-FIX16/scratch/probe.py): Sonnet wrote a file in 5 of 6 before, 0 of 6 with this text and PC-0226; Haiku scheduled an unasked reminder in 5 of 10 before and 0 of 10 without the no-later line. Saving when asked is unchanged: the asked case keeps "do it in this reply". 12 bytes fewer.
+
+### PC-0226: how to work no longer sends every sum to a tool (engine 2)
+- catalog: e2
+- class: core
+- kind: build
+- bytes: 1674 -> 1600
+- sha8: a5a17e0d -> 29889990
+- lane: E2-FIX16
+- prd: section 4 (System prompt, how to work), AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h core::kHowToWork loses "Totals, sums and counts come from a tool result, not your own arithmetic." (PC-0025). It sent every figure through calc: in the head-to-head of 902391f7f (lanes/E2-H2H) Sonnet called calc for "What's 12 times 12?" and three more one-step sums in memory-20-turns (lost 2 of 3 to v5.2.0 on that), for a 9-mile gap in recent-compare-plain, and for a one-number estimate in recent-compare-food, where it computed 557, said "about 560", and later took the gap from 557 (the run's only two failed checks, difference_from_turn). The line also drove the running totals added to 16 long-chat replies. Replays of the captured requests (lanes/E2-FIX16/scratch/probe.py): Haiku called calc for 12 times 12 in 10 of 10 with the line and 0 of 10 without it. The reference loop has no such line and passed 291 of 291 checks. calc and its description stay. 74 bytes fewer.
