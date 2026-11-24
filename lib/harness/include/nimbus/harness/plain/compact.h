@@ -350,6 +350,7 @@ class CompactDriver {
   Status dueBy(const nimbus::orch::tx::HeadBudget& b, const SlicePlan& plan, bool& due);
   Status crossing(const IdleCtx& ctx, SlicePlan plan, CompactOutcome& out);   // lane E2-FIX15: one write a crossing
   bool crossingMayAsk(bool urgent, uint32_t startMs) const;
+  Status prepareSlices(const IdleCtx& ctx, SlicePlan& plan, CompactOutcome& out, uint32_t& slices, bool& failed);
   SliceRules rulesFor(const IdleCtx& ctx, const nimbus::orch::tx::HeadBudget& b) const;
   Status planDropped(const IdleCtx& ctx, uint64_t omitted, SlicePlan& plan, bool& read);
   SliceRules rules_;   // the last planIfDue's rules (the tool fold reads them)

@@ -1662,29 +1662,10 @@ Status CompactDriver::crossing(const IdleCtx& ctx, SlicePlan plan, CompactOutcom
     endCycle();
     return swapPending(ctx.now, out);
   }
-  const bool urgent = ctx.urgency != Urgency::None && d_.platform->nowMs;
-  const uint32_t startMs = urgent ? d_.platform->nowMs() : 0;
-  bool said = false;   // the turn's status line says once that it waits, however many slices
-  IdleCtx once = ctx;
-  once.waiting = [&ctx, &said] {
-    if (!said && ctx.waiting) ctx.waiting();
-    said = true;
-  };
   uint32_t slices = 0;
   bool failed = false;
-  for (; plan.thru && slices < kCompactCrossingSlices && crossingMayAsk(urgent, startMs); ++slices) {
-    CompactOutcome one;
-    const Status s = attempt(once, plan, one, true);
-    out.requests = (uint8_t)std::min<uint32_t>(255, out.requests + one.requests);
-    out.ran = out.ran || one.ran;
-    if (!s.ok() || one.step != CompactStep::Prepared) {
-      out.step = one.step;
-      if (!s.ok()) return s;
-      failed = true;
-      break;
-    }
-    if (!planSlice(*d_.arena, pending_.thru, rules_, plan).ok()) plan = SlicePlan{};
-  }
+  const Status prep = prepareSlices(ctx, plan, out, slices, failed);
+  if (!prep.ok()) return prep;
   if (failed || !plan.thru) endCycle();
   if (!pendingValid()) return Status::success();   // nothing prepared: the failed attempt logged its cause
   const uint8_t requests = out.requests;
@@ -1696,6 +1677,33 @@ Status CompactDriver::crossing(const IdleCtx& ctx, SlicePlan plan, CompactOutcom
   hlog::logf("compact(%s): one summary write for this crossing (%u slices prepared, %u requests)", d_.chatKey.c_str(),
              (unsigned)slices, (unsigned)requests);
   return s.err == Err::TooLarge ? s : Status::success();   // as attempt: a refused swap stores nothing and is tried again
+}
+
+// A crossing's slices into the pending summary, one attempt each, while crossingMayAsk; `plan` is what is left after
+// them. The turn's status line says once that it waits, however many slices. `failed`: an attempt was not taken.
+Status CompactDriver::prepareSlices(const IdleCtx& ctx, SlicePlan& plan, CompactOutcome& out, uint32_t& slices,
+                                    bool& failed) {
+  const bool urgent = ctx.urgency != Urgency::None && d_.platform->nowMs;
+  const uint32_t startMs = urgent ? d_.platform->nowMs() : 0;
+  bool said = false;
+  IdleCtx once = ctx;
+  once.waiting = [&ctx, &said] {
+    if (!said && ctx.waiting) ctx.waiting();
+    said = true;
+  };
+  for (; plan.thru && slices < kCompactCrossingSlices && crossingMayAsk(urgent, startMs); ++slices) {
+    CompactOutcome one;
+    const Status s = attempt(once, plan, one, true);
+    out.requests = (uint8_t)std::min<uint32_t>(255, out.requests + one.requests);
+    out.ran = out.ran || one.ran;
+    if (!s.ok() || one.step != CompactStep::Prepared) {
+      out.step = one.step;
+      failed = s.ok();
+      return s;
+    }
+    if (!planSlice(*d_.arena, pending_.thru, rules_, plan).ok()) plan = SlicePlan{};
+  }
+  return Status::success();
 }
 
 // Another slice in this crossing: an urgent step inside its time, an idle one inside its window's requests.
