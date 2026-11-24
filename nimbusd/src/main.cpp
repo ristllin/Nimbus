@@ -149,8 +149,8 @@ void installReplyDelivery(nimbusd::NimbusdRig& rig, nimbusd::ReplyBuffer& replie
 }
 
 // The startup switch NIMBUSD_ENGINE=2 (lane E2-HOST): the owner's chats (the web chat and every
-// Telegram chat whose person is the owner) run on engine 2; members, photo turns and the slash
-// commands other than /compact and /clear stay on engine 1. "" when engine 2 is off or started, else the
+// Telegram chat whose person is the owner) run on engine 2, photo turns included (lane E2-P-PHOTO); members
+// and the slash commands other than /compact and /clear stay on engine 1. "" when engine 2 is off or started, else the
 // one plain line the daemon exits on.
 // Lane E2-FIX9: a smaller request body cap for test rigs only, behind the test clock's own gate (the flag, a web token
 // and a loopback bind), so a test reaches the overflow ladder at a small cost; 0 (none) otherwise.
@@ -183,6 +183,7 @@ std::string startEngine2(const nimbusd::Config& cfg, nimbusd::NimbusdRig& rig, n
   o.profile = cfg.get("NIMBUSD_E2_PROFILE").empty() ? nimbus::orch::tx::kDefaultProfile
                                                       : nimbus::orch::tx::profileOf(cfg.get("NIMBUSD_E2_PROFILE"));
   o.bodyCapLimit = testBodyCap(cfg);
+  o.photoDir = rig.photoDir();   // E2-P-PHOTO: an earlier photo's stored copy (hosted_photos.h)
   o.deliver = std::move(deliver);
   o.chatId = nimbusd::kWebChatId;
   o.loops = &rig.routines();   // lane E2-SCHED: the schedule tool and the routines' fires
@@ -199,13 +200,21 @@ std::string startEngine2(const nimbusd::Config& cfg, nimbusd::NimbusdRig& rig, n
   nimbusd::Engine2Route r;
   r.takes = [&rig](const std::string& chat, const std::string& text, bool photos) {
     const nimbus::orch::Command c = nimbus::orch::parseCommand(text);
-    if (photos || (c.isCommand && c.verb != "compact" && c.verb != "clear")) return false;
+    if (c.isCommand && (photos || (c.verb != "compact" && c.verb != "clear"))) return false;
     return chat == nimbusd::kWebChatId || rig.telegramAccess().principalFor(chat).owner;
   };
-  r.say = [host, deliver = o.deliver](const std::string& chat, const std::string& text) {
+  r.say = [host, &rig, deliver = o.deliver](const std::string& chat, const std::string& text,
+                                            const std::vector<nimbusd::PhotoIn>& photos) {
     const nimbus::orch::Command c = nimbus::orch::parseCommand(text);
     if (!c.isCommand) {
-      host->say(chat, text, chat == nimbusd::kWebChatId ? "web" : "tg");
+      const char* ch = chat == nimbusd::kWebChatId ? "web" : "tg";
+      if (photos.empty()) {
+        host->say(chat, text, ch);
+        return;
+      }
+      // E2-P-PHOTO: the photos as engine 1's channel offers them (kept, rows written), taken by engine 2.
+      host->say(chat, rig.offerPhotoTurn(chat, text, photos), ch);
+      nimbus::orch::dropTurnImages();   // a set the turn never took
       return;
     }
     if (!deliver) return;

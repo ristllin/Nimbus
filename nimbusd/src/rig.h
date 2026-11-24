@@ -461,6 +461,14 @@ class NimbusdRig {
     return cur_;
   }
 
+  // Lane E2-P-PHOTO: engine 2's photo turn: the same offer sayWithPhotos makes (each photo kept by its
+  // hash in photoDir(), its row written, the set in the shared slot), and the routed text engine 2
+  // takes the set with. The caller drops an untaken set (orch::dropTurnImages) after its turn.
+  std::string offerPhotoTurn(const std::string& chatId, const std::string& text, const std::vector<PhotoIn>& photos) {
+    return photos_->offerTurn(chatId, "Owner", text, photos);
+  }
+  std::string photoDir() { return memDir() + "/photos"; }
+
   // A turn that brings photos: the same turn as say(), with the photos offered to the
   // head as images (hosted_photos.h). A chat the owner has not approved gets no turn.
   TurnRecord sayWithPhotos(const std::string& chatId, const std::string& text, const std::vector<PhotoIn>& photos) {

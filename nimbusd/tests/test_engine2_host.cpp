@@ -17,6 +17,9 @@
 //       removes the bytes and the index entry of the one shared store, and engine 1 no longer sees it.
 //   (h) search and view (lane E2-SRCH) are bound: the request offers both; search finds an earlier
 //       turn of the owner chat by its words and names its id; view of that id brings its text whole.
+//   (i) photos on engine 2 (lane E2-P-PHOTO): the set the channel offers under the turn's text reaches
+//       the head as image parts (an album of ten whole); a later turn carries an earlier photo from its
+//       stored copy in the photo folder, within the four-photo rule.
 #include <sys/stat.h>
 
 #include <string>
@@ -47,6 +50,7 @@ struct Host {
   std::unique_ptr<nimbusd::Engine2Host> host;
   std::string headSlug = "anthropic", modelId = "claude-haiku-5-5";
   std::function<void(const nimbus::orch::TurnSpend&, const std::string&)> spend;   // lane E2-CMP
+  std::string photoDir;                                                            // lane E2-P-PHOTO
 
   explicit Host(const std::string& d) : dir(d), files(d + "/mem/files") {}
 
@@ -64,6 +68,7 @@ struct Host {
     o.deliver = [this](const std::string& chat, const std::string& text) { sent.push_back({chat, text}); };
     o.transport = &model;
     o.spend = spend;
+    o.photoDir = photoDir;
     host.reset(new nimbusd::Engine2Host(o));
     return host->start();
   }
@@ -321,6 +326,57 @@ void caseHistory(ndtest::Ctx& c) {
   ndtest::rmTree(dir);
 }
 
+size_t countOf(const std::string& hay, const std::string& needle) {
+  size_t n = 0;
+  for (size_t at = hay.find(needle); at != std::string::npos; at = hay.find(needle, at + 1)) ++n;
+  return n;
+}
+
+void casePhotos(ndtest::Ctx& c) {
+  std::printf("  (i) photos on engine 2\n");
+  const std::string dir = ndtest::scratchDir("e2photos");
+  Host h(dir);
+  h.photoDir = dir + "/mem/photos";
+  ::mkdir((dir + "/mem").c_str(), 0755);
+  ::mkdir(h.photoDir.c_str(), 0755);
+  c.eq(h.start(), "", "the host starts");
+  std::vector<std::string> bytes;
+  for (int i = 0; i < 10; ++i) {
+    std::string b("\xFF\xD8\xFF\xE0", 4);
+    b.resize(30000, char('a' + i));
+    bytes.push_back(b);
+  }
+  auto set = std::unique_ptr<nimbus::orch::TurnImages>(new nimbus::orch::TurnImages());
+  set->nonce = "0123456789abcdef";
+  std::string text = "Ten meter photos:";
+  for (int i = 0; i < 10; ++i) {
+    nimbus::orch::TurnImage img;
+    img.ref = std::string(15, '0') + char('0' + i);
+    img.mime = "image/jpeg";
+    img.bytes = (const uint8_t*)bytes[i].data();
+    img.len = bytes[i].size();
+    img.tag = "[image " + std::to_string(i + 1) + "/10 ref=" + img.ref + "]";
+    img.segment = img.tag + nimbus::orch::kAttachedSuffix;
+    text += " " + img.segment;
+    set->items.push_back(img);
+    nimbusd::fsutil::writeFileAtomic(nimbus::orch::blobPath(h.photoDir, img.ref, "bin"), bytes[i]);
+  }
+  nimbus::orch::offerTurnImages("owner", text, std::move(set));
+  h.model.push(sp::say("Ten readings."));
+  const nimbusd::PlainTurn t1 = h.host->say("owner", text, "web");
+  c.ok(t1.ending == nimbusd::PlainEnding::Reply, "the album turn replies");
+  c.eq(std::to_string(countOf(h.model.last().body, "\"type\":\"image\"")), "10", "the album of ten reaches the head whole");
+  h.model.push(sp::say("The second read 18,251."));
+  const nimbusd::PlainTurn t2 = h.host->say("owner", "What did the second one read?", "web");
+  c.ok(t2.ending == nimbusd::PlainEnding::Reply, "the follow-up replies");
+  const std::string& later = h.model.last().body;
+  c.eq(std::to_string(countOf(later, "\"type\":\"image\"")), "4", "a later turn carries four from the stored copies");
+  c.ok(later.find("[photo p0000000000000009") != std::string::npos, "a photo past the four renders as its line");
+  std::string why;
+  c.ok(h.model.verify(why), "every scripted step was asked for: " + why);
+  ndtest::rmTree(dir);
+}
+
 }  // namespace
 
 int main() {
@@ -335,6 +391,7 @@ int main() {
   caseCompactionSpend(c);
   caseDelete(c);
   caseHistory(c);
+  casePhotos(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   return c.failures ? 1 : 0;
 }

@@ -56,7 +56,8 @@ struct StateSnapshot {
 // it takes, the turn itself, and its idle step. Unset (the default): every turn runs on engine 1.
 struct Engine2Route {
   std::function<bool(const std::string& chat, const std::string& text, bool photos)> takes;
-  std::function<void(const std::string& chat, const std::string& text)> say;
+  // The message's photos ride with it (lane E2-P-PHOTO: engine 2 takes photo turns too).
+  std::function<void(const std::string& chat, const std::string& text, const std::vector<PhotoIn>& photos)> say;
   std::function<bool(bool ownerWaiting)> idle;   // true when it did work
 };
 
@@ -336,7 +337,7 @@ class EngineThread {
       return;
     }
     curWebTurn_.store(m.webTurn, std::memory_order_release);
-    if (e2_.say && e2_.takes && e2_.takes(m.chat, m.text, !m.photos.empty())) e2_.say(m.chat, m.text);
+    if (e2_.say && e2_.takes && e2_.takes(m.chat, m.text, !m.photos.empty())) e2_.say(m.chat, m.text, m.photos);
     else rig_->sayWithPhotos(m.chat, m.text, m.photos);
     curWebTurn_.store(0, std::memory_order_release);
     if (m.ended) m.ended();

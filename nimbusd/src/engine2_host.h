@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
 
@@ -11,11 +12,13 @@
 #include "hosted_loops.h"   // the schedule tool and its fires (lane E2-SCHED)
 #include "hosted_notes.h"
 #include "hosted_tx.h"
+#include "nimbus/harness/plain/chat_photos.h"   // photoParts, photoBytesFrom (lane E2-P-PHOTO)
 #include "nimbus/harness/plain/compact.h"
 #include "nimbus/harness/plain/exchange.h"   // providerSlugOf
 #include "nimbus/harness/plain/guards.h"
 #include "nimbus/harness/plain/history.h"   // search and view (lane E2-SRCH)
 #include "nimbus/harness/plain/schedule_binding.h"   // heldFileOn, heldPathFor, drainHeld (lane E2-SCHED)
+#include "nimbus/orch/blob_store.h"   // blobPath (lane E2-P-PHOTO)
 #include "nimbus/orch/calc_tool.h"
 #include "nimbus/orch/model_catalog.h"
 #include "nimbus/orch/tx/budget.h"
@@ -23,6 +26,7 @@
 #include "nimbus/orch/turn_spend.h"   // TurnSpend (lane E2-CMP)
 #include "plain_rig.h"
 #include "posix_files.h"
+#include "posix_fs.h"   // fsutil::readFile (lane E2-P-PHOTO)
 #include "posix_platform.h"
 
 // engine2_host - the owner chat of a Virtual Nimbus on engine 2 (lane E2-HOST). Started once at
@@ -58,6 +62,9 @@ struct Engine2Options {
   std::function<uint16_t()> dayStartMin;
   std::string timeZone;                              // IANA name for the system block ("" = none)
   nimbus::orch::tx::Profile profile = nimbus::orch::tx::kDefaultProfile;   // the owner's pinned profile
+  // Lane E2-P-PHOTO: where the instance keeps each photo by its hash (hosted_photos.h, <hash>.bin), read
+  // back while an earlier photo is still in view. "": an earlier photo renders as its line.
+  std::string photoDir;
   uint32_t bodyCapLimit = 0;   // lane E2-FIX9: a test rig's smaller request body cap (NIMBUSD_E2_BODY_CAP); 0: none
   // A reply of the running turn, to the chat it came from (the web ring, Telegram).
   std::function<void(const std::string& chat, const std::string& text)> deliver;
@@ -186,7 +193,13 @@ class Engine2Host {
       return t;
     }
     curChat_ = chat;
-    PlainTurn t = rig_->say(text, ch);
+    // E2-P-PHOTO: the photos the channel offered under this text (hosted_photos.h offerTurn), held for the
+    // turn; their bytes reach the head through the photo hook (setupTurn). Claude heads only: every one sees.
+    turnPhotos_ = nimbus::orch::takeTurnImages(chat, text);
+    std::vector<nimbus::orch::tx::Part> parts = plain::photoParts(turnPhotos_.get(), "anthropic", bootModel_);
+    PlainTurn t = rig_->say(text, ch, std::move(parts));
+    turnPhotos_.reset();   // its release hook settles the photo rows and frees the bytes
+    earlierPhotos_.clear();
     curChat_.clear();
     if (o_.spend) o_.spend(turnSpend(t.out, bootModel_), "turn");
     lastTurnEnd_ = vclock::epoch();
@@ -328,6 +341,7 @@ class Engine2Host {
   // The pinned notes, the recent files and the guard costs of this turn's head.
   void setupTurn(const plain::TurnCtx& t, plain::TurnSetup& s) {
     if (t.who) s.facts.pinnedNotes = notes_.pinnedBlock(*t.who);
+    s.photo = [this](const std::string& ref, plain::PhotoBytes& out) { return photoFor(ref, out); };
     nimbus::orch::tx::HeadBudget budget;
     if (!nimbus::orch::tx::budgetFor(headKey(t.model), t.profile, budget).ok()) return;
     plain::HeadRates r;   // the ledger's own price rows, cache and long-prompt tier included (E2-FIX6)
@@ -381,6 +395,29 @@ class Engine2Host {
     return plain::installCompaction(rig_->hooks(), *driver_);
   }
 
+  // E2-P-PHOTO: the photo hook: this message's photo from its set, else an earlier one's stored copy, read
+  // once per turn and held until the turn ends. NotFound: the photo renders as its line.
+  plain::Status photoFor(const std::string& ref, plain::PhotoBytes& out) {
+    if (plain::photoBytesFrom(turnPhotos_.get(), ref, out).ok()) return plain::Status::success();
+    out = plain::PhotoBytes{};
+    const std::string hash = ref.size() > 1 && ref[0] == 'p' ? ref.substr(1) : std::string();
+    if (o_.photoDir.empty() || hash.empty() || hash.find('/') != std::string::npos || hash.find('.') != std::string::npos)
+      return plain::Status::fail(nimbus::orch::tx::Err::NotFound, "nimbusd::Engine2Host::photoFor");
+    auto it = earlierPhotos_.find(ref);
+    if (it == earlierPhotos_.end()) {
+      std::string bytes;
+      if (!fsutil::readFile(nimbus::orch::blobPath(o_.photoDir, hash, "bin"), bytes) || bytes.empty())
+        return plain::Status::fail(nimbus::orch::tx::Err::NotFound, "nimbusd::Engine2Host::photoFor");
+      it = earlierPhotos_.emplace(ref, std::move(bytes)).first;
+    }
+    const char* mime = nimbus::orch::sniffImageMime((const uint8_t*)it->second.data(), it->second.size());
+    if (!*mime) return plain::Status::fail(nimbus::orch::tx::Err::NotFound, "nimbusd::Engine2Host::photoFor");
+    out.bytes = (const uint8_t*)it->second.data();
+    out.len = it->second.size();
+    out.mime = mime;
+    return plain::Status::success();
+  }
+
   Engine2Options o_;
   CgroupMemory mem_;
   agent::Platform platform_;
@@ -394,6 +431,8 @@ class Engine2Host {
   std::unique_ptr<plain::CompactDriver> driver_;
   std::unique_ptr<PlainRig> rig_;
   std::string curChat_;
+  std::unique_ptr<nimbus::orch::TurnImages> turnPhotos_;    // the running turn's photos (E2-P-PHOTO)
+  std::map<std::string, std::string> earlierPhotos_;        // earlier photos read back this turn
   std::string bootModel_;
   uint64_t lastTurnEnd_ = 0;
 };

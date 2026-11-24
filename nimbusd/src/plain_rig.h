@@ -213,7 +213,9 @@ class PlainRig {
 
   // One owner message through the loop: from the u item to the e item.
   // One turn at a time: a say from inside a turn (a host send that answers back) is refused.
-  PlainTurn say(const std::string& text, const char* ch = "rig") {
+  // `parts`: the message's photos (Image parts "p<ref>", lane E2-P-PHOTO); their bytes come through the
+  // setup's photo hook.
+  PlainTurn say(const std::string& text, const char* ch = "rig", std::vector<nimbus::orch::tx::Part> parts = {}) {
     PlainTurn t;
     if (busy_) {
       t.status = plain::Status::fail(nimbus::orch::tx::Err::Busy, "nimbusd::PlainRig::say.busy");
@@ -236,6 +238,7 @@ class PlainRig {
     in.ctx = turnCtx();
     in.text = text;
     in.ch = ch;
+    in.parts = std::move(parts);
     in.tzMinutes = cfg_.tzNow ? cfg_.tzNow() : cfg_.tzMinutes;
     (void)engine_->reopen();   // E2-STORE: a log that did not open at boot is opened again first
     t.status = engine_->runTurn(in, t.out);
