@@ -1381,8 +1381,8 @@ PC-0175, PC-0176: not used.
 - catalog: e2
 - class: tool_descriptions
 - kind: build
-- bytes: 4535 -> 4761
-- sha8: bab37350 -> 341e293c
+- bytes: 4640 -> 4866
+- sha8: aebfed83 -> 8e3dd670
 - lane: E2-P-SUB
 - prd: section 4 (groups behind more: agents, agent_list and agent_stop; agent_start is always on), section 6 (sub-agents), AGENTS.md rule 9
 - why: lib/harness/include/nimbus/harness/plain/texts.h kBehindMore: agent_list ("List this chat's sub-agent jobs, newest first, with id and state.", no arguments) and agent_stop ("Stop a running sub-agent job by id.", id) join delete_file behind more, in the agents group lib/core/src/orch_tool_groups.cpp already names. agent_start's declaration is unchanged; it reaches the tools array now that lane E2-P-SUB registers it (plain_agents.cpp registerAgentTools over the kept JobEngine). Planned work, not a fix.
@@ -1391,8 +1391,8 @@ PC-0175, PC-0176: not used.
 - catalog: e2
 - class: tool_results
 - kind: build
-- bytes: 7071 -> 7162
-- sha8: ed391636 -> 1699fe39
+- bytes: 7097 -> 7188
+- sha8: d5a076a0 -> 6ad8a571
 - lane: E2-P-SUB
 - prd: section 6 (agent_start returns 'started id=a7 job=<provider id>' or the provider's error), section 4 (rules for every tool), AGENTS.md rule 9
 - why: lib/harness/include/nimbus/harness/plain/texts.h tool_results, the words plain_agents.cpp writes: agent_start "started id=<tag> job=<provider job id>" when the job started inside the turn, "queued" when it waits for a free slot, "not started: " then the JobEngine's own refusal line (the spawn notes engine 1 already writes); agent_list "no jobs" or the chat's ledger lines (jobs.cpp, without the old engine's framing line) and ": open" after a job a restart left open; agent_stop "stopping id=<tag>" or "no such job: <id>"; "invalid arguments" for an argument outside the schema, a missing name or task, or more than four files. Facts only, 91 B inside the class ceiling (no ceiling raised). Planned work, not a fix.
