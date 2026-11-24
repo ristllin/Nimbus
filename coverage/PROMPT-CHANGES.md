@@ -1594,7 +1594,6 @@ PC-0175, PC-0176: not used.
 - lane: RB-R4 (lane E2-REP5; the router leftovers file their entries under RB-R4 as PC-0257 did)
 - prd: PRD section 6 (sub-agents on engine 2) and the capability matrix row of the chat codec (no provider connectors on a chat-completions head); AGENTS.md rule 9
 - why: lib/harness/include/nimbus/harness/plain/texts.h agent_start schema gains the optional string "connector". Engine 1's Mistral head runs its tool loop on chat completions with no connector, and reaches the owner's Mistral Studio connectors through a sub-agent whose spawn names the connector as its skill: the JobEngine runs it on the connector's provider, a Mistral sub on the Conversations API that attaches the connectors (connectors_wire.h:20-30, mistral.cpp mistralDispatch). plain_agents.cpp maps the argument to that skill and orchestrator_plain.cpp wires JobEngine::Deps::connectorProvider, so engine 2 does the same under engine 1's refusals. Planned work, not a fix (CUM-1005).
-### PC-0272: the docs group and device_status on a hosted instance's engine 2
 ### PC-0276: the docs group and device_status on a hosted instance's engine 2
 - catalog: e2
 - class: tool_results
