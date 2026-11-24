@@ -46,6 +46,9 @@ compare.py show   --run <dir>/<model>/<scenario>/rep1/A --turn 4 [--system] [--r
                                                          # what the model was shown on that turn
 mechanisms.py --evidence <dir>                           # count known harness behaviors in arm A's captures;
                                                          # writes MECHANISMS.md and LOSSES.md (one line per lost repetition)
+habits.py --evidence <dir> [--arm A]                     # per run: writes in turns that asked for nothing, calc on
+                                                         # one-step sums, a calc result restated as another figure,
+                                                         # and the failed checks (no model call)
 python3 tests/evals/refloop/test_refloop_offline.py      # the free self-test: no keys, no network
 refloop.py --mcp http://127.0.0.1:8787 --token <web token> --model claude-sonnet-5-5
                                                          # chat with the reference loop by hand
