@@ -719,11 +719,11 @@ Status noHead(const CompactDeps& d, const char* where) {
 
 uint32_t calendarDay(uint64_t now, int16_t tz) { return (uint32_t)dayNumber(now, tz, 0); }
 
-// The head that answered the newest resident turn (its t item's "host/model"), read at every step
-// (ruling 91 blockers/F5): the marks follow a head switched in the chat without a new driver. The
-// host is read as the engine reads it (providerSlugOf: a slug, or an endpoint host such as
-// api.anthropic.com); the installed head stands when no t item is resident or the t item names its
-// model (its routing is known only there).
+// The head a resident turn's t item names ("host/model"), read at every step (ruling 91 blockers/F5):
+// the marks follow a head switched in the chat without a new driver (markHeads below). The host is
+// read as the engine reads it (providerSlugOf: a slug, or an endpoint host such as
+// api.anthropic.com); the installed head stands when the t item names no head or names its model
+// (its routing is known only there).
 tx::HeadKey headOfTurn(const tx::Item& it, const tx::HeadKey& installed) {
   const size_t slash = it.head.find('/');
   if (slash == std::string::npos || slash == 0 || slash + 1 >= it.head.size()) return installed;
