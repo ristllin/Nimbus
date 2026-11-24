@@ -18,7 +18,7 @@
 // with arguments as a JSON string); one tool message per result. A photo a view result brings back
 // goes in one user message right after the round's tool messages (no row of this dialect takes an
 // image inside a tool result). Reasoning replay is the one switch: Mistral thinking chunks inside the
-// content list (sent only beside text: an assistant content of thinking alone is refused), Z.ai
+// content list (beside text or tool_calls; a message of thinking alone is never sent), Z.ai
 // reasoning_content beside the content. A k item replays only when its stored form is the route's
 // kind, so another dialect's reasoning is never sent here. The planner's cache marks write nothing.
 //
@@ -298,8 +298,10 @@ Status readAssistant(Render& r, const Msg& m, AssistantParts& a) {
 void assistantContent(Render& r, const AssistantParts& a) {
   r.w.key("content");
   // A call-only message carries an empty content, as engine 1 sent it to Mistral and Z.ai (mistral.cpp:330;
-  // lane E2-REP5, review F): a server that wants the key never sees it missing.
-  if (a.texts.empty()) {
+  // lane E2-REP5, review F): a server that wants the key never sees it missing. Its Mistral thinking chunks
+  // go back as its content list: Mistral serves a call round as thinking beside tool_calls and takes it
+  // back so (lane E2-R10, recorded 24 Nov 2026).
+  if (a.texts.empty() && a.chunks.empty()) {
     r.w.str(std::string());
     return;
   }

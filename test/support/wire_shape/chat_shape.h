@@ -71,7 +71,7 @@ inline bool thinkingChunk(JsonObjectConst p, C& c, const std::string& w) {
     if (str(t["type"]) != "text" || !t["text"].is<const char*>() || !onlyKeys(t, {"type", "text"}, c, w + ".thinking"))
       return c.fail(w + ": a thinking part that is not text");
   if (!p["signature"].isNull() && !p["signature"].is<const char*>()) return c.fail(w + ": signature is not a string");
-  return onlyKeys(p, {"type", "thinking", "signature"}, c, w);
+  return onlyKeys(p, {"type", "thinking", "signature", "closed"}, c, w);   // "closed": as served (R10)
 }
 
 inline bool part(JsonObjectConst p, const std::string& role, const F& f, C& c, const std::string& w) {

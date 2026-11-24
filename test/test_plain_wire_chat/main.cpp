@@ -172,6 +172,26 @@ void test_reasoning_replays_only_to_its_own_kind() {
   TEST_ASSERT_EQUAL_STRING(zai.c_str(), z.meta[0].bytes.c_str());
 }
 
+// Lane E2-R10 (recorded 24 Nov 2026): Mistral serves a call round as a thinking chunk beside tool_calls with no
+// text, and takes it back so; the chunk rides that message's content list (it was left out before). A message
+// with neither text nor calls is still not sent.
+void test_a_call_round_keeps_its_thinking_chunk() {
+  const std::string chunk = R"({"type":"thinking","thinking":[{"type":"text","text":"Read the note."}],"closed":true})";
+  txb::Convo c;
+  c.callPrefix = "call";
+  c.openTurn();
+  c.owner("Which bed gets the most sun?");
+  tx::Item& k = c.add(tx::ItemKind::RoundMeta);
+  k.x = chunk;
+  k.wr = plain::replayTag(plain::Dialect::ChatCompletions, false, rowOf(caps::Slot::Mistral).model);
+  const std::string id = c.call("read_file", R"({"path":"notes/bed2.md"})");
+  c.receipt(id, "read_file", "bed 2: full sun");
+  c.nextRound();
+  const std::string b = renderOn(caps::Slot::Mistral, c);
+  TEST_ASSERT_TRUE_MESSAGE(b.find(R"({"role":"assistant","content":[)" + chunk + R"(],"tool_calls")") != std::string::npos,
+                           b.c_str());
+}
+
 // Text mode (Flat, or a row with the tools bit off): no tools and no tool_choice; a stored call and its
 // result go as text in their place (the planner's text-mode history, lane R4b), never left out.
 void test_text_mode_sends_no_tools() {
@@ -246,6 +266,7 @@ int main(int, char**) {
   RUN_TEST(test_arguments_as_a_string_or_an_object);
   RUN_TEST(test_usage_is_the_uncached_part_plus_the_cache_reads);
   RUN_TEST(test_reasoning_replays_only_to_its_own_kind);
+  RUN_TEST(test_a_call_round_keeps_its_thinking_chunk);
   RUN_TEST(test_text_mode_sends_no_tools);
   RUN_TEST(test_a_call_only_message_carries_an_empty_content);
   RUN_TEST(test_the_codec_names_no_host);
