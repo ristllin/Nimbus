@@ -43,6 +43,12 @@ constexpr char kChat[] = "1001";
 
 bool has(const std::string& hay, const std::string& needle) { return hay.find(needle) != std::string::npos; }
 
+size_t count(const std::string& hay, const std::string& needle) {
+  size_t n = 0;
+  for (size_t at = hay.find(needle); at != std::string::npos; at = hay.find(needle, at + needle.size())) n++;
+  return n;
+}
+
 // A card that keeps files and folders.
 class Card : public tx::CardOps {
  public:
@@ -135,6 +141,9 @@ struct Kept {
   std::map<std::string, std::string> connectors;   // the owner's enabled connectors: name -> provider
 };
 
+// A restart inside a report turn's tail (after its answer was stored).
+struct ReportCut {};
+
 // One boot of the device: platform, head, binding, registry, journal and job engine, wired the way
 // orchestrator_plain.cpp wires them.
 struct Device {
@@ -187,7 +196,9 @@ struct Device {
         plain::ChatMessage m;   // the same turn function a person's message takes
         m.trigger = plain::Trigger::AgentResult;
         m.text = note;
-        return binding->turn(m, report);
+        const plain::Status st = binding->turn(m, report);
+        if (cutAfterReport) throw ReportCut{};   // E2-REP6: a restart before deliverReports marks it reported
+        return st;
       }, ran);
       reportsRun += ran;
     };
@@ -269,6 +280,7 @@ struct Device {
   std::unique_ptr<agent::JobEngine> jobs;
   std::unique_ptr<plain::ChatBinding> binding;
   bool inTurn = false;
+  bool cutAfterReport = false;
   std::vector<std::string> sent, delivered, spawnSpend;
   int usages = 0, reportsRun = 0;
   plain::TurnOutcome out, report;
@@ -530,6 +542,41 @@ static void test_a_queued_job_stops() {
   TEST_ASSERT_EQUAL(4, (int)kept.adapter.dispatched.size());   // it never started
 }
 
+// E2-REP6 (review F4): the device restarts after a report turn's answer was stored and before the job
+// was marked reported. The boot's resume sends the stored answer; the report is not run a second time
+// (no second head request, one agent note in the transcript), and the job is marked reported.
+static void test_a_restart_after_a_report_turn_does_not_report_it_twice() {
+  Kept kept;
+  kept.adapter.pollScript = {agent::JobState::Done};
+  kept.adapter.doneReply = "The answer is 42.";
+  {
+    Device before(kept);
+    TEST_ASSERT_TRUE(before.boot().ok());
+    TEST_ASSERT_TRUE(before.call("agent_start", R"({"name":"sum","task":"add it up"})").success);
+    before.model.push(sp::say("It is 42."));
+    before.cutAfterReport = true;
+    bool cut = false;
+    try {
+      before.pumps(3, 1000);
+    } catch (const ReportCut&) {
+      cut = true;
+    }
+    TEST_ASSERT_TRUE(cut);
+    TEST_ASSERT_EQUAL(1, (int)before.model.requests().size());
+  }
+  Device after(kept);
+  TEST_ASSERT_TRUE(after.boot().ok());
+  after.pumps(3, 1000);
+  TEST_ASSERT_EQUAL(1, after.reportsRun);   // parked again at the boot, found in the conversation
+  TEST_ASSERT_EQUAL_MESSAGE(0, (int)after.model.requests().size(), "a second report turn ran");
+  TEST_ASSERT_EQUAL(1, (int)count(transcript(kept.card), "[agent report] sum id=job0000"));
+  Device again(kept);   // marked reported: a later boot parks nothing
+  TEST_ASSERT_TRUE(again.boot().ok());
+  again.pumps(3, 1000);
+  TEST_ASSERT_EQUAL(0, again.reportsRun);
+  TEST_ASSERT_EQUAL(0, (int)again.model.requests().size());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_the_report_path_is_agents_id_name);
@@ -542,5 +589,6 @@ int main(int, char**) {
   RUN_TEST(test_a_report_waiting_at_restart_comes_after_the_boot);
   RUN_TEST(test_a_failed_job_is_a_report_turn);
   RUN_TEST(test_a_queued_job_stops);
+  RUN_TEST(test_a_restart_after_a_report_turn_does_not_report_it_twice);
   return UNITY_END();
 }

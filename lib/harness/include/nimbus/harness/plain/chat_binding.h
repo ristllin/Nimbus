@@ -12,6 +12,7 @@
 
 #include "nimbus/harness/channel.h"
 #include "nimbus/harness/http.h"
+#include "nimbus/harness/log.h"
 #include "nimbus/harness/plain/chat_skills.h"
 #include "nimbus/harness/plain/compact.h"
 #include "nimbus/harness/plain/deliver.h"
@@ -506,6 +507,11 @@ class ChatBinding {
     if (!engine_ || moved_) return Status::fail(tx::Err::InvalidArgument, "plain::ChatBinding::turn.before-boot");
     if (busy_) return Status::fail(tx::Err::Busy, "plain::ChatBinding::turn.busy");
     const bool person = msg.trigger != Trigger::AgentResult;
+    if (!person && holdsReport(reportTagOf(msg.text))) {   // E2-REP6: reported before a restart
+      agent::hlog::logf("plain(%s): the report of %s is in the conversation already: not run again",
+                        cfg_.chatId.c_str(), reportTagOf(msg.text).c_str());
+      return Status::success();
+    }
     const uint32_t now = d_.platform->nowMs();
     if (!breaker_.admit(person, now).run && !person) return Status::fail(tx::Err::Busy, "plain::ChatBinding::turn.breaker");
     busy_ = true;
@@ -655,6 +661,33 @@ class ChatBinding {
     for (uint64_t id : src)
       if (!d_.seen->seen(cfg_.chatId, id)) return false;
     return true;
+  }
+
+  // E2-REP6 (review F4): the job tag a report turn's note names on its first line
+  // ("[agent report] <name> id=<tag>...", agentReportNote); "" for any other text.
+  static std::string reportTagOf(const std::string& note) {
+    namespace dn = texts::stubs;
+    if (note.rfind(dn::kAgentReport, 0) != 0) return std::string();
+    const std::string head = note.substr(0, note.find('\n'));
+    const size_t at = head.rfind(dn::kAgentId);
+    if (at == std::string::npos) return std::string();
+    const size_t from = at + std::char_traits<char>::length(dn::kAgentId);
+    return head.substr(from, head.find(' ', from) - from);
+  }
+
+  // Does the conversation in RAM hold the agent note of job `tag` already? A report turn whose answer
+  // was stored before a restart, and whose job was not yet marked reported, is not run a second time
+  // (the boot's resume sent its stored answer).
+  bool holdsReport(const std::string& tag) const {
+    namespace tx = nimbus::orch::tx;
+    if (!arena_ || tag.empty()) return false;
+    tx::Item it;
+    for (size_t i = arena_->count(); i-- > 0;) {
+      tx::ArenaEntry e;
+      if (!arena_->header(i, e).ok() || e.kind != tx::ItemKind::DeviceNote || !arena_->get(i, it).ok()) continue;
+      if (it.note == tx::NoteClass::Agent && reportTagOf(it.x) == tag) return true;
+    }
+    return false;
   }
 
   // Lane E2-FIX13: does the conversation in RAM hold this message as a person's item already (its
