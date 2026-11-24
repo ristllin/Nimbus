@@ -22,6 +22,7 @@ messages-anthropic-direct/second_turn_after_tools.req
 messages-anthropic-direct/second_turn_after_tools_long_cache.req
 messages-anthropic-direct/stored_cut_answer.req
 messages-anthropic-direct/stub_and_bulk_result.req
+messages-anthropic-direct/stub_by_input_pointer.req
 messages-anthropic-direct/summarizer_lines.req
 messages-anthropic-direct/summarizer_structured.req
 messages-anthropic-direct/synthetic_empty_content.parse

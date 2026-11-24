@@ -133,8 +133,9 @@ inline Tx nearCapPhotoTurn() {
   return t;
 }
 
-// A closed turn's bulk result stubbed by a pointer move, outside content of a closed turn, and
-// the open turn's bulk result whole.
+// A closed turn's bulk result stubbed by a stored pointer move (x item; without it the result
+// would render whole), outside content of a closed turn (a stub by its class), and the open
+// turn's bulk result whole.
 inline Tx stubAndBulk() {
   Tx t;
   t.open();
@@ -293,7 +294,8 @@ inline Tx summarizerSlice() {
 }
 
 // A restart in the middle of a turn: an effect call with its intent and no result, a device
-// note written at the restart, then the request that resumes.
+// note written at the restart, then the request that resumes. The wire leaves the dangling call
+// out (pairing: a call is sent only with its one result), so it appears nowhere in the golden.
 inline Tx restartMidTurn() {
   Tx t;
   t.open();
@@ -336,6 +338,9 @@ inline std::vector<Case> requestCases() {
   out.push_back(make("stub_and_bulk_result", stubAndBulk()));
   const Tx ladder = ladderState();
   out.push_back(make("ladder_none", ladder));
+  f = Facts();
+  f.pointer = lastQOf(ladder, 1);   // RenderInput::stubPointer: turn 1's bulk result as its stub
+  out.push_back(make("stub_by_input_pointer", ladder, f));
   f = Facts();
   f.ladder.closedThrough = lastQOf(ladder, 2);
   out.push_back(make("ladder_rung1_closed_through", ladder, f));
