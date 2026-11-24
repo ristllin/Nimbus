@@ -228,6 +228,15 @@ struct TurnOutcome {
   // billed, in order (empty with no switch: the whole turn is the head's). parkHost is the first head's.
   uint8_t switches = 0;
   std::vector<HeadShare> shares;
+  // Lane E2-REP1: a fallback head that refused its key or credit, for the binding to park as it parks the
+  // head (its slot, its key's fingerprint, the refusal's status and body; never stored, never shown).
+  struct FallbackRefusal {
+    std::string provider;
+    uint32_t keyFp = 0;
+    int status = 0;
+    std::string text;
+  };
+  std::vector<FallbackRefusal> fallbackRefusals;
   // Effects the turn's tools asked for after the turn (a stored, successful result each): the
   // binding runs them in Deferred order once runTurn returns, the reply and the turn's items
   // already stored. The mask survives a refused allocation; an argument may not.

@@ -149,6 +149,10 @@ inline void noteHeadOutcome(const std::string& provider, const std::string& key,
   namespace orch = nimbus::orch;
   orch::ProviderPark& park = orch::providerPark();
   const char* p = provider.c_str();
+  // E2-REP1: a fallback head that refused its key or credit is parked as the head is (no latch: the
+  // turn's line named the switch, not the refusal, so its notice is still due if it becomes the head).
+  for (const TurnOutcome::FallbackRefusal& r : out.fallbackRefusals)
+    (void)park.noteAnswer(r.provider.c_str(), orch::PaidSeam::Chat, r.keyFp, r.status, r.text, nowMs);
   if (out.parkHost) {
     const orch::ParkKind k =
         park.noteAnswer(p, orch::PaidSeam::Chat, orch::parkKeyFingerprint(key), out.parkStatus, out.parkText, nowMs);

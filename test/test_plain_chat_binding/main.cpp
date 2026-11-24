@@ -2030,6 +2030,24 @@ static void test_two_switches_then_the_plain_failure_line() {
   TEST_ASSERT_FALSE(has(dev.sent.back(), "this answer came from"));
 }
 
+// E2-REP1 (E2-P-FO's "Not done"): a fallback head that refuses its key during fail-over is parked in the
+// shared park as the head is, so no seam sends to it until its re-check; the round moves on.
+static void test_a_fallback_that_refuses_its_key_is_parked() {
+  Device dev;
+  dev.parkHead = true;
+  dev.fallbacks = {{"openai", "gpt-5.6-luna"}, {"mistral", "mistral-large-4-0"}};
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  answerByHost(dev, {{"api.anthropic.com", sp::httpError(500)},
+                     {"api.openai.com", sp::httpError(401, R"({"error":{"message":"Incorrect API key provided.","type":"invalid_request_error","code":"invalid_api_key"}})")},
+                     {"api.mistral.ai", sp::say("From the third provider.")}});
+  TEST_ASSERT_TRUE(dev.say("Hello there.").ok());
+  TEST_ASSERT_EQUAL(2, (int)dev.out.switches);
+  TEST_ASSERT_EQUAL_STRING("From the third provider.", dev.out.text.c_str());
+  TEST_ASSERT_TRUE(nimbus::orch::providerPark().isParked("openai"));
+  TEST_ASSERT_FALSE(nimbus::orch::providerPark().isParked("anthropic"));   // a server error parks nothing
+  TEST_ASSERT_FALSE(nimbus::orch::providerPark().isParked("mistral"));
+}
+
 // D1: never to a head whose body budget is smaller than the request it replaces (design section 6 item 7):
 // the routed Sonnet (85,000 B) is passed over for a request the direct Sonnet (250,000 B) sent.
 static void test_no_switch_to_a_smaller_body() {
@@ -2330,6 +2348,7 @@ int main(int, char**) {
   RUN_TEST(test_a_server_error_moves_the_round_to_the_next_provider);
   RUN_TEST(test_a_cut_answer_moves_the_round_to_the_next_provider);
   RUN_TEST(test_two_switches_then_the_plain_failure_line);
+  RUN_TEST(test_a_fallback_that_refuses_its_key_is_parked);
   RUN_TEST(test_no_switch_to_a_smaller_body);
   RUN_TEST(test_no_switch_with_the_setting_off);
   return UNITY_END();

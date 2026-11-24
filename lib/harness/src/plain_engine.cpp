@@ -18,6 +18,7 @@
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/harness/platform.h"
 #include "nimbus/orch/mcp_client.h"   // serverOf (E2-REP2)
+#include "nimbus/orch/provider_park.h"   // parkKeyFingerprint: a fallback head's refusal (E2-REP1)
 #include "nimbus/orch/path_rules.h"   // storePathFor: an own path as the store lists it (E2-FIX8)
 #include "nimbus/orch/psram_alloc.h"   // WorkingVector: the argument walks keep their list off the stack
 #include "nimbus/orch/tool_groups.h"
@@ -180,6 +181,7 @@ struct Turn {
   HeadShare base;
   int parkStatus = 0;                  // the park's refusal: its status and body (E2-FIX14)
   std::string parkText;
+  std::vector<TurnOutcome::FallbackRefusal> fallbackRefusals;   // E2-REP1
   std::string cause;
   tx::TurnEndFacts end;
   std::vector<tx::Item> writes;        // c, r pairs of successful effect calls (supersede rule)
@@ -1115,11 +1117,20 @@ class TurnRun {
     t_.modelUnusable |= ex.modelUnusable;
   }
 
-  // E2-FIX14: the refusal the binding hands the shared park. E2-P-FO: the first head's only (the binding
-  // parks its own provider); a fallback head's refusal is an event.
+  // E2-FIX14: the refusal the binding hands the shared park. E2-P-FO: the first head's in parkHost;
+  // E2-REP1: a fallback head's in fallbackRefusals, so the binding parks it too.
   void takePark(const ExchangeResult& ex) {
     if (!ex.parkHost) return;
-    if (t_.switches) return event("park:fallback");
+    if (t_.switches) {
+      event("park:fallback");
+      TurnOutcome::FallbackRefusal r;
+      r.provider = slotNow();
+      r.keyFp = t_.setup.head.key ? orch::parkKeyFingerprint(t_.setup.head.key()) : 0;
+      r.status = ex.httpStatus;
+      r.text = ex.parkBody;
+      t_.fallbackRefusals.push_back(std::move(r));
+      return;
+    }
     t_.parkHost = true;
     t_.parkStatus = ex.httpStatus;
     t_.parkText = ex.parkBody;
@@ -2268,6 +2279,7 @@ Status PlainEngine::runTurn(const TurnInput& in, TurnOutcome& out) {
     out.end.cause = t->cause;   // also when no e item could be stored
     out.parkText = t->parkText;
     out.shares = t->shares;
+    out.fallbackRefusals = t->fallbackRefusals;
   } catch (const std::bad_alloc&) {
   }
   return st;
