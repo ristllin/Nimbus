@@ -1,4 +1,5 @@
-// One model on one provider slot (plain/head_slot.h), lane E2-R8a.
+// One model on one provider slot (plain/head_slot.h), lane E2-R8a. Both engines compile it (engine 1's
+// provider verify reads a custom endpoint with it), so it is outside the plain_* engine-2 family.
 #include "nimbus/harness/plain/head_slot.h"
 
 #include <ArduinoJson.h>

@@ -39,7 +39,6 @@ lib/harness/src/plain_media.cpp
 lib/harness/src/plain_prefix.cpp
 lib/harness/src/plain_rails.cpp
 lib/harness/src/plain_request.cpp
-lib/harness/src/plain_head_slot.cpp
 lib/harness/src/plain_resume.cpp
 lib/harness/src/plain_route.cpp
 lib/harness/src/plain_surface.cpp
