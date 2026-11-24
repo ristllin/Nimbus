@@ -185,6 +185,9 @@ struct ChatMessage {
   std::vector<nimbus::orch::tx::Part> parts;     // its photos (Image parts "p<ref>")
   bool photosBlind = false;                      // TurnCtx::photosBlind: the head takes no images (E2-P-PHOTO)
   std::vector<std::string> stored;               // TurnInput::stored (lane E2-FIX10)
+  // Lane E2-P-SUB: Owner for a person's message; AgentResult for a sub-agent's report turn (text is
+  // its agent device note, outside content, so the rails gate its writes; plain/agents.h).
+  Trigger trigger = Trigger::Owner;
 };
 
 // A turn's spend as the owner's usage view files it (store::recordProviderSpend): one slot of the
@@ -343,23 +346,26 @@ class ChatBinding {
   // storeHeldAs succeeded: nothing more runs on this binding.
   bool moved() const { return moved_; }
 
-  // One person's message through the loop. The breaker admits every person's message (it holds
-  // back only turns no person started); the spend is recorded after.
+  // One message through the loop: a person's, or a sub-agent's report (msg.trigger AgentResult,
+  // lane E2-P-SUB). The breaker admits every person's message (it holds back only turns no person
+  // started: a report it holds is Busy with nothing stored); the spend is recorded after.
   Status turn(const ChatMessage& msg, TurnOutcome& out) {
     namespace tx = nimbus::orch::tx;
     if (!engine_ || moved_) return Status::fail(tx::Err::InvalidArgument, "plain::ChatBinding::turn.before-boot");
     if (busy_) return Status::fail(tx::Err::Busy, "plain::ChatBinding::turn.busy");
+    const bool person = msg.trigger != Trigger::AgentResult;
+    const uint32_t now = d_.platform->nowMs();
+    if (!breaker_.admit(person, now).run && !person) return Status::fail(tx::Err::Busy, "plain::ChatBinding::turn.breaker");
     busy_ = true;
     struct Idle {
       bool& busy;
       ~Idle() { busy = false; }
     } idle{busy_};
     sent_ = refused_ = 0;
-    const uint32_t now = d_.platform->nowMs();
-    (void)breaker_.admit(/*person=*/true, now);
     if (reporter_) reporter_->open(turnCtx(), now);
     TurnInput in;
     in.ctx = turnCtx();
+    in.ctx.trigger = msg.trigger;
     in.text = msg.text;
     in.ch = msg.ch;
     in.src = msg.src;
@@ -378,41 +384,10 @@ class ChatBinding {
       st = Status::fail(tx::Err::TooLarge, "plain::ChatBinding::turn.memory");
     }
     if (engine_->unloaded() && d_.sendPart) (void)d_.sendPart(cfg_.chatId, unloadedLine());
-    breaker_.spent(/*person=*/true, out.end.microUsd, d_.platform->nowMs());
+    breaker_.spent(person, out.end.microUsd, d_.platform->nowMs());
     if (reporter_) reporter_->close(d_.platform->nowMs());
     if (d_.usage) d_.usage(out);
-    return st;
-  }
-
-  // Lane E2-P-SUB: one sub-agent report turn (plain/agents.h deliverReports). `note` is stored as
-  // the turn's agent device note (Trigger::AgentResult: outside content, so the rails gate its
-  // writes), then the head answers in this chat. Busy, with nothing stored, when the binding cannot
-  // take a turn now (not booted, a turn running, the breaker holding turns no person started).
-  Status reportTurn(const std::string& note, TurnOutcome& out) {
-    namespace tx = nimbus::orch::tx;
-    if (!engine_ || moved_ || busy_) return Status::fail(tx::Err::Busy, "plain::ChatBinding::reportTurn");
-    const uint32_t now = d_.platform->nowMs();
-    if (!breaker_.admit(/*person=*/false, now).run) return Status::fail(tx::Err::Busy, "plain::ChatBinding::reportTurn.breaker");
-    busy_ = true;
-    struct Idle {
-      bool& busy;
-      ~Idle() { busy = false; }
-    } idle{busy_};
-    sent_ = refused_ = 0;
-    TurnInput in;
-    in.ctx = turnCtx();
-    in.ctx.trigger = Trigger::AgentResult;
-    in.text = note;
-    if (movedTo_.empty()) reload();
-    Status st;
-    try {
-      st = engine_->runTurn(in, out);
-    } catch (const std::bad_alloc&) {
-      st = Status::fail(tx::Err::TooLarge, "plain::ChatBinding::reportTurn.memory");
-    }
-    breaker_.spent(/*person=*/false, out.end.microUsd, d_.platform->nowMs());
-    if (d_.usage) d_.usage(out);
-    return st.err == tx::Err::Busy ? Status::fail(tx::Err::Io, st.where) : st;   // Busy means "not run" to the caller
+    return st.err == tx::Err::Busy ? Status::fail(tx::Err::Io, st.where) : st;   // Busy: nothing was stored
   }
 
   // A compaction of this chat now (/compact): the driver's manual run, stepped here until it has

@@ -169,7 +169,10 @@ struct Device {
       int ran = 0;
       (void)plain::deliverReports(*jobs, chat, [this](const std::string&, const std::string& note) {
         report = plain::TurnOutcome{};
-        return binding->reportTurn(note, report);
+        plain::ChatMessage m;   // the same turn function a person's message takes
+        m.trigger = plain::Trigger::AgentResult;
+        m.text = note;
+        return binding->turn(m, report);
       }, ran);
       reportsRun += ran;
     };

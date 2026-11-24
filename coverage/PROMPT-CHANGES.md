@@ -1401,8 +1401,8 @@ PC-0175, PC-0176: not used.
 - catalog: e2
 - class: stubs
 - kind: build
-- bytes: 290 -> 332
-- sha8: 3e277c2a -> d7107f0a
+- bytes: 372 -> 414
+- sha8: af49befe -> e548380a
 - lane: E2-P-SUB
 - prd: section 6 (arrival: the report saved whole as agents/<id>-<name>.md, one item carrying it as an outside bulk result, then one head turn), AGENTS.md rule 9
 - why: lib/harness/include/nimbus/harness/plain/texts.h stubs: the line that opens a report turn's agent item (plain_agents.cpp agentReportNote): "[agent report] <name> id=<tag>", " failed" when the job ended without a result, " saved whole as agents/<tag>-<name>.md" for the file the JobEngine stored the whole reply in; then the report inside the outside-content fence jobs.h already uses for routines. Kept in the stubs class because, like a stub, it names where the whole bytes are kept (the report text itself is cut at 3,500 characters by the JobEngine); the device-notes class had 2 B left. Planned work, not a fix.

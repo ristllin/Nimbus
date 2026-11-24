@@ -659,15 +659,20 @@ const char* channelOf(const String& chatId) {
 }
 
 // The crash journal of a person's turn (E2-FIX12): its chat and kind for the next boot.
+// A sub-agent's report turn (lane E2-P-SUB) is journaled as a turn no person started: a restart inside it
+// is closed at the chat's next boot without a resume (plain/resume.h), its report already stored.
 void journalTurn(const String& chatId, const plain::ChatMessage& msg) {
   const char* head = !msg.parts.empty() ? "[image]" : !msg.stored.empty() ? "[file]" : "";
-  nimbus::crash::turnStarted(chatId == "serial" ? nimbus::orch::kTurnSourceSerial : nimbus::orch::kTurnSourceOwner,
-                             chatId.c_str(), head);
+  const int source = msg.trigger == plain::Trigger::AgentResult ? nimbus::orch::kTurnSourceSynthesis
+                     : chatId == "serial"                        ? nimbus::orch::kTurnSourceSerial
+                                                                 : nimbus::orch::kTurnSourceOwner;
+  nimbus::crash::turnStarted(source, chatId.c_str(), head);
 }
 
 // One turn of `b` for `msg` (its day-stream row already written) and what follows it: the figures,
-// the answer's history row, the deferred effects, the skill lines. Returns whether a part went out.
-bool turnFor(plain::ChatBinding& b, const String& chatId, const plain::ChatMessage& msg) {
+// the answer's history row, the deferred effects, the skill lines. Returns whether a part went out;
+// `status` (optional) is the binding's answer (Busy: the turn did not start, nothing stored).
+bool turnFor(plain::ChatBinding& b, const String& chatId, const plain::ChatMessage& msg, plain::Status* status = nullptr) {
   txdev::cardTxFiles().resetHolds();
   s_transport.reset();
   plain::TurnOutcome out;
@@ -681,6 +686,7 @@ bool turnFor(plain::ChatBinding& b, const String& chatId, const plain::ChatMessa
     st = b.turn(msg, out);
   }
   nimbus::crash::turnEnded();
+  if (status) *status = st;
   logTurn(b, out, st, millis() - t0);
   if (!msg.parts.empty())
     alogf("e2: photos=%u bytes=%u psramFree=%u psramLargest=%u", (unsigned)msg.parts.size(),
@@ -1307,27 +1313,20 @@ plain::Status reportTurnIn(const std::string& chatId, const std::string& note) {
   const plain::Status busy = plain::Status::fail(nimbus::orch::tx::Err::Busy, "e2.reportTurn");
   const String chat(chatId.c_str());
   const String host = store::resolvedOrchHost();
-  if (s_inTurn.load(std::memory_order_relaxed) || chat.length() == 0 || refusalFor(host) || waitsForHistory(chat))
+  if (s_inTurn.load(std::memory_order_relaxed) || chat.length() == 0 || hasKept(chat) || refusalFor(host) ||
+      waitsForHistory(chat, true))
     return busy;
   plain::ChatBinding* b = chatFor(chat, std::string(store::orchModel(host).c_str()), roleOfChat(chat));
   if (!b) return busy;
+  plain::ChatMessage msg;
+  msg.trigger = plain::Trigger::AgentResult;
+  msg.text = note;
+  msg.ch = channelOf(chat);
+  msg.tzMinutes = (int16_t)(utcOffsetAt((uint32_t)time(nullptr)));
+  plain::Status st = busy;
   s_inTurn.store(true, std::memory_order_relaxed);
   s_turnChat = chat;
-  txdev::cardTxFiles().resetHolds();
-  s_transport.reset();
-  plain::TurnOutcome out;
-  plain::Status st;
-  const uint32_t t0 = millis();
-  {
-    PsramFirstScope psramFirst;
-    st = b->reportTurn(note, out);
-  }
-  logTurn(*b, out, st, millis() - t0);
-  if (out.delivered && !out.text.empty())
-    memory::captureMessage(chatId.c_str(), "assistant", nimbus::orch::MsgKind::Message, String(out.text.c_str()), "", "e2");
-  else if (!out.statusStored.empty())
-    memory::captureMessage(chatId.c_str(), "system", nimbus::orch::MsgKind::Message, String(out.statusStored.c_str()), "", "e2");
-  runDeferred(out.deferred);
+  (void)turnFor(*b, chat, msg, &st);   // the shared turn: journaled, figures, history row, deferred effects
   s_turns.fetch_add(1, std::memory_order_relaxed);
   s_turnChat = String();
   s_inTurn.store(false, std::memory_order_relaxed);
