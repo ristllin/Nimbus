@@ -1,12 +1,12 @@
 # Engine-2 request composition on the synthetic Lumi-state fixture (test/test_plain_request).
 # Generated: GOLDEN_UPDATE=1 pio test -e native -f test_plain_request; do not edit.
 # Gate: tools/release_gate/check_plain_ceilings.py.
-measure role=owner host=120s core=1562 index=373 notes=5075 system=6639 digests=6723 tools=14 tools_bytes=5259 longest_description=237
-measure role=owner host=60s core=1562 index=373 notes=5075 system=6639 digests=6723 tools=14 tools_bytes=5258 longest_description=237
-measure role=member host=120s core=1431 index=215 notes=1038 system=2471 digests=6723 tools=14 tools_bytes=5259 longest_description=237
-measure role=member host=60s core=1431 index=215 notes=1038 system=2471 digests=6723 tools=14 tools_bytes=5258 longest_description=237
-measure role=guest host=120s core=1231 index=65 notes=1038 system=2271 digests=6723 tools=7 tools_bytes=2195 longest_description=237
-measure role=guest host=60s core=1231 index=65 notes=1038 system=2271 digests=6723 tools=7 tools_bytes=2195 longest_description=237
+measure role=owner host=120s core=1644 index=455 notes=5075 system=6721 digests=6723 tools=14 tools_bytes=5259 longest_description=237
+measure role=owner host=60s core=1644 index=455 notes=5075 system=6721 digests=6723 tools=14 tools_bytes=5258 longest_description=237
+measure role=member host=120s core=1693 index=477 notes=1038 system=2733 digests=6723 tools=14 tools_bytes=5259 longest_description=237
+measure role=member host=60s core=1693 index=477 notes=1038 system=2733 digests=6723 tools=14 tools_bytes=5258 longest_description=237
+measure role=guest host=120s core=1416 index=250 notes=1038 system=2456 digests=6723 tools=7 tools_bytes=2195 longest_description=237
+measure role=guest host=60s core=1416 index=250 notes=1038 system=2456 digests=6723 tools=7 tools_bytes=2195 longest_description=237
 == core (owner, 120s, claude-sonnet-5-5, Europe/London)
 You are Nimbus, a personal assistant on a small device, working for one person, the owner, who reaches you over Telegram. Replies are Telegram messages: short and plain.
 
@@ -23,11 +23,13 @@ When asked about something personal that is not in this conversation, search bef
 Model: claude-sonnet-5-5.
 
 Tools behind more (more with group lists them; more with name and args calls one):
-device: device_status(), device_control(), ota_status(), selftest(), system_health(), device_log()
+device: device_status(), device_log(), ota_status(), device_selftest(), system_health(), device_control(action)
 agents: agent_list(), agent_stop(id)
 files_admin: delete_file(path), move_file(from, to), fetch_url(url), share_file(path), file_stat(path), read_pdf(path), pdf_write(path)
 media: speak(text), image_generate(prompt)
-skills: skill_list(), skill_save(path), skill_delete(path)
+people: tenant_list(), tenant_set_role(chat, role), tenant_set_quota(chat)
+models: models_list()
+also behind more: docs, skills
 == notes (first 400 B)
 Skills (read_file to open):
 skills/skill-0.md: when the person plans thing number 0

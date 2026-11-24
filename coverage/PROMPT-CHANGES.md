@@ -1482,3 +1482,23 @@ PC-0175, PC-0176: not used.
 - lane: E2-P-SKILL
 - prd: section 4 (skills), inventory parity-autonomy-memory-safety S3, AGENTS.md rule 9
 - why: lib/harness/include/nimbus/harness/plain/chat_skill_tools.h, engine 1's skill.save and skill.delete handler words (memory_subsystem.cpp, e1 catalog, unchanged) bound for engine 2: the admin refusals, the near-duplicate line, "skill '<id>' deleted"; skill_list's line per skill ("skills/<id>.md: approved | waiting for the owner | approved, an edit waiting for the owner - <desc>", "no saved skills"); the store's own result words (skill_store.cpp, skill_commands.cpp) are engine 1's, unchanged. PC-0249 in the same file: the store's two lines that name engine 1's tools are said in engine 2's words (the size refusal names "skill_save with id <id>-more"; a skill past 4,096 B is "listed and read when needed (read_file skills/<id>.md reads it all)", true on engine 2, which has no attached copy). Facts only, inside the ceiling (no ceiling raised). Planned work, not a fix (CUM-1004).
+
+### PC-0243: the device, people, models and docs groups' declarations behind more (engine 2)
+- catalog: e2
+- class: tool_descriptions
+- kind: build
+- bytes: 7190 -> 10139
+- sha8: 037e6389 -> df1e7e66
+- lane: E2-P-TOOLS
+- prd: section 4 (the groups behind more: device, people, models, docs), inventory parity-tools-commands-surfaces.md rows device, device_control, people, models.list, docs; parity-providers-models.md rows 12 and 13
+- why: lib/harness/include/nimbus/harness/plain/texts.h kBehindMore declares device.status, device.log, ota.status, device.selftest, system.health, device.control, tenant.list, tenant.set_role, tenant.set_quota, models.list, docs.list, docs.search and docs.read (spelled with '_' for the model), each at most 172 B of facts over engine 1's handlers, which src/agent/tools_plain_device.h binds unchanged; device.control's schema names the action shapes engine 1's validator reads. Listed only inside their groups (more with group); the tools array is unchanged. The owner's tools index grows by 82 B and stays inside its 512 B fit (docs and skills move to its "also behind more" tail). Planned work, not a fix.
+
+### PC-0244: device_control's result leads and the group bindings' names (engine 2)
+- catalog: e2
+- class: tool_results
+- kind: build
+- bytes: 8678 -> 8941
+- sha8: c9108838 -> 127b32e3
+- lane: E2-P-TOOLS
+- prd: section 1 step 6 (a restart or a head switch runs after the reply is sent and the turn is closed), section 4, AGENTS.md rule 9
+- why: texts.h tool_results gains device_control's leads "applied: ", "not applied: ", "action must be an object" and " (runs after this reply is sent)" (engine 1's device.control wrote the first two in orchestrator_e1.cpp); the applier's own summary tokens and refusals are device_apply.cpp's, unchanged and catalogued with engine 1. The rest of the growth is src/agent/tools_plain_device.h's registry names and the action rule key "device.control" it reads, no sentence. Planned work, not a fix.

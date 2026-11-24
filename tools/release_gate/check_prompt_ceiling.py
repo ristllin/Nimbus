@@ -178,6 +178,15 @@ DYNAMIC_NAMES = {
     "under mcp.<server>.<tool>; the twin has no connected server (its connectors attach on the provider side)",
     ("lib/harness/include/nimbus/harness/plain/request.h", "d->name"): "engine 2's plain tool pack (not linked into "
     "an engine-1 image; its ceilings are check_plain_ceilings.py's)",
+    # Engine-2 bindings (engine2_only.txt): their names are texts.h declarations, never in an engine-1 image.
+    ("src/agent/tools_plain_device.h", "d->name"): "E2-P-TOOLS: the device, people, models and docs groups' "
+    "engine-2 declarations (plain/texts.h kBehindMore); engine 2 only, its ceilings are check_plain_ceilings.py's",
+    ("src/agent/tools_plain_send.h", "s->name"): "E2-P-OUT1: send's engine-2 declaration (plain/texts.h); engine 2 "
+    "only, its ceilings are check_plain_ceilings.py's",
+    ("lib/harness/include/nimbus/harness/plain/chat_skill_tools.h", "name"): "E2-P-SKILL: the skills group's "
+    "engine-2 declarations (plain/texts.h); engine 2 only, its ceilings are check_plain_ceilings.py's",
+    ("src/agent/tools_plain_send.h", "k->name"): "E2-P-OUT1: speak's engine-2 declaration (plain/texts.h); engine 2 "
+    "only, its ceilings are check_plain_ceilings.py's",
 }
 # A ToolRegistry receiver: the device's registry (g_reg, registry()), a registration function's
 # parameter (reg, reg_). Other classes' add( calls (effect ledgers, batches, spend) are not tools.
@@ -306,6 +315,8 @@ def _scan_file(rel: str, src: str, regs: list, constants: dict, errs: list) -> N
 
 def _registration(rel: str, args: list, constants: dict, errs: list) -> "Registration | None":
     """The registration an add( call makes, or None (an error when its name is not known)."""
+    if (rel, args[0]) in DYNAMIC_NAMES:  # declared runtime name: never matched to another file's constant
+        return None
     name = _literal_text(args[0])
     ident = _IDENT.match(args[0])
     if name is None and ident:

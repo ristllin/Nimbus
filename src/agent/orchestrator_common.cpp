@@ -769,31 +769,50 @@ bool sendToChat(const String& chatId, const String& text, bool asVoice, std::str
 // Lane E2-P-TOOLS: engine 1's device-action executors (buildApplyDeps), shared with engine 2's
 // device_control. Returns from execConfig whether a stored value CHANGED (23 Oct: a no-op
 // action reports "no change" and never backs a "switched" reply).
+namespace {
+
+// The knobs stored as they are (engine 1's execConfig, split by lane E2-P-TOOLS for complexity).
+bool execStoredKnobs(const nimbus::orch::ValidatedAction& va) {
+  bool changed = false;
+  if (va.hasLedBrightness) changed = store::setLedBright(va.ledBrightness) || changed;
+  // `priority` tunes the SUB-SESSION provider preference only (never the
+  // orchestrator-host list - see the protected-key rail).
+  if (va.hasPriority)  changed = store::setSubPriority(String(va.priority.c_str())) || changed;
+  if (va.hasTtsVoice)  changed = store::setTtsVoice(String(va.ttsVoice.c_str())) || changed;
+  if (va.hasTtsProv)   changed = store::setTtsProvider(String(va.ttsProv.c_str())) || changed;
+  if (va.hasTtsOn)     changed = store::setTtsEnabled(va.ttsOn) || changed;
+  if (va.hasSleepOvr)  changed = store::setSleepOvr(va.sleepOvr) || changed;
+  if (va.hasBrightOvr) changed = store::setBrightOvr(va.brightOvr) || changed;
+  if (va.hasSttProv)   changed = store::setSttProvider(String(va.sttProv.c_str())) || changed;
+  return changed;
+}
+
+// The sound knobs, applied live through the seam the web setters use.
+bool execSoundKnobs(const nimbus::orch::ValidatedAction& va) {
+  if (!(va.hasSfxLvlN || va.hasSfxLvlO || va.hasSfxVol || va.hasSfxTheme)) return false;
+  bool changed = false;
+  if (va.hasSfxLvlN)  changed = store::setSfxLevelNotif(va.sfxLvlN) || changed;
+  if (va.hasSfxLvlO)  changed = store::setSfxLevelOrch(va.sfxLvlO) || changed;
+  if (va.hasSfxVol)   changed = store::setSfxVolume(va.sfxVol) || changed;
+  if (va.hasSfxTheme) changed = store::setSfxTheme(String(va.sfxTheme.c_str())) || changed;
+  ::sfx::refreshConfig();
+  return changed;
+}
+
+bool execDeviceName(const nimbus::orch::ValidatedAction& va) {
+  if (!va.hasDevName) return false;
+  const String before = nimbus::sys::deviceName();
+  return nimbus::sys::saveDeviceName(String(va.devName.c_str())) != before;
+}
+
+}  // namespace
+
 void fillDeviceApplyDeps(DeviceApplyDeps& d) {
   d.execConfig = [](const nimbus::orch::ValidatedAction& va) -> bool {
-    bool changed = false;
-    if (va.hasLedBrightness) changed = store::setLedBright(va.ledBrightness) || changed;
-    // `priority` tunes the SUB-SESSION provider preference only (never the
-    // orchestrator-host list - see the protected-key rail).
-    if (va.hasPriority)  changed = store::setSubPriority(String(va.priority.c_str())) || changed;
-    if (va.hasTtsVoice)  changed = store::setTtsVoice(String(va.ttsVoice.c_str())) || changed;
-    if (va.hasTtsProv)   changed = store::setTtsProvider(String(va.ttsProv.c_str())) || changed;
-    if (va.hasTtsOn)     changed = store::setTtsEnabled(va.ttsOn) || changed;
-    if (va.hasSleepOvr)  changed = store::setSleepOvr(va.sleepOvr) || changed;
-    if (va.hasBrightOvr) changed = store::setBrightOvr(va.brightOvr) || changed;
-    if (va.hasSttProv)   changed = store::setSttProvider(String(va.sttProv.c_str())) || changed;
-    if (va.hasSfxLvlN || va.hasSfxLvlO || va.hasSfxVol || va.hasSfxTheme) {
-      if (va.hasSfxLvlN)  changed = store::setSfxLevelNotif(va.sfxLvlN) || changed;
-      if (va.hasSfxLvlO)  changed = store::setSfxLevelOrch(va.sfxLvlO) || changed;
-      if (va.hasSfxVol)   changed = store::setSfxVolume(va.sfxVol) || changed;
-      if (va.hasSfxTheme) changed = store::setSfxTheme(String(va.sfxTheme.c_str())) || changed;
-      ::sfx::refreshConfig();   // live-apply, same seam the web setters use
-    }
-    if (va.hasDevName) {
-      const String before = nimbus::sys::deviceName();
-      changed = nimbus::sys::saveDeviceName(String(va.devName.c_str())) != before || changed;
-    }
-    return changed;
+    const bool stored = execStoredKnobs(va);
+    const bool sound = execSoundKnobs(va);
+    const bool named = execDeviceName(va);
+    return stored || sound || named;
   };
   if (g_sinks.device)
     d.stageDevice = [](const nimbus::orch::ValidatedAction& va) { g_sinks.device(va); };
