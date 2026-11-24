@@ -277,8 +277,9 @@ class TurnRun {
   // Lane E2-BFIX1: the log wrote every item it held, in order, and gave none up: the episode left
   // no hole, so no gap note is owed for it.
   void heldWritten() {
-    if (c_.noteDue && d_.log->isOpen() && !d_.log->heldCount() && d_.log->lostCount() == c_.lostAtEpisode)
-      c_.noteDue = false;
+    if (!d_.log->isOpen() || d_.log->heldCount()) return;
+    c_.storageEpisode = false;   // storage took a line since the refusal
+    if (c_.noteDue && d_.log->lostCount() == c_.lostAtEpisode) c_.noteDue = false;
   }
   // The turn left an item off storage: one still held in RAM, or one given up this turn.
   bool turnUnstored() const { return d_.log->heldCount() || d_.log->lostCount() != t_.lostAtOpen || !d_.log->isOpen(); }
@@ -2329,8 +2330,10 @@ Status PlainEngine::runTurn(const TurnInput& in, TurnOutcome& out) {
 Status PlainEngine::flushHeld() {
   if (!chat_ || !chat_->booted || !deps_.log || !deps_.arena || !deps_.log->heldCount()) return Status::success();
   const Status st = deps_.log->flushHeld(*deps_.arena);
-  if (chat_->noteDue && deps_.log->isOpen() && !deps_.log->heldCount() && deps_.log->lostCount() == chat_->lostAtEpisode)
-    chat_->noteDue = false;   // written whole: no hole to name
+  if (deps_.log->isOpen() && !deps_.log->heldCount()) {   // written whole: the episode is over, no hole to name
+    chat_->storageEpisode = false;
+    if (chat_->noteDue && deps_.log->lostCount() == chat_->lostAtEpisode) chat_->noteDue = false;
+  }
   return st;
 }
 
