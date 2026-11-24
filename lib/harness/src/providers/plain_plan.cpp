@@ -14,7 +14,6 @@
 #include "nimbus/orch/tx/arena.h"
 #include "nimbus/orch/tx/item.h"
 #include "nimbus/orch/tx/rules.h"
-#include "plain_body.h"   // oneObject: the body writer's own check of a stored fragment
 
 namespace agent {
 namespace plain {
@@ -41,7 +40,7 @@ size_t blankAt(const std::string& s, size_t i) {
   }
   return 0;
 }
-// The API refuses a text block that is empty or white space only.
+// A provider refuses a text block that is empty or white space only.
 bool visible(const std::string& s) {
   for (size_t i = 0; i < s.size();) {
     const size_t b = blankAt(s, i);
@@ -51,13 +50,13 @@ bool visible(const std::string& s) {
   return false;
 }
 
-// The API's id pattern, ^[a-zA-Z0-9_-]+$.
+// The id pattern a wire takes, ^[a-zA-Z0-9_-]+$.
 bool idChar(char c) {
   return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
 }
-// A stored call id the API cannot take (another dialect's id, an empty one) is sent as
+// A stored call id a wire cannot take (another dialect's id, an empty one) is sent as
 // 'h' and its bytes in hex: one to one, so two ids never collide, and the result's
-// tool_use_id is mapped the same way.
+// call id is mapped the same way.
 std::string wireId(const std::string& id) {
   bool ok = !id.empty();
   for (char c : id) ok = ok && idChar(c);
@@ -95,11 +94,13 @@ struct Facts {
   uint64_t pointer = 0;               // max(input pointer, newest x item's)
   std::vector<uint64_t> superseded;   // the stub lists (tx::stubList x items' sup), sorted, unique
   std::vector<std::string> photos;    // the open turn's visible photo refs (its t item)
+  size_t estimate = 0;                // body bytes the rows after thru not left out may take
+  FragmentOk sendable = nullptr;      // the codec's test of a stored fragment
   std::vector<uint32_t> omitted;      // turns the omission line stands for, oldest first
 };
 
 // Whether a stored item writes a block at all (a blank text or a broken meta item does not).
-bool emitsBlock(const tx::Item& it, uint16_t dayStartMin) {
+bool emitsBlock(const tx::Item& it, uint16_t dayStartMin, FragmentOk sendable) {
   switch (it.kind) {
     case tx::ItemKind::User: {
       char stamp[tx::kStampMaxBytes];
@@ -111,7 +112,7 @@ bool emitsBlock(const tx::Item& it, uint16_t dayStartMin) {
     case tx::ItemKind::DeviceNote:
       return visible(it.x);
     case tx::ItemKind::RoundMeta:
-      return oneObject(it.x);
+      return sendable(it.x);
     default:
       return true;
   }
@@ -156,7 +157,7 @@ Status readFacts(const RenderInput& in, const tx::TxArena& arena, Facts& f) {
     row.turn = it.turn;
     row.kind = it.kind;
     if (it.kind == tx::ItemKind::Call || it.kind == tx::ItemKind::Result) row.id = it.id;
-    row.emits = emitsBlock(it, in.turn->dayStartMin);
+    row.emits = emitsBlock(it, in.turn->dayStartMin, f.sendable);
     row.est = noteFacts(in, it, f);
     f.rows.push_back(std::move(row));
   }
@@ -252,7 +253,9 @@ void chooseRows(const RenderInput& in, Facts& f) {
   bool userSeen = omissionNamed(in);   // the omission line opens the request
   for (size_t i = 0; i < f.rows.size(); ++i) {
     Row& r = f.rows[i];
-    if (r.q == 0 || r.q <= f.thru || omittedTurn(f, r.turn) || !r.emits) continue;
+    if (r.q == 0 || r.q <= f.thru || omittedTurn(f, r.turn)) continue;
+    f.estimate += r.est;
+    if (!r.emits) continue;
     if (assistantKind(r.kind) && !userSeen) continue;
     if (userKind(r.kind)) r.keep = userSeen = true;
     else if (r.kind == tx::ItemKind::Assistant) r.keep = true;
@@ -333,7 +336,7 @@ std::vector<size_t> sendOrder(const Facts& f) {
     order.push_back(queue[pick]);
   }
   dropThinkingAlone(f, order);
-  // The request ends with the user's turn (the API takes no assistant prefill): assistant
+  // The request ends with the user's turn (a provider takes no assistant prefill): assistant
   // text or meta left last by a round whose calls were all left out is not sent.
   while (!order.empty() && assistantKind(f.rows[order.back()].kind)) order.pop_back();
   return order;
@@ -368,8 +371,14 @@ struct Builder {
   }
   uint16_t photo(const PhotoBytes& px) {
     ++photosAttached;
-    if (px.fileId.empty()) photoBytesAttached += px.len;
-    out.photos.push_back(px);
+    Photo ph;
+    if (px.fileId.empty()) {
+      photoBytesAttached += px.len;
+      ph.bytes = px.bytes;
+      ph.len = px.len;
+    }
+    ph.text = line(px.fileId.empty() ? px.mime : px.fileId);
+    out.photos.push_back(ph);
     return (uint16_t)(out.photos.size() - 1);
   }
 };
@@ -543,7 +552,7 @@ void callPiece(Builder& b, const tx::Item& it, uint32_t idx, const Row& row) {
   const uint32_t wid = b.id(row.wid);
   Piece& p = b.add(PieceKind::Call, idx, it.turn);
   p.id = wid;
-  if (oneObject(args)) p.src = &args == &it.st ? Src::St : Src::Args;
+  if (b.f.sendable(args)) p.src = &args == &it.st ? Src::St : Src::Args;
 }
 
 void itemPieces(Builder& b, const tx::Item& it, uint32_t idx, const Row& row) {
@@ -558,7 +567,7 @@ void itemPieces(Builder& b, const tx::Item& it, uint32_t idx, const Row& row) {
       b.add(PieceKind::DeviceNote, idx, it.turn).src = Src::X;
       return;
     case tx::ItemKind::RoundMeta:   // the open turn's signed thinking, as stored; never a mark
-      if (oneObject(it.x)) b.add(PieceKind::Meta, idx, it.turn).src = Src::X;
+      if (b.f.sendable(it.x)) b.add(PieceKind::Meta, idx, it.turn).src = Src::X;
       return;
     case tx::ItemKind::Call:
       callPiece(b, it, idx, row);
@@ -601,43 +610,19 @@ void messageMarks(Plan& out, uint32_t openTurn) {
   out.pieces[last].flags |= kMarkMoving;
 }
 
-// The body bytes the rendered items may take: the rows after thru that rung 3 does not leave out.
-size_t estimateOf(const Facts& f) {
-  size_t n = 0;
-  for (const Row& r : f.rows)
-    if (r.q && r.q > f.thru && !omittedTurn(f, r.turn)) n += r.est;
-  return n;
-}
-
 }  // namespace
 
-std::string wireName(const std::string& n) {
-  std::string out = n.substr(0, 64);
-  for (char& c : out)
-    if (!idChar(c)) c = '_';
-  return out.empty() ? std::string("_") : out;
-}
-
-bool oneObject(const std::string& json) {
-  size_t i = 0;
-  while (i < json.size() && (json[i] == ' ' || json[i] == '\n' || json[i] == '\r' || json[i] == '\t')) ++i;
-  if (i >= json.size() || json[i] != '{') return false;
-  std::string scratch;
-  body::BodyWriter probe(scratch);
-  probe.raw(json);
-  return probe.status().ok();
-}
-
-Status plan(const RenderInput& in, Plan& out) {
+Status plan(const RenderInput& in, FragmentOk sendable, Plan& out) {
   out = Plan{};
-  if (!in.turn || !in.system || !in.items) return Status::fail(Err::InvalidArgument, "plain::plan");
+  if (!in.turn || !in.system || !in.items || !sendable) return Status::fail(Err::InvalidArgument, "plain::plan");
   Facts f;
+  f.sendable = sendable;
   Status st = readFacts(in, *in.items, f);
   if (!st.ok()) return st;
   chooseOmitted(in, f);
   chooseRows(in, f);
   const std::vector<size_t> order = sendOrder(f);
-  out.estimate = estimateOf(f);
+  out.estimate = f.estimate;
   systemPlan(*in.system, out.system);
   out.pieces.reserve(order.size() + 1);
   Builder b{in, f, out};

@@ -16,8 +16,8 @@
 // arguments (the stub rule and the ladder), which photos go as pixels and which as their line,
 // the open turn's stored reasoning, the omission line, and the four neutral cache marks. A codec
 // only spells the Plan in its JSON and reads its own answers; it decides nothing about what is
-// sent. The planner names no provider and writes no JSON (it checks only that a stored fragment is
-// one JSON object). Pure apart from the RenderInput hooks it calls (photo, bulk) and one device log
+// sent. The planner names no provider and reads or writes no JSON (the codec says whether a stored
+// fragment can be sent as it is). Pure apart from the RenderInput hooks it calls (photo, bulk) and one device log
 // line for an unreadable bulk file.
 
 namespace agent {
@@ -33,7 +33,7 @@ enum class PieceKind : uint8_t {
   AssistantText,   // assistant text: the item's text
   DeviceNote,      // user text: the item's text
   Meta,            // assistant: the item's text as stored (signed reasoning); never a cache mark
-  Call,            // assistant call: id ids[id], name wireName(item name), arguments by `src`
+  Call,            // assistant call: id ids[id], the item's name, arguments by `src`
   Result,          // user result: id ids[id], content by `src`, photos[photo] after it (kViewed)
 };
 
@@ -65,6 +65,14 @@ struct Piece {
   uint8_t flags = 0;
 };
 
+// A photo attached: by provider file id (no bytes; lines[text] is the id), else its bytes, spliced
+// into the body at send time (lines[text] is the media type).
+struct Photo {
+  const uint8_t* bytes = nullptr;
+  size_t len = 0;
+  uint32_t text = 0;
+};
+
 // The system blocks (core, notes, digests): which are sent and the two stable marks.
 struct SystemPlan {
   bool shown[3] = {false, false, false};
@@ -76,20 +84,19 @@ struct Plan {
   SystemPlan system;
   std::vector<Piece> pieces;
   std::vector<std::string> ids;      // call ids as sent (one to one with the stored ids)
-  std::vector<std::string> lines;    // text the planner made or read (stamps, photo lines, bulk results)
-  std::vector<PhotoBytes> photos;    // photos attached, in send order
+  std::vector<std::string> lines;    // text the planner made or read (stamps, photo lines, bulk results,
+                                     // photo file ids and media types)
+  std::vector<Photo> photos;         // photos attached, in send order
   size_t estimate = 0;               // body bytes the rendered items take, about (the reservation)
   bool anyBlock = false;             // a piece that is a message block (a request needs one)
 };
 
+// The codec's test that a stored fragment (signed reasoning, call arguments) can be sent as it is;
+// one that cannot is left out (reasoning) or sent empty (arguments).
+using FragmentOk = bool (*)(const std::string& stored);
+
 // The plan of one request. InvalidArgument: a RenderInput without turn, system or items.
-Status plan(const RenderInput& in, Plan& out);
-
-// A stored tool name as a wire takes it (^[a-zA-Z0-9_-]{1,64}$): each other byte as '_'.
-std::string wireName(const std::string& n);
-
-// One JSON object the body writer accepts as it is (call arguments, signed reasoning).
-bool oneObject(const std::string& json);
+Status plan(const RenderInput& in, FragmentOk sendable, Plan& out);
 
 }  // namespace plan
 }  // namespace plain

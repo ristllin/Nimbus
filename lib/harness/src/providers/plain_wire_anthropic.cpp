@@ -89,6 +89,28 @@ struct Point {
   bool stable = false;
 };
 
+// ---- small rules ---------------------------------------------------------------------
+
+// A stored tool name the API cannot take (another engine's dotted name, an empty one) is
+// sent with each byte outside ^[a-zA-Z0-9_-]$ as '_', at most 64 bytes.
+std::string wireName(const std::string& n) {
+  std::string out = n.substr(0, 64);
+  for (char& c : out)
+    if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-')) c = '_';
+  return out.empty() ? std::string("_") : out;
+}
+
+// One JSON object the body writer accepts as it is (call arguments, signed thinking).
+bool oneObject(const std::string& json) {
+  size_t i = 0;
+  while (i < json.size() && (json[i] == ' ' || json[i] == '\n' || json[i] == '\r' || json[i] == '\t')) ++i;
+  if (i >= json.size() || json[i] != '{') return false;
+  std::string scratch;
+  BodyWriter probe(scratch);
+  probe.raw(json);
+  return probe.status().ok();
+}
+
 // ---- the body: a Plan in Messages JSON ------------------------------------------------------
 
 enum class Role : uint8_t { None, User, Assistant };
@@ -159,15 +181,15 @@ void textBlock(Render& r, const plan::Piece& pc, Role role, bool join, const std
 }
 
 // An image source: by file id, else inline base64 spliced at send time.
-void imageSource(Render& r, const PhotoBytes& px) {
+void imageSource(Render& r, const plan::Photo& ph) {
   r.w.key("type").str("image").key("source").beginObject();
-  if (!px.fileId.empty()) {
-    r.w.key("type").str("file").key("file_id").str(px.fileId).endObject();
+  if (!ph.bytes) {
+    r.w.key("type").str("file").key("file_id").str(r.p.lines[ph.text]).endObject();
     r.fileRef = true;
     return;
   }
-  r.w.key("type").str("base64").key("media_type").str(px.mime).key("data");
-  r.w.beginStr().splice(px.bytes, px.len).endStr().endObject();
+  r.w.key("type").str("base64").key("media_type").str(r.p.lines[ph.text]).key("data");
+  r.w.beginStr().splice(ph.bytes, ph.len).endStr().endObject();
 }
 
 void ownerText(Render& r, const plan::Piece& pc, const tx::Item& u) {
@@ -201,7 +223,7 @@ void resultBlock(Render& r, const plan::Piece& pc, const tx::Item& it) {
 
 void callBlock(Render& r, const plan::Piece& pc, const tx::Item& it) {
   r.m.block(Role::Assistant, pc.turn, true).key("type").str("tool_use").key("id").str(r.p.ids[pc.id]);
-  r.w.key("name").str(plan::wireName(it.n)).key("input");
+  r.w.key("name").str(wireName(it.n)).key("input");
   if (pc.src != plan::Src::None) r.w.raw(textOf(r, pc, it));
   else r.w.beginObject().endObject();
   close(r, pc);
@@ -261,7 +283,7 @@ Status toolsArray(BodyWriter& w, const RenderInput& in) {
   if (in.tools->empty()) return Status::success();
   w.key("tools").beginArray();
   for (const ToolSpec& t : *in.tools) {
-    if (!plan::oneObject(t.schemaJson)) return Status::fail(Err::InvalidArgument, "plain::anthropic.render.toolSchema");
+    if (!oneObject(t.schemaJson)) return Status::fail(Err::InvalidArgument, "plain::anthropic.render.toolSchema");
     w.beginObject().key("name").str(t.name);
     if (!t.description.empty()) w.key("description").str(t.description);
     w.key("input_schema").raw(t.schemaJson).endObject();
@@ -329,7 +351,7 @@ void messagesArray(Render& r) {
 
 Status renderBody(const RenderInput& in, HttpRequest& out) {
   plan::Plan p;
-  Status st = plan::plan(in, p);
+  Status st = plan::plan(in, oneObject, p);
   if (!st.ok()) return st;
   if (in.tools->empty())   // the API refuses tool blocks in a request without tools
     for (const plan::Piece& pc : p.pieces)
@@ -404,17 +426,8 @@ bool runnableInput(const std::string& body, size_t from, size_t to, uint8_t peak
   });
 }
 
-// Each field of a block once; a known field of the wrong type fails the body.
-// The index of `key` in `fields` (n when none); false when a known field comes twice.
-bool fieldOnce(const std::string& key, const char* const* fields, uint32_t n, uint32_t& seen, uint32_t& k) {
-  for (k = 0; k < n && key != fields[k]; ++k) {
-  }
-  if (k == n) return true;
-  if (seen & (1u << k)) return false;   // a field given twice is not one answer
-  seen |= 1u << k;
-  return true;
-}
-
+// Each field of a block once (fieldOnce, plain_json_reader.h); a known field of the wrong type
+// fails the body.
 bool inputField(JsonReader& j, Block& b) {
   b.inputObject = j.peek('{');
   b.inputFrom = j.at();
