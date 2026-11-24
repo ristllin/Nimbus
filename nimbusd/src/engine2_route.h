@@ -3,6 +3,8 @@
 #include <string>
 #include <vector>
 
+#include <sys/statvfs.h>
+
 #include "engine2_host.h"
 #include "engine_thread.h"
 #include "nimbus/harness/plain/agents.h"          // deliverReports
@@ -19,6 +21,34 @@
 //     instance's own engine-agnostic answer (NimbusdRig::handleCommand), never a model turn;
 //   * a finished sub-agent's report as an engine-2 turn in the chat that started it (plain::deliverReports).
 namespace nimbusd {
+
+// Lane E2-REP3: the instance's live state for engine 2's device.status (hosted_e2_device.h), `provider` and `model` the head the chats run on.
+inline std::string engine2StatusJson(NimbusdRig& rig, const std::string& provider, const std::string& model) {
+  JsonDocument d;
+  d["name"] = rig.settings().devName;
+  d["host"] = "nimbusd";
+  d["fw"] = NIMBUS_FW_VERSION_ENGINE2;
+  d["engine"] = 2;
+  JsonObject clock = d["clock"].to<JsonObject>();
+  clock["local"] = hosted::localTime(vclock::now(), "%Y-%m-%d %H:%M");
+  clock["tz"] = rig.clockTz();
+  JsonObject head = d["head"].to<JsonObject>();
+  head["provider"] = provider;
+  head["model"] = model;
+  JsonObject disk = d["disk"].to<JsonObject>();
+  struct statvfs v;
+  if (::statvfs(rig.dataDir().c_str(), &v) == 0) {
+    disk["totalBytes"] = (double)v.f_blocks * (double)v.f_frsize;
+    disk["freeBytes"] = (double)v.f_bavail * (double)v.f_frsize;
+  }
+  JsonDocument spend;
+  if (deserializeJson(spend, rig.spendCeiling().stateJson()) == DeserializationError::Ok)
+    d["spend"] = spend.as<JsonObject>();
+  if (const Engine2Stats* s = rig.engine2Stats()) d["turnCount"] = s->turns.load();
+  std::string out;
+  serializeJson(d, out);
+  return out;
+}
 
 using Engine2Deliver = std::function<void(const std::string& chat, const std::string& text)>;
 

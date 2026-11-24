@@ -13,10 +13,12 @@
 
 #include "daemon_http.h"
 #include "engine2_parity.h"   // lane E2-P-HOST2: the outside mark, scope files, the counters, the owner lines
+#include "hosted_e2_device.h"   // lane E2-REP3: the docs group and device_status
 #include "hosted_file_tools.h"
 #include "hosted_fold.h"   // hostedTextIO
 #include "hosted_loops.h"   // the schedule tool and its fires (lane E2-SCHED)
 #include "hosted_notes.h"
+#include "hosted_send.h"   // lane E2-REP3: send over the daemon's delivery
 #include "hosted_tx.h"
 #include "hosted_web_search.h"   // web_search (lane E2-P-HOST1)
 #include "nimbus/harness/plain/chat_binding.h"   // the device's binding (lane E2-P-HOST1)
@@ -35,6 +37,7 @@
 #include "nimbus/orch/spend_ceiling.h"   // kSpendFrozenError (lane E2-FIX7)
 #include "nimbus/orch/turn_images.h"
 #include "nimbus/orch/turn_spend.h"   // TurnSpend (lane E2-CMP)
+#include "nimbus/orch/token_usage_json.h"   // lane E2-REP3: each answer's usage
 #include "nimbus/orch/tx/old_engine.h"   // EpisodicRowSource, oldFoldOf (the history import)
 #include "plain_rig.h"   // PlainTurn, settleEnding
 #include "posix_files.h"
@@ -139,6 +142,22 @@ struct Engine2Options {
   std::function<bool(const nimbus::orch::Principal& who, const std::string& query, std::string& out)> memories;
   agent::JobEngine* jobs = nullptr;   // sub-agents (agent_start, agent_list, agent_stop); null: none
   Engine2Stats* stats = nullptr;      // the counters /api/state reads; null: none
+  // Lane E2-REP3.
+  // The instance's connectors (its connector store's view, NimbusdRig::connectorsView) and a connector's
+  // stored bearer: the device's provider-side attach (plain_plan.h providerTools) on a direct Anthropic or
+  // OpenAI head. Null: none ride.
+  std::function<std::vector<nimbus::orch::ConnectorInfo>()> connectors;
+  std::function<std::string(const nimbus::orch::ConnectorInfo&)> bearer;
+  // send's delivery beyond deliver (the approved chats, the owner's Telegram chat, Telegram uploads); its
+  // turnChat, deliver, files, photoDir and webChat are the host's own.
+  HostedSendParts send;
+  // The docs group: engine 1's registry, whose docs.search and docs.read engine 2 calls; null: no docs tools.
+  const nimbus::orch::ToolRegistry* e1Tools = nullptr;
+  // device.status: the instance's live state as JSON for the head the chats run on; null: no device.status.
+  std::function<std::string(const std::string& provider, const std::string& model)> status;
+  // One answered request of a running turn, priced as a pending spend of the monthly ceiling (engine 1's
+  // notePendingUsage), so `paused` holds before the turn's next request. Null: counted at the turn's end only.
+  std::function<void(const nimbus::orch::TurnSpend& spend)> pendingSpend;
 };
 
 // The owner's lines of /clear and of a skill left out of the pinned block (owner-facing only).
@@ -198,8 +217,9 @@ inline std::string engine2HeadRefusal(const std::string& head, const std::string
 // pause line in place of the failure line.
 class CeilingGate : public agent::HttpTransport {
  public:
-  CeilingGate(std::function<agent::HttpTransport*()> inner, std::function<bool()> paused)
-      : inner_(std::move(inner)), paused_(std::move(paused)) {}
+  CeilingGate(std::function<agent::HttpTransport*()> inner, std::function<bool()> paused,
+              std::function<void(const agent::HttpResponse&)> answered = nullptr)
+      : inner_(std::move(inner)), paused_(std::move(paused)), answered_(std::move(answered)) {}
   bool exec(const agent::HttpRequest& req, agent::HttpResponse& out, std::string& err) override {
     if (paused_ && paused_()) {
       ++refused_;
@@ -207,13 +227,16 @@ class CeilingGate : public agent::HttpTransport {
       err = nimbus::orch::kSpendFrozenError;
       return false;
     }
-    return inner_()->exec(req, out, err);
+    const bool ok = inner_()->exec(req, out, err);
+    if (ok && answered_) answered_(out);   // lane E2-REP3: the answer's spend counts before the next request
+    return ok;
   }
   uint32_t refused() const { return refused_; }
 
  private:
   std::function<agent::HttpTransport*()> inner_;
   std::function<bool()> paused_;
+  std::function<void(const agent::HttpResponse&)> answered_;
   uint32_t refused_ = 0;
 };
 
@@ -247,6 +270,17 @@ class Engine2Host {
       a.dispatchNow = [this] { (void)o_.jobs->dispatchQueued(); };
       (void)plain::registerAgentTools(reg_, a);
     }
+    // Lane E2-REP3: send over the daemon's delivery; the docs group and device_status.
+    HostedSendParts sp = o_.send;
+    sp.turnChat = [this] { return curChat_; };
+    sp.webChat = o_.chatId;
+    sp.deliver = o_.deliver;
+    sp.files = o_.files;
+    sp.photoDir = o_.photoDir;
+    (void)registerHostedSend(reg_, sp);
+    std::function<std::string()> status;
+    if (o_.status) status = [this] { return o_.status(head_.slot.provider, head_.slot.model); };
+    registerHostedDeviceTools(reg_, o_.e1Tools, status);
   }
   Engine2Host(const Engine2Host&) = delete;
   Engine2Host& operator=(const Engine2Host&) = delete;
@@ -593,12 +627,14 @@ class Engine2Host {
   // the counters and the log lines.
   PlainTurn runTurn(plain::ChatBinding& b, const std::string& chat, const plain::ChatMessage& msg) {
     curChat_ = chat;
+    inTurn_ = true;
     sent_.clear();
     unsent_.clear();
     gateSeen_ = gate_.refused();
     pausedTold_ = false;
     PlainTurn t;
     t.status = b.turn(msg, t.out);
+    inTurn_ = false;
     const bool stopped = gate_.refused() != gateSeen_ || pausedTold_;
     if (stopped && !pausedTold_) (void)deliverPart(kPausedLine);   // the ceiling stopped it and no part went yet
     curChat_.clear();
@@ -707,6 +743,8 @@ class Engine2Host {
       out.outside = hostedReadsOutside(*o_.files, c.name, c.argsJson, !out.isError, who);
       return true;
     };
+    d.connectors = o_.connectors;   // lane E2-REP3: the instance's connectors ride a direct head
+    d.bearer = o_.bearer;
     d.moreSetup = [this](const plain::TurnCtx& t, plain::TurnSetup& s) {
       // PRD section 3: thinking as today (adaptive, effort medium), as engine 1 sends: the output table's
       // head-round effort for the model, the same function the device's binding reads (E2-FIX14).
@@ -857,7 +895,23 @@ class Engine2Host {
   std::vector<std::string> sent_, unsent_;
   std::string curChat_;
   Engine2Head head_;          // the head the chats were booted on (lane E2-R8b)
-  CeilingGate gate_{[this] { return transport(); }, [this] { return paused(); }};   // every engine-2 request (E2-R8b)
+  // Lane E2-REP3: an answered request of a running turn, priced as pending spend (the head's provider and model,
+  // as the turn's own spend is booked), so the ceiling is checked against it before the turn's next request.
+  void answered(const agent::HttpResponse& r) {
+    if (!inTurn_ || !o_.pendingSpend || r.status != 200) return;
+    JsonDocument filter;
+    filter["usage"] = true;
+    JsonDocument doc;
+    if (deserializeJson(doc, r.body, DeserializationOption::Filter(filter)) != DeserializationError::Ok) return;
+    const nimbus::orch::TokenUsage u = nimbus::orch::tokenUsageFromJson(doc["usage"].as<JsonObjectConst>());
+    if (u.empty() && !u.cacheReadTokens && !u.cacheWriteTokens) return;
+    nimbus::orch::TurnSpend s;
+    s.add(head_.slot.provider.c_str(), head_.slot.model.c_str(), u);
+    o_.pendingSpend(s);
+  }
+  CeilingGate gate_{[this] { return transport(); }, [this] { return paused(); },
+                    [this](const agent::HttpResponse& r) { answered(r); }};   // every engine-2 request (E2-R8b)
+  bool inTurn_ = false;       // a person's turn runs (lane E2-REP3: its answers count as pending spend)
   uint32_t gateSeen_ = 0;     // the gate's refusals the person was told of
   bool pausedTold_ = false;   // the pause line went out in this turn
   uint64_t lastTurnEnd_ = 0;

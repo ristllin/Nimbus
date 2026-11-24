@@ -824,6 +824,7 @@ class WebApi {
     d["turnInFlight"] = s.turnInFlight;
     d["turnCount"]    = s.turnCount;
     fillEngine(d);   // lane E2-P-HOST2: which engine answers, and engine 2's own counters while it does
+    fillMemberModeration(d);
     d["params"].to<JsonArray>();   // ring/hardware overrides do not apply to a VN
     // NOTE: no d.ota* fields - ESP OTA does not apply; the platform rolls the image.
     std::string out;
@@ -843,6 +844,15 @@ class WebApi {
     if (!e2) return;
     d["fw"] = NIMBUS_FW_VERSION_ENGINE2;
     d["turnCount"] = e2->turns.load();
+  }
+  // Lane E2-REP3: the daemon has no moderation classifier, so on its own provider key (any head but the Cumulo
+  // router) nothing checks a member's messages or the replies to them; /api/state says so.
+  void fillMemberModeration(JsonDocument& d) {
+    const std::string head = rig_->hostBadge();
+    if (head.empty() || head == kCumuloSlug) return;
+    d["memberModeration"] =
+        "Members' messages and the replies to them are not checked by a moderation service: this instance runs on "
+        "its own provider key.";
   }
   ApiResp engineGet() {
     JsonDocument d;

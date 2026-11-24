@@ -203,6 +203,25 @@ void bindEngine2Parts(nimbusd::NimbusdRig& rig, nimbusd::Engine2Options& o) {
     return rig.searchMemoriesFor(who, q, out);
   };
   o.jobs = &rig.jobs();
+  // Lane E2-REP3: the instance's connectors on a direct head, send's chats, the docs group, device_status, and
+  // each answered request of a turn as pending spend of the monthly ceiling.
+  o.connectors = [&rig] { return rig.connectorsView(); };
+  o.bearer = [&rig](const nimbus::orch::ConnectorInfo& c) { return rig.connectors().bearerForName(c.name); };
+  o.send.allowed = [&rig](const std::string& chat) {
+    return rig.telegramAccess().roleOf(chat) != nimbus::orch::Role::Unknown;
+  };
+  o.send.ownerChat = [&rig] {
+    for (const auto& m : rig.telegramAccess().members())
+      if (m.owner) return m.id;
+    return std::string();
+  };
+  o.e1Tools = &rig.registry();
+  o.status = [&rig](const std::string& provider, const std::string& model) {
+    return nimbusd::engine2StatusJson(rig, provider, model);
+  };
+  o.pendingSpend = [&rig](const nimbus::orch::TurnSpend& s) {
+    rig.spendCeiling().addPending(rig.spendCeiling().price(s));
+  };
 }
 
 std::string startEngine2(const nimbusd::Config& cfg, nimbusd::NimbusdRig& rig, nimbusd::EngineThread& eng,
@@ -242,6 +261,14 @@ std::string startEngine2(const nimbusd::Config& cfg, nimbusd::NimbusdRig& rig, n
   };
   o.paused = [] { return nimbus::orch::spendFrozen(); };   // lane E2-FIX7: engine 2 fails closed at the ceiling
   bindEngine2Parts(rig, o);
+  o.send.media = [sender](const std::string& chat, const std::string& kind, const std::string& name,
+                          const std::string& bytes, const std::string& caption) {
+    nimbusd::TelegramChannel* s = sender->load(std::memory_order_acquire);
+    std::string e;
+    if (s && s->sendMedia(chat, kind, name, bytes, caption, e)) return true;
+    agent::hlog::logf("engine2: send %s to %s failed: %s", kind.c_str(), chat.c_str(), s ? e.c_str() : "no bot");
+    return false;
+  };
   o.turnProgress = turnProgressTo(sender);
   static nimbusd::Engine2Stats stats;   // lane E2-P-HOST2: /api/state's engine-2 counters
   o.stats = &stats;
