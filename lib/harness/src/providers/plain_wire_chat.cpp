@@ -79,20 +79,27 @@ bool oneObject(const std::string& json) {
 // [...]}), a Z.ai reasoning text ({"reasoning_content":"..."}), or something else (another dialect's).
 enum class MetaKind : uint8_t { Other, Chunk, Reasoning };
 
-MetaKind metaKind(const std::string& stored, std::string* reasoning) {
-  JsonReader j(stored);
+// The fields of a stored k item that tell its kind.
+struct MetaFields {
   std::string type;
   bool list = false, text = false, other = false;
-  const bool ok = j.object([&](const std::string& k) {
-    if (k == "type" && j.peek('"')) return j.str(&type);
-    if (k == "thinking") list = j.peek('[');
-    else if (k == "reasoning_content" && j.peek('"')) return (text = true) && j.str(reasoning);
-    else other = other || k != "signature";
-    return j.skip();
-  });
-  if (!ok || !j.end()) return MetaKind::Other;
-  if (type == "thinking" && list && !text) return MetaKind::Chunk;
-  if (text && type.empty() && !list && !other) return MetaKind::Reasoning;
+};
+
+bool metaField(JsonReader& j, const std::string& k, MetaFields& f, std::string* reasoning) {
+  if (k == "type" && j.peek('"')) return j.str(&f.type);
+  if (k == "reasoning_content" && j.peek('"')) return (f.text = true) && j.str(reasoning);
+  if (k == "thinking") f.list = j.peek('[');
+  else f.other = f.other || k != "signature";
+  return j.skip();
+}
+
+MetaKind metaKind(const std::string& stored, std::string* reasoning) {
+  JsonReader j(stored);
+  MetaFields f;
+  if (!j.object([&j, &f, reasoning](const std::string& k) { return metaField(j, k, f, reasoning); }) || !j.end())
+    return MetaKind::Other;
+  if (f.type == "thinking" && f.list && !f.text) return MetaKind::Chunk;
+  if (f.text && f.type.empty() && !f.list && !f.other) return MetaKind::Reasoning;
   return MetaKind::Other;
 }
 
