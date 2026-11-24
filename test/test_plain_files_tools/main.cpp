@@ -12,8 +12,10 @@
 
 #include <map>
 #include <string>
+#include <vector>
 
 #include "../support/tx_battery/driver.h"
+#include "../../src/agent/tools_plain_send.h"   // E2-P-OUT1: send, the one way a stored file reaches the person
 #include "nimbus/orch/tool_groups.h"
 
 // The registration is portable; its device part is compiled only with ARDUINO.
@@ -191,6 +193,37 @@ void test_media_stop_reaches_media_stop() {
   TEST_ASSERT_TRUE(has(r.resultBody(), "stopped"));
 }
 
+// The two lanes meet (E2-P-OUT1): the path image_generate returns is the path `send` kind file takes; the
+// image reaches the person only through send's own delivery (sendFile), never through this lane.
+void test_a_generated_image_path_is_accepted_by_send() {
+  Rig r;
+  r.fakes.answer["image.generate"] = "saved images/a-cat.png (1234 bytes)";
+  std::vector<std::string> sent;   // project/name -> chat, as send's delivery saw it
+  agent::plainsend::SendDeps d;
+  d.inTurn = [] { return true; };
+  d.target = [](const std::string&, const orch::Principal&, bool) { return std::string("1001"); };
+  d.turnChat = [] { return std::string("1001"); };
+  d.voiceOn = [] { return true; };
+  d.speakerMuted = [] { return false; };
+  d.screen = [](const std::string&, std::string&) { return true; };
+  d.sendFile = [&sent](const std::string& project, const std::string& name, const std::string& chat,
+                       const orch::Principal&, bool photoOnly, const std::string&) {
+    sent.push_back(project + "/" + name + " -> " + chat + (photoOnly ? " photo" : " file"));
+    return agent::plainsend::FileSent::Queued;
+  };
+  TEST_ASSERT_TRUE(agent::plainsend::registerSendTools(r.b.reg, d));
+  r.b.model.push(sp::call("more", R"({"name":"image_generate","args":{"prompt":"a cat"}})"));
+  r.b.model.push(sp::call("send", R"({"kind":"file","path":"images/a-cat.png"})"));
+  r.b.model.push(sp::say("Here it is."));
+  plain::TurnOutcome out;
+  TEST_ASSERT_TRUE(r.b.owner("draw a cat and send it", out).ok());
+  TEST_ASSERT_EQUAL(3, (int)r.b.model.requests().size());
+  TEST_ASSERT_TRUE(has(r.b.model.requests()[1].body, "saved images/a-cat.png (1234 bytes)"));
+  TEST_ASSERT_EQUAL(1, (int)sent.size());
+  TEST_ASSERT_EQUAL_STRING("images/a-cat.png -> 1001 file", sent[0].c_str());
+  TEST_ASSERT_FALSE(has(r.b.model.requests()[2].body, "is not a path"));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_image_generate_reaches_image_generate_and_returns_the_stored_path);
@@ -201,5 +234,6 @@ int main() {
   RUN_TEST(test_media_play_reaches_media_play);
   RUN_TEST(test_media_pause_reaches_media_pause);
   RUN_TEST(test_media_stop_reaches_media_stop);
+  RUN_TEST(test_a_generated_image_path_is_accepted_by_send);
   return UNITY_END();
 }
