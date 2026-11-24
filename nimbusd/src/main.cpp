@@ -212,10 +212,16 @@ std::string startEngine2(const nimbusd::Config& cfg, nimbusd::NimbusdRig& rig, n
   nimbusd::Engine2Options o;
   o.dataDir = cfg.get("NIMBUSD_DATA_DIR", "/data");
   o.files = &rig.files();
+  // Lane E2-R8b: the instance's head slot as engine 1 resolves it (a keyed provider, else the Cumulo router),
+  // read on every turn so a change in the settings reaches the next turn; its model, sub-agent pick and key.
   o.head = [&rig] { return rig.hostBadge(); };
-  o.model = [&rig] { return rig.modelFor("anthropic"); };
-  o.summarizerModel = [&rig] { return rig.subModelFor("anthropic"); };
-  o.key = [&rig] { return rig.engineKey("anthropic"); };
+  o.model = [&rig] {
+    const std::string h = rig.hostBadge();
+    return h == nimbusd::kCumuloSlug ? rig.cumuloModel() : rig.modelFor(h);
+  };
+  o.summarizerModel = [&rig] { return rig.subModelFor(rig.hostBadge()); };
+  o.key = [&rig] { return rig.engineKey(rig.hostBadge()); };
+  o.routerHost = nimbusd::kCumuloHost;
   o.utcOffsetMin = [](uint32_t t) {
     std::lock_guard<std::mutex> lk(nimbusd::hosted::tzMutex());
     return agent::utcOffsetAtUnix(t);
@@ -246,8 +252,8 @@ std::string startEngine2(const nimbusd::Config& cfg, nimbusd::NimbusdRig& rig, n
   nimbusd::Engine2Host* host = out.get();
   rig.setEngine2Fire([host](const nimbus::orch::LoopFireRequest& r) { return host->fire(r); });
   eng.setEngine2(nimbusd::engine2Route(rig, *host, o.deliver));   // lane E2-P-HOST2: every approved chat, the commands
-  logLine("engine 2: every approved chat runs on engine 2 (" + rig.modelFor("anthropic") + ", transcript " + o.dataDir +
-          "/mem/tx/owner)");
+  logLine("engine 2: every approved chat runs on engine 2 (" + host->head().slot.provider + " " + host->head().slot.model +
+          ", transcript " + o.dataDir + "/mem/tx/owner)");
   return std::string();
 }
 

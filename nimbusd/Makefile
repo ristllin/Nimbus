@@ -60,6 +60,7 @@ CORE_SRCS := $(wildcard $(REPO)/lib/harness/src/*.cpp) \
              $(REPO)/lib/core/src/docs_pack.cpp \
              $(REPO)/lib/core/src/tg_updates.cpp \
              $(REPO)/lib/core/src/tg_html.cpp \
+             $(REPO)/lib/core/src/tg_inbox.cpp \
              $(wildcard $(REPO)/../solide-drivers/src/portable/ring.cpp)
 
 CORE_OBJS := $(patsubst %,$(BUILD)/core/%.o,$(notdir $(basename $(CORE_SRCS))))

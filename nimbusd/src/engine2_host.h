@@ -31,6 +31,7 @@
 #include "nimbus/orch/calc_tool.h"
 #include "nimbus/orch/episodic.h"
 #include "nimbus/orch/media_label.h"   // validRef
+#include "nimbus/orch/router_route.h"  // resolveRouterRoute
 #include "nimbus/orch/spend_ceiling.h"   // kSpendFrozenError (lane E2-FIX7)
 #include "nimbus/orch/turn_images.h"
 #include "nimbus/orch/turn_spend.h"   // TurnSpend (lane E2-CMP)
@@ -72,17 +73,22 @@
 //     tick's hook while engine 2 runs): a reminder's text with no model request, a routine isolated on
 //     the sub-agent model through plain::runRoutine, its state and outbox in <data>/mem/routines/.
 // Replies leave through the host's deliver function (the web chat ring and Telegram), to the
-// chat the running turn came from. Claude heads only: start() refuses any other head in one
-// plain line, and the daemon does not start.
+// chat the running turn came from.
+// Lane E2-R8b: the head is the instance's head slot and model, read on every turn: a provider slot
+// direct on its own key, or the Cumulo router on the instance's router key, whose selector names the
+// upstream (Engine2Head). The summarizer rungs and routines run on the same route. Spend is booked to
+// the head's provider in the ledger's own counts. A head no route serves is refused in one plain line.
+// The monthly ceiling stops a running turn: no request leaves while paid calls are paused (CeilingGate).
 namespace nimbusd {
 
 struct Engine2Options {
   std::string dataDir;
   PosixFiles* files = nullptr;                       // the daemon's file store (engine 1's, shared)
-  std::function<std::string()> head;                 // the head provider slug now ("anthropic")
-  std::function<std::string()> model;                // the head model now
-  std::function<std::string()> summarizerModel;      // the compaction model (the sub-agent pick)
-  std::function<std::string()> key;                  // the Anthropic key, read at render time
+  std::function<std::string()> head;                 // the head slot now (a provider slug, or "cumulo")
+  std::function<std::string()> model;                // the head model now (a router selector on "cumulo")
+  std::function<std::string()> summarizerModel;      // the compaction and routine model (the sub-agent pick)
+  std::function<std::string()> key;                  // the head slot's key, read at render time
+  std::string routerHost = "app.cumulo-nimbus.ai";   // lane E2-R8b: the Cumulo router's host
   std::function<int32_t(uint32_t)> utcOffsetMin;     // minutes east of UTC at an instant
   std::function<uint16_t()> dayStartMin;
   std::string timeZone;                              // IANA name for the system block ("" = none)
@@ -143,22 +149,73 @@ inline constexpr char kClearNotStoredLine[] =
     "The new conversation was not started: the volume did not store it. This conversation goes on; send /clear "
     "again later.";
 inline constexpr char kNoStartLine[] = "The assistant could not start. Check the instance log and restart it.";
-inline constexpr char kNotClaudeLine[] = "This assistant runs on Claude models only. Pick a Claude model and try again.";
+inline constexpr char kNoHeadLine[] =
+    "This assistant cannot run on the chosen provider. Pick a provider with a key on Assistant > Providers and try "
+    "again.";
 
 // What a person's message gets while paid calls are paused (the web chat's own refusal, lane DEF).
 inline constexpr char kPausedLine[] =
     "Paid AI calls are paused: this month's spend ceiling is reached. Raise it on Assistant > Usage, or send the "
     "/budget command from the pause message.";
 
+// Lane E2-R8b: the head engine 2 runs on, from the instance's head slot and model, as the device's binding resolves
+// it (plain::headSlotFor, lane E2-R8a): a provider slot goes direct to its host in its own request format;
+// "cumulo" goes to the router, under the path of the upstream its selector names, in that upstream's format.
+// Not ok: no route serves it (a custom slot, which the instance has no base for; an unknown name; no model).
+struct Engine2Head {
+  plain::HeadSlot slot;   // provider (the slot's name), model, dialect and endpoint
+  std::string upstream;   // the provider the request reaches (its effort and photo rows)
+  std::string bare;       // the model the upstream is asked for
+  bool found = false;
+  bool ok() const { return found; }
+  bool operator==(const Engine2Head& o) const { return slot.provider == o.slot.provider && slot.model == o.slot.model; }
+};
+inline Engine2Head engine2Head(const std::string& slot, const std::string& model, const std::string& routerHost) {
+  Engine2Head h;
+  h.slot.provider = slot;
+  h.slot.model = model;
+  plain::SlotSettings st;
+  st.routerHost = routerHost;
+  plain::HeadSlot hs;
+  h.found = plain::headSlotFor(st, slot, model, hs).ok();
+  if (h.found) h.slot = hs;
+  const bool routed = h.found && hs.endpoint.routed;
+  const nimbus::orch::RouterRoute rr = nimbus::orch::resolveRouterRoute(model);
+  h.upstream = routed ? rr.upstream : slot;
+  h.bare = routed ? rr.model : model;
+  return h;
+}
+
 // The one plain line a refused switch logs (and the daemon exits on).
 inline std::string engine2HeadRefusal(const std::string& head, const std::string& model) {
-  return "engine 2 runs on Claude heads only (an Anthropic key and a claude- model); this instance's head is " +
-         (head.empty() ? std::string("none") : head) + (model.empty() ? std::string() : " " + model) +
-         ": set NIMBUSD_ORCH_HOST=anthropic or turn NIMBUSD_ENGINE off";
+  return "engine 2 has no route for this instance's head " + (head.empty() ? std::string("(none)") : head) +
+         (model.empty() ? std::string() : " " + model) +
+         ": set NIMBUSD_ORCH_HOST to a keyed provider (or the Cumulo router) or turn NIMBUSD_ENGINE off";
 }
-inline bool engine2HeadOk(const std::string& head, const std::string& model) {
-  return head == "anthropic" && model.rfind("claude-", 0) == 0;
-}
+
+// Lane E2-R8b: the monthly ceiling stops a running turn as engine 1's does: while paid calls are paused no
+// request of engine 2 leaves (the next one is refused here, before a byte is sent), and the person gets the
+// pause line in place of the failure line.
+class CeilingGate : public agent::HttpTransport {
+ public:
+  CeilingGate(std::function<agent::HttpTransport*()> inner, std::function<bool()> paused)
+      : inner_(std::move(inner)), paused_(std::move(paused)) {}
+  bool exec(const agent::HttpRequest& req, agent::HttpResponse& out, std::string& err) override {
+    if (paused_ && paused_()) {
+      ++refused_;
+      out.status = 0;
+      err = nimbus::orch::kSpendFrozenError;
+      return false;
+    }
+    return inner_()->exec(req, out, err);
+  }
+  uint32_t refused() const { return refused_; }
+
+ private:
+  std::function<agent::HttpTransport*()> inner_;
+  std::function<bool()> paused_;
+  uint32_t refused_ = 0;
+};
 
 class Engine2Host {
  public:
@@ -170,6 +227,10 @@ class Engine2Host {
                                                     }}),
         routineFiles_(o_.dataDir, nimbus::orch::schedule::kStateDir),
         held_(plain::heldFileOn(routineFiles_, plain::heldPathFor(o_.chatId))), history_(historyDeps()) {
+    // No retry waits while paid calls are paused: the gate refuses the retry too (lane E2-R8b).
+    platform_.delayMs = [this, wait = platform_.delayMs](uint32_t ms) {
+      if (!paused()) wait(ms);
+    };
     notes_.attach(reg_);
     nimbus::orch::registerCalcTool(reg_);
     fileTools_.attach(reg_);
@@ -194,17 +255,16 @@ class Engine2Host {
   // (the earlier engine's conversation imported first, a turn a restart cut resumed). "" on
   // success, else the one plain line that says why engine 2 cannot run.
   std::string start() {
-    const std::string head = o_.head ? o_.head() : std::string();
-    const std::string model = o_.model ? o_.model() : std::string();
-    if (!engine2HeadOk(head, model)) return engine2HeadRefusal(head, model);
-    bootModel_ = model;
+    const Engine2Head head = headNow();
+    if (!head.ok()) return engine2HeadRefusal(head.slot.provider, head.slot.model);
+    head_ = head;
     binding_.reset();   // a reboot: the old arena goes back before the new one is taken
     std::string key;
     if (!conversationKey(o_.chatKey, key))
       return "engine 2 did not start: the number of the owner's conversation (mem/tx/" + o_.chatKey +
              ".gen) could not be read";
     std::unique_ptr<plain::ChatBinding> b(
-        new plain::ChatBinding(chatConfig(key, o_.chatId, model, nimbus::orch::Role::Admin), bindingDeps(o_.chatId, true)));
+        new plain::ChatBinding(chatConfig(key, o_.chatId, nimbus::orch::Role::Admin), bindingDeps(o_.chatId, true)));
     (void)held_.load();
     const plain::Status st = b->boot();
     if (b->migrationRan()) logImport(*b);
@@ -246,11 +306,10 @@ class Engine2Host {
     msg.tzMinutes = tzNow();
     // The device's photo path (orchestrator_plain.cpp): parts for every photo, and for a head that cannot
     // see, each one's description and the text without the "attached" words.
-    const std::string model = b->config().model;
     photoSet_ = nimbus::orch::takeTurnImages(chat, text);
-    msg.photosBlind = photoSet_ && !nimbus::orch::headTakesImages("anthropic", model);
-    msg.text = plain::photoText(photoSet_.get(), "anthropic", model, text);
-    msg.parts = plain::photoParts(photoSet_.get(), "anthropic", model);
+    msg.photosBlind = photoSet_ && !nimbus::orch::headTakesImages(head_.upstream, head_.bare);
+    msg.text = plain::photoText(photoSet_.get(), head_.upstream, head_.bare, text);
+    msg.parts = plain::photoParts(photoSet_.get(), head_.upstream, head_.bare);
     // The way back: the person's message in engine 1's day stream (a photo message has its row already,
     // written by the channel's offer), tagged e2 so engine 2's own import never takes it.
     if (!photoSet_ && o_.captureRow) o_.captureRow(chat, "user", text, plain::ownerRowTags(std::string(), true));
@@ -260,15 +319,15 @@ class Engine2Host {
     return t;
   }
 
-  // A head model the owner changed since boot boots the owner's chat again; false (the owner told in one line)
-  // when it could not start.
+  // A head (slot or model) the owner changed since boot boots the owner's chat again; false (the owner told in
+  // one line) when it could not start.
   bool ownerOnModel(const std::string& chat) {
-    if (!o_.model || o_.model() == bootModel_) return true;
+    const Engine2Head now = headNow();
+    if (now == head_) return true;
     const std::string why = start();
     if (why.empty()) return true;
     std::fprintf(stderr, "[nimbusd] engine2: %s\n", why.c_str());
-    const bool head = engine2HeadOk(o_.head ? o_.head() : std::string(), o_.model());
-    if (o_.deliver) o_.deliver(chat, head ? kNoStartLine : kNotClaudeLine);
+    if (o_.deliver) o_.deliver(chat, now.ok() ? kNoStartLine : kNoHeadLine);
     return false;
   }
 
@@ -379,13 +438,13 @@ class Engine2Host {
     b.files = &routineFiles_;
     b.grants = o_.loops->routineGrants();
     b.run = [this](const plain::RoutineFire& f, bool tainted, plain::FireReport& out) {
-      plain::RoutineDeps r = binding_->routineDeps(o_.summarizerModel ? o_.summarizerModel() : std::string());
+      plain::RoutineDeps r = binding_->routineDeps(binding_->config().summarizerModel);
       r.head.tainted = tainted;
       r.tzMinutes = tzNow();
       r.held = &held_;
       r.quiet = quiet();
       const plain::Status st = plain::runRoutine(r, f, out);
-      if (o_.spend) o_.spend(plain::turnSpendOf(out.outcome, "anthropic", r.head.model), "routine");   // counted like a turn
+      if (o_.spend) o_.spend(plain::turnSpendOf(out.outcome, head_.slot.provider, r.head.model), "routine");   // like a turn
       return st;
     };
     nimbus::orch::LoopFireRequest owner = req;
@@ -398,6 +457,8 @@ class Engine2Host {
 
   bool running() const { return binding_ && binding_->engine(); }
   plain::ChatBinding* binding() { return binding_.get(); }
+  const Engine2Head& head() const { return head_; }   // lane E2-R8b: the head the chats run on
+  uint32_t ceilingRefusals() const { return gate_.refused(); }
   plain::ChatBinding* memberBinding() { return member_.get(); }   // lane E2-P-HOST2 (tests)
   // Lane E2-P-HOST2: /budget's view of engine 2 for `chat` in the owner's words ("" when no chat runs).
   std::string budgetViewText(const std::string& chat) {
@@ -421,6 +482,15 @@ class Engine2Host {
 
  private:
   agent::HttpTransport* transport() { return o_.transport ? o_.transport : &http_; }
+  Engine2Head headNow() const {
+    return engine2Head(o_.head ? o_.head() : std::string(), o_.model ? o_.model() : std::string(), o_.routerHost);
+  }
+  // The summarizer and routine model: the sub-agent pick on the head's slot (a router pick runs on its own
+  // upstream's wire: the binding's slotDialect), else the head's model.
+  std::string summarizerOn(const Engine2Head& h) const {
+    const std::string pick = o_.summarizerModel ? o_.summarizerModel() : std::string();
+    return pick.empty() ? h.slot.model : pick;
+  }
   uint16_t dayStart() const { return o_.dayStartMin ? o_.dayStartMin() : plain::kDayStartDefaultMin; }
   std::string skillsDir() const { return o_.dataDir + "/mem/skills"; }   // engine 1's HostedSkills store
 
@@ -437,15 +507,12 @@ class Engine2Host {
     return o_.roleOf ? o_.roleOf(chat) : nimbus::orch::Role::Admin;
   }
 
-  plain::ChatBindingConfig chatConfig(const std::string& key, const std::string& chat, const std::string& model,
-                                      nimbus::orch::Role role) const {
+  plain::ChatBindingConfig chatConfig(const std::string& key, const std::string& chat, nimbus::orch::Role role) const {
     plain::ChatBindingConfig c;
     c.chatKey = key;
     c.chatId = chat;
-    c.host = "api.anthropic.com";
-    c.provider = "anthropic";
-    c.model = model;
-    c.summarizerModel = o_.summarizerModel ? o_.summarizerModel() : std::string("claude-haiku-5-5");
+    plain::useSlot(head_.slot, c);   // a routed head's budget, price, spend and park key is the router's
+    c.summarizerModel = summarizerOn(head_);
     c.role = role;
     c.timeZone = o_.timeZone;
     c.dayStartMin = dayStart();
@@ -458,22 +525,25 @@ class Engine2Host {
   // RAM is never dropped with them (ruling 81): another chat is refused with the true cause meanwhile. Null, with
   // `line` the person's line, when no turn can run for the chat.
   plain::ChatBinding* memberFor(const std::string& chat, nimbus::orch::Role role, std::string& line) {
-    const std::string model = o_.model ? o_.model() : std::string();
-    if (!engine2HeadOk(o_.head ? o_.head() : std::string(), model)) {
-      line = kNotClaudeLine;
-      return nullptr;
+    if (!(headNow() == head_)) {   // a head change: the owner's chat boots on the new head first
+      const std::string why = start();
+      if (!why.empty()) {
+        std::fprintf(stderr, "[nimbusd] engine2: %s\n", why.c_str());
+        line = headNow().ok() ? kNoStartLine : kNoHeadLine;
+        return nullptr;
+      }
     }
     std::string key;
     const bool keyRead = conversationKey(chat, key);
     bool keep = false;
-    plain::ChatBinding* resident = residentMember(chat, role, model, keyRead ? key : std::string(), line, keep);
+    plain::ChatBinding* resident = residentMember(chat, role, keyRead ? key : std::string(), line, keep);
     if (keep) return resident;
     line = kNoStartLine;
     if (!keyRead || !nimbus::orch::tx::chatKeyOk(key)) {
       std::fprintf(stderr, "[nimbusd] engine2: chat %s has no readable transcript key\n", chat.c_str());
       return nullptr;
     }
-    std::unique_ptr<plain::ChatBinding> b(new plain::ChatBinding(chatConfig(key, chat, model, role), bindingDeps(chat, false)));
+    std::unique_ptr<plain::ChatBinding> b(new plain::ChatBinding(chatConfig(key, chat, role), bindingDeps(chat, false)));
     const plain::Status st = b->boot();
     if (b->migrationRan()) logImport(*b);
     if (!st.ok()) {
@@ -487,13 +557,13 @@ class Engine2Host {
 
   // The resident member binding when it serves this chat (`keep`); a binding whose turns are held only in RAM
   // keeps its chat and refuses another (null, `line` the true cause, keep true); else it is let go.
-  plain::ChatBinding* residentMember(const std::string& chat, nimbus::orch::Role role, const std::string& model,
-                                     const std::string& key, std::string& line, bool& keep) {
+  plain::ChatBinding* residentMember(const std::string& chat, nimbus::orch::Role role, const std::string& key,
+                                     std::string& line, bool& keep) {
     keep = false;
     if (!member_) return nullptr;
     const plain::ChatBindingConfig& c = member_->config();
     const bool same = c.chatId == chat && c.role == role;
-    keep = same && c.model == model && (key.empty() || c.chatKey == key);
+    keep = same && c.provider == head_.slot.provider && c.model == head_.slot.model && (key.empty() || c.chatKey == key);
     if (keep) return member_.get();
     if (member_->unloaded() && !member_->reload()) {
       keep = true;
@@ -511,15 +581,22 @@ class Engine2Host {
     curChat_ = chat;
     sent_.clear();
     unsent_.clear();
+    gateSeen_ = gate_.refused();
+    pausedTold_ = false;
     PlainTurn t;
     t.status = b.turn(msg, t.out);
+    const bool stopped = gate_.refused() != gateSeen_ || pausedTold_;
+    if (stopped && !pausedTold_) (void)deliverPart(kPausedLine);   // the ceiling stopped it and no part went yet
     curChat_.clear();
     t.sent.swap(sent_);
     t.unsent.swap(unsent_);
     settleEnding(t);
     lastTurnEnd_ = vclock::epoch();
-    if (o_.captureRow && t.out.delivered && !t.out.text.empty()) o_.captureRow(chat, "assistant", t.out.text, "e2");
-    else if (o_.captureRow && !t.out.statusStored.empty()) o_.captureRow(chat, "system", t.out.statusStored, "e2");
+    if (stopped) {
+      t.stated = "plain-rig:paused";
+      std::fprintf(stderr, "[nimbusd] engine2: the monthly ceiling stopped the turn (a request was not sent)\n");
+    }
+    captureEnding(chat, t, stopped);
     const nimbus::orch::tx::TurnEndFacts& e = t.out.end;
     if (o_.stats && t.out.headRequests) {
       const uint32_t in = e.promptTokens + e.cacheReadTokens + e.cacheWriteTokens;
@@ -542,11 +619,20 @@ class Engine2Host {
     return t;
   }
 
+  // The turn's ending in engine 1's day stream: the answer, else its status line (the pause line when the ceiling
+  // stopped it).
+  void captureEnding(const std::string& chat, const PlainTurn& t, bool stopped) {
+    if (!o_.captureRow) return;
+    if (stopped) o_.captureRow(chat, "system", kPausedLine, "e2");
+    else if (t.out.delivered && !t.out.text.empty()) o_.captureRow(chat, "assistant", t.out.text, "e2");
+    else if (!t.out.statusStored.empty()) o_.captureRow(chat, "system", t.out.statusStored, "e2");
+  }
+
   // The binding's parts for `chat`: the owner's conversation (`owner`) or a member's.
   plain::ChatBindingDeps bindingDeps(const std::string& chat, bool owner) {
     plain::ChatBindingDeps d;
     d.platform = &platform_;
-    d.transport = transport();
+    d.transport = &gate_;   // lane E2-R8b: no request leaves while paid calls are paused
     d.files = &txFiles_;
     d.registry = &reg_;
     d.sendPart = [this](const std::string&, const std::string& part) { return deliverPart(part); };
@@ -561,12 +647,12 @@ class Engine2Host {
       if (skillsTold_.insert(id).second) skillsLeftOut_.push_back({id, bytes});
     };
     d.usage = [this](const plain::TurnOutcome& out) {
-      if (o_.spend) o_.spend(plain::turnSpendOf(out, "anthropic", bootModel_), "turn");
+      if (o_.spend) o_.spend(plain::turnSpendOf(out, head_.slot.provider, head_.slot.model), "turn");
     };
     d.compactUsage = [this](const std::string& provider, const std::string& model, const nimbus::orch::TokenUsage& u) {
       if (!o_.spend) return;
       nimbus::orch::TurnSpend s;
-      s.add(provider.c_str(), model.c_str(), u);
+      s.add(provider.c_str(), model.c_str(), u);   // the binding gives it in the ledger's counts (E2-R8a)
       o_.spend(s, "compact");
     };
     // The progress line and the typing keep-alive go to the running turn's Telegram chat only.
@@ -607,7 +693,7 @@ class Engine2Host {
     d.moreSetup = [this](const plain::TurnCtx& t, plain::TurnSetup& s) {
       // PRD section 3: thinking as today (adaptive, effort medium), as engine 1 sends: the output table's
       // head-round effort for the model, the same function the device's binding reads (E2-FIX14).
-      s.head.effort = plain::headEffortFor("anthropic", t.model);
+      s.head.effort = plain::headEffortFor(head_.upstream, head_.slot.endpoint.routed ? nimbus::orch::resolveRouterRoute(t.model).model : t.model);
       s.bodyCapLimit = o_.bodyCapLimit;
     };
     return d;
@@ -615,7 +701,15 @@ class Engine2Host {
 
   // One part of the running turn to the chat it came from (a boot's resume or a fire: the owner chat).
   bool deliverPart(const std::string& raw) {
-    const std::string part = hostedOwnerLine(raw);   // lane E2-P-HOST2: the instance's words, not the card's
+    // Lane E2-R8b: the ceiling stopped the turn: the pause line in place of the failure line, and nothing after it.
+    if (pausedTold_) return true;
+    std::string text = raw;
+    if (gate_.refused() != gateSeen_) {
+      gateSeen_ = gate_.refused();
+      pausedTold_ = true;
+      text = kPausedLine;
+    }
+    const std::string part = hostedOwnerLine(text);   // lane E2-P-HOST2: the instance's words, not the card's
     if (!o_.deliver) {
       unsent_.push_back(part);
       return false;
@@ -745,7 +839,10 @@ class Engine2Host {
   std::set<std::string> skillsTold_;
   std::vector<std::string> sent_, unsent_;
   std::string curChat_;
-  std::string bootModel_;
+  Engine2Head head_;          // the head the chats were booted on (lane E2-R8b)
+  CeilingGate gate_{[this] { return transport(); }, [this] { return paused(); }};   // every engine-2 request (E2-R8b)
+  uint32_t gateSeen_ = 0;     // the gate's refusals the person was told of
+  bool pausedTold_ = false;   // the pause line went out in this turn
   uint64_t lastTurnEnd_ = 0;
 };
 

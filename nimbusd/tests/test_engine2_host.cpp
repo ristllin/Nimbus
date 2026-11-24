@@ -4,8 +4,8 @@
 //   (b) a scripted Anthropic head through Engine2Host with the real Anthropic wire: a file write
 //       and a note through the tools, the replies leave through the host's deliver to the turn's
 //       chat, and a host rebuilt over the same data directory carries the conversation (restart);
-//   (c) the startup switch's head rule: anything but an Anthropic head with a claude- model is
-//       refused in one plain line, before any request;
+//   (c) the startup switch's head rule: a head no route serves (lane E2-R8b: every provider slot and the
+//       router run) is refused in one plain line, before any request;
 //   (d) the storage rule of ruling 112 on the shared file store (hosted_file_tools.h): an append
 //       whose index is behind lands at the size on disk, keeps every stored byte, and the index
 //       catches up; a write to a path holding bytes the index does not know is refused and the
@@ -182,20 +182,20 @@ void caseScriptedTurns(ndtest::Ctx& c) {
 }
 
 void caseHeadRule(ndtest::Ctx& c) {
-  std::printf("  (c) Claude heads only\n");
+  std::printf("  (c) a head no route serves is refused\n");
   const std::string dir = ndtest::scratchDir("e2head");
   for (const auto& hm : std::vector<std::pair<std::string, std::string>>{
-           {"openai", "gpt-5.6"}, {"mistral", "mistral-large-latest"}, {"anthropic", "gpt-5.6"}, {"", ""}}) {
+           {"custom", "my-model"}, {"nobody", "m"}, {"cumulo", "nobody/m"}, {"", ""}}) {
     Host h(dir);
     h.headSlug = hm.first;
     h.modelId = hm.second;
     const std::string why = h.start();
-    c.ok(why.rfind("engine 2 runs on Claude heads only", 0) == 0 && why.find('\n') == std::string::npos,
+    c.ok(why.rfind("engine 2 has no route for this instance's head", 0) == 0 && why.find('\n') == std::string::npos,
          "refused in one line: " + (hm.first.empty() ? std::string("no head") : hm.first + " " + hm.second));
     c.ok(h.model.requests().empty() && !h.host->running(), "...before any request, and nothing runs");
   }
-  c.ok(nimbusd::engine2HeadOk("anthropic", "claude-sonnet-5-5") && !nimbusd::engine2HeadOk("cumulo", "claude-sonnet-5-5"),
-       "the rule: provider anthropic and a claude- model");
+  c.ok(nimbusd::engine2Head("anthropic", "claude-sonnet-5-5", "r").ok() && nimbusd::engine2Head("cumulo", "claude-sonnet-5-5", "r").ok(),
+       "the rule: a provider slot, or the router on an upstream it serves");
   ndtest::rmTree(dir);
 }
 
@@ -243,7 +243,7 @@ void caseStorageRule(ndtest::Ctx& c) {
 }
 
 void caseModelChange(ndtest::Ctx& c) {
-  std::printf("  (f) a model change boots the chat again; a non-Claude model is one line\n");
+  std::printf("  (f) a model change boots the chat again; a head no route serves is one line\n");
   const std::string dir = ndtest::scratchDir("e2model");
   Host h(dir);
   h.model.push(sp::say("One."));
@@ -257,10 +257,10 @@ void caseModelChange(ndtest::Ctx& c) {
   c.ok(body.find("claude-sonnet-5-5") != std::string::npos && body.find("first message") != std::string::npos,
        "the new model is asked, with the conversation before the change");
   const size_t asked = h.model.requests().size();
-  h.modelId = "gpt-5.6";
+  h.headSlug = "custom";
   (void)h.host->say("owner", "third message", "web");
-  c.ok(h.model.requests().size() == asked, "a non-Claude model sends no request");
-  c.ok(!h.sent.empty() && h.sent.back().text.find("Claude models only") != std::string::npos,
+  c.ok(h.model.requests().size() == asked, "a head no route serves sends no request");
+  c.ok(!h.sent.empty() && h.sent.back().text == nimbusd::kNoHeadLine,
        "...and the owner is told in one line");
   ndtest::rmTree(dir);
 }
