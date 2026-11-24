@@ -406,7 +406,7 @@ slot = "openai"
 kind = "exact"
 match = "gpt-5.6"
 inherit = "gpt"
-input = { v = ["text", "image"], src = "lib/core/include/nimbus/orch/model_selectable.h:42-52", read = "2026-11-24", ver = "probe", note = "an alias served as gpt-5.6-sol (probed 18 Oct); the sol row's facts" }
+input = { v = ["text", "image"], src = "oai-gpt-5-6-sol", read = "2026-11-24", ver = "docs", note = "gpt-5.6 is an alias served as gpt-5.6-sol (probed 18 Oct, model_selectable.h:42-52); the sol page's facts" }
 
 [[model]]
 slot = "openai"
@@ -452,6 +452,15 @@ inherit = "mistral"
 input = { v = ["text", "image"], src = "mis-large4", read = "2026-11-24", ver = "docs" }
 images_max = { v = 100, src = "router-images", read = "2026-11-24", ver = "probe", note = "measured by the router: mistral-large takes 100" }
 effort = { v = ["low", "medium", "high"], src = "mis-large4", read = "2026-11-24", ver = "docs", note = "refuses none, minimal, xhigh and max; the project recorded none refused with code 3051 (output_caps.cpp:173-178)" }
+
+[[model]]
+slot = "mistral"
+kind = "exact"
+match = "mistral-large-4"
+inherit = "mistral"
+input = { v = ["text", "image"], src = "mis-large4", read = "2026-11-24", ver = "docs" }
+images_max = { v = 100, src = "router-images", read = "2026-11-24", ver = "probe" }
+effort = { v = ["low", "medium", "high"], src = "mis-large4", read = "2026-11-24", ver = "docs", note = "the id Mistral lists for Large 4 on 14 Nov (test/support/fixtures/models_2026-11/mistral.json), with mistral-large-4-0 and mistral-large-latest as its aliases; not compiled in, but pickable from the harvested list, and the fail-safe row would drop the effort a forced reasoner needs" }
 
 [[model]]
 slot = "mistral"
@@ -649,7 +658,7 @@ kind = "type"
 text = "not_found_error"
 status = 404
 class = "unknown_model"
-src = "test/support/fixtures/usage_2026-10/errors.json:1"
+src = "test/support/fixtures/usage_2026-10/errors.json:9"
 read = "2026-11-24"
 ver = "recorded"
 
@@ -780,7 +789,7 @@ kind = "code"
 text = "model_not_found"
 status = 404
 class = "unknown_model"
-src = "test/support/fixtures/usage_2026-10/errors.json:1"
+src = "test/support/fixtures/usage_2026-10/errors.json:23"
 read = "2026-11-24"
 ver = "recorded"
 
@@ -801,7 +810,7 @@ kind = "type"
 text = "invalid_model"
 status = 400
 class = "unknown_model"
-src = "test/support/fixtures/usage_2026-10/errors.json:1"
+src = "test/support/fixtures/usage_2026-10/errors.json:16"
 read = "2026-11-24"
 ver = "recorded"
 
@@ -872,7 +881,7 @@ kind = "code"
 text = "1211"
 status = 400
 class = "unknown_model"
-src = "test/support/fixtures/usage_2026-10/errors.json:1"
+src = "test/support/fixtures/usage_2026-10/errors.json:30"
 read = "2026-11-24"
 ver = "recorded"
 

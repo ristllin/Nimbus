@@ -125,20 +125,22 @@ def test_counter_each_lint_catches_its_fault(data, plant, words):
     assert any(words in e for e in errs), errs
 
 
-def test_counter_too_many_rows_or_bytes_fail(data, monkeypatch):
+def test_counter_too_many_rows_or_bytes_fail(data, monkeypatch, capsys):
     monkeypatch.setattr(gen, "MAX_MODEL_ROWS", 3)
     assert any("model rows (limit 3)" in e for e in errors(data))
     monkeypatch.setattr(gen, "MAX_DATA_BYTES", 100)
     monkeypatch.setattr(gen, "load", lambda path=gen.SRC: data)
     monkeypatch.setattr(gen, "MAX_MODEL_ROWS", 128)
     assert gen.main(["--check"]) == 1
+    assert "(limit 100 B)" in capsys.readouterr().out
 
 
-def test_counter_a_stale_header_fails_the_check(data, monkeypatch, tmp_path):
+def test_counter_a_stale_header_fails_the_check(data, monkeypatch, tmp_path, capsys):
     stale = tmp_path / "model_caps_data.h"
     stale.write_text("// stale\n")
     monkeypatch.setattr(gen, "OUT", stale)
     assert gen.main(["--check"]) == 1
+    assert "is stale" in capsys.readouterr().out
 
 
 # ---- the lookup the lint uses is the firmware's ---------------------------------------------------
