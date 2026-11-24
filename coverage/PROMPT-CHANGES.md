@@ -1367,3 +1367,13 @@ PC-0175, PC-0176: not used.
 - lane: RB-N3
 - prd: section 4 (tools 7 and schedule), ruling 117 (the class ceiling 7,168 B for search's lines), ruling 116
 - why: texts.h kSrcFile "file " opens a scope-files hit ("file <project>/<name>: ...<excerpt>..."; the rest lines are search's own). lib/core/src/orch_schedule_tool.cpp: the kind slug "wakeup"; kBadKind "kind: reminder|routine" becomes "kind: reminder|routine|wakeup"; kWrongKey "reminder: when; routine: every" becomes "reminder, wakeup: when; routine: every"; the cap refusal "max 4 wakeups" is built from the existing "max " and the slug. The scope memories answers engine 1's memory.search text whole (e1 catalog, unchanged), including its one line when embeddings cannot serve ("keyword match, embeddings unavailable: <why>"). Facts only. Written by lane E2-P-MEM (the schedule words are RB-U1b's tool). PC-0235: not used.
+
+### PC-0222: the summarizer keeps every code, name and number, and what the person keeps out of notes and files (engine 2)
+- catalog: e2
+- class: summarizer
+- kind: build
+- bytes: 974 -> 1021
+- sha8: 1855fed2 -> a9622cfe
+- lane: E2-FIX15
+- prd: section 3 (compaction: one cumulative summary that keeps facts, quantities, decisions and open items), rulings 105 and 106
+- why: lib/harness/include/nimbus/harness/plain/texts.h summarizer::kPrompt. On the closing bench (lanes/E2-BENCH2/RESULT.md, "Final build 902391f7f") three facts told "conversation only, do not save a note or a file" passed under the summary and Haiku answered 0 of 3, then called its right answers made up. On the daemon (lanes/E2-FIX15/evidence: runs/d4-red1) the stored summary held "F1 The shed padlock code is something the person asked not to be saved anywhere." with no code, and Lena's train only by luck: the summarizer read "not in a note or a file" as "do not keep". Replays of the captured summarizer request (claude-haiku-5-5, lanes/E2-FIX15/evidence/probe-summarizer.jsonl): the old prompt kept 2 of 5 facts with their values in 3 of 3 answers; three wordings that only stressed exact values kept 2 of 5 in 8 of 9; "What the person keeps out of notes and files is kept only here, value and all." kept 5 of 5 in 3 of 3. Room inside the class ceiling (1,024 B) by shorter words elsewhere in the prompt: "a conversation's running summary" (the input names person and assistant), "+Q a quantity or date, with its date" (exact values are now asked of every line), "when it changed", "when done". PC-0223 and PC-0224: not used.
