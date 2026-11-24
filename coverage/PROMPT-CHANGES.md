@@ -1410,8 +1410,8 @@ PC-0175, PC-0176: not used.
 - catalog: e2
 - class: tool_results
 - kind: spec
-- bytes: 7097 -> 7137
-- sha8: d5a076a0 -> 9708011e
+- bytes: 7188 -> 7228
+- sha8: 6ad8a571 -> 56f1887e
 - lane: RB-I1
 - prd: section 4 (web_search), inventory parity-daemon-hosted-release part (a) row A10
 - why: nimbusd/src/hosted_web_search.h is the hosted twin of src/agent/tools_plain.cpp's registration: the names "web_search" and "web.search" and the argument "query", the same words the device file already has, over the old engine's handler; its no-key refusal is texts.h kWebSearchNoKey, unchanged. No new sentence a model reads: the class grows only by the second file's copies of those names. Written by lane E2-P-HOST1 (RB-I1's hosts on engine 2). Planned work, not a fix (CUM-1010).
