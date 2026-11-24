@@ -1165,6 +1165,12 @@ void bareBinding(sch::FireBinding& fb, const std::string& chatId) {
   fb.dayStartMin = store::dayStartMin();
 }
 
+// The log's word for an entry's kind.
+const char* kindWord(sch::Kind k) {
+  if (k == sch::Kind::Reminder) return "reminder";
+  return k == sch::Kind::Wakeup ? "wakeup" : "routine";
+}
+
 // One schedule entry's fire (the loops tick, tg_poll, between turns).
 nimbus::orch::FireOutcome fireEntry(const String& chatIn, const String& id) {
   nimbus::orch::FireOutcome out;
@@ -1224,7 +1230,7 @@ nimbus::orch::FireOutcome fireEntry(const String& chatIn, const String& id) {
     out = scheduledev::fire(nimbus::orch::LoopFireRequest{sid, std::string(), chatId, std::string()}, fb);
   }
   alogf("e2: fire %s %s chat=%s ok=%d deferred=%d answered=%d parts=%u reqs=%u ms=%u err=%s", sid.c_str(),
-        kind == sch::Kind::Reminder ? "reminder" : kind == sch::Kind::Wakeup ? "wakeup" : "routine", chatId.c_str(), (int)out.ok, (int)out.deferred,
+        kindWord(kind), chatId.c_str(), (int)out.ok, (int)out.deferred,
         (int)out.answered, (unsigned)(b ? b->sentParts() - parts0 : 0), (unsigned)s_transport.requests,
         (unsigned)(millis() - t0), out.error.c_str());
   return out;
