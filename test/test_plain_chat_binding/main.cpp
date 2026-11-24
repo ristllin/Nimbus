@@ -216,10 +216,7 @@ struct Device {
     if (!skillFiles.empty()) d.skills = [this](const nimbus::orch::Principal&) { return plain::chatSkillsOf(skillFiles); };
     if (skills) d.skills = [this](const nimbus::orch::Principal&) { return skills(); };   // E2-P-SKILL: the store
     if (pinnedNotes) d.pinnedNotes = pinnedNotes;                                         // E2-P-SKILL: the notebook
-    d.skillRefused = [this](const std::string& id, size_t n) {
-      refused.push_back(id);
-      if (skillTold && plain::skillNoticeDue(*skillTold, id, n)) ++skillTells;   // the device's notice (E2-BFIX4)
-    };
+    d.skillRefused = [this](const std::string& id, size_t n) { skillRefused(id, n); };
     d.usage = [this](const plain::TurnOutcome& o) {
       usage.push_back(plain::turnSpendOf(o, binding->config().provider, binding->config().model));
     };
@@ -309,6 +306,10 @@ struct Device {
   std::vector<std::string> refused;
   std::string* skillTold = nullptr;   // the device's told list on flash: outlives a boot (E2-BFIX4)
   int skillTells = 0;
+  void skillRefused(const std::string& id, size_t n) {
+    refused.push_back(id);
+    if (skillTold && plain::skillNoticeDue(*skillTold, id, n)) ++skillTells;   // the device's notice (E2-BFIX4)
+  }
   std::vector<nimbus::orch::TurnSpend> usage;
   std::vector<nimbus::orch::TurnSpend> compactUsage;   // lane E2-CMP: the summarizer's requests
   bool progress = false;
