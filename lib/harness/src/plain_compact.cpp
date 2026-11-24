@@ -1178,7 +1178,8 @@ Status CompactDriver::askAndKeep(const IdleCtx& ctx, const SummarizerRung& rung,
                                  bool prepareOnly, CompactOutcome& out, bool& parked) {
   AnswerForm form = formFor(rung);
   const bool urgent = ctx.urgency != Urgency::None && d_.platform->nowMs;
-  const uint32_t untilMs = urgent ? d_.platform->nowMs() + kCompactUrgentMs : 0;
+  // An urgent attempt's end; inside a crossing, the crossing's own (lane E2-FIX15: one bound for all its slices).
+  const uint32_t untilMs = !urgent ? 0 : crossingUntilMs_ ? crossingUntilMs_ : d_.platform->nowMs() + kCompactUrgentMs;
   Status s;
   for (int tries = 0; tries < 2; ++tries) {
     Asked asked;
@@ -1683,8 +1684,9 @@ Status CompactDriver::crossing(const IdleCtx& ctx, SlicePlan plan, CompactOutcom
 // them. The turn's status line says once that it waits, however many slices. `failed`: an attempt was not taken.
 Status CompactDriver::prepareSlices(const IdleCtx& ctx, SlicePlan& plan, CompactOutcome& out, uint32_t& slices,
                                     bool& failed) {
-  const bool urgent = ctx.urgency != Urgency::None && d_.platform->nowMs;
-  const uint32_t startMs = urgent ? d_.platform->nowMs() : 0;
+  const bool urgent = ctx.urgency != Urgency::None;
+  const uint32_t startMs = urgent && d_.platform->nowMs ? d_.platform->nowMs() : 0;
+  crossingUntilMs_ = urgent && d_.platform->nowMs ? startMs + kCompactUrgentMs : 0;
   bool said = false;
   IdleCtx once = ctx;
   once.waiting = [&ctx, &said] {
@@ -1698,17 +1700,19 @@ Status CompactDriver::prepareSlices(const IdleCtx& ctx, SlicePlan& plan, Compact
     out.ran = out.ran || one.ran;
     if (!s.ok() || one.step != CompactStep::Prepared) {
       out.step = one.step;
-      failed = s.ok();
+      failed = s.ok() && one.step != CompactStep::Waiting;   // held by a wait or the count: the cycle goes on later
+      crossingUntilMs_ = 0;
       return s;
     }
     if (!planSlice(*d_.arena, pending_.thru, rules_, plan).ok()) plan = SlicePlan{};
   }
+  crossingUntilMs_ = 0;
   return Status::success();
 }
 
 // Another slice in this crossing: an urgent step inside its time, an idle one inside its window's requests.
 bool CompactDriver::crossingMayAsk(bool urgent, uint32_t startMs) const {
-  if (urgent) return (uint32_t)(d_.platform->nowMs() - startMs) < kCompactUrgentMs;
+  if (urgent) return !d_.platform->nowMs || (uint32_t)(d_.platform->nowMs() - startMs) < kCompactUrgentMs;
   return manual_ || windowAsks_ < kCompactRequestsPerWindow;   // an idle window's requests (RB-C2)
 }
 

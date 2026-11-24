@@ -427,6 +427,7 @@ class CompactDriver {
   uint64_t windowQ_ = 0;         // the arena's last q when the window started (or after a swap)
   uint32_t windowStartMs_ = 0;
   uint8_t windowAsks_ = 0;
+  uint32_t crossingUntilMs_ = 0;   // lane E2-FIX15: an urgent crossing's end on the platform clock; 0: none
 };
 
 // Digest 0 of a migration (lane RB-MG1a, tx/migrate.h): the binding's tx::Digest0Fn. The old

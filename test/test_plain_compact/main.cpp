@@ -2623,6 +2623,26 @@ std::vector<txb::TurnScript> pastTheMark(const txb::Battery& b, int days = 3) {
   return turns;
 }
 
+// Lane E2-FIX15: an urgent crossing keeps all its slices inside one kCompactUrgentMs (E2-FIX7's bound for a turn's
+// attempt), not one window per slice; what it prepared in that time is swapped in once.
+void test_an_urgent_crossing_keeps_all_its_slices_inside_one_bound() {
+  Chat c;
+  threeDays(c);   // two slices
+  c.model.respondWith([](const sp::Recorded&, size_t) {
+    sp::Step s = sp::say(kSummary);
+    s.takesMs = plain::kCompactUrgentMs - plain::kCompactMinRequestMs / 2;   // the second slice would have 5 s
+    return s;
+  });
+  plain::IdleCtx ctx = c.idle();
+  ctx.urgency = plain::Urgency::IfDue;
+  const uint32_t started = gClock;
+  plain::CompactOutcome out;
+  TEST_ASSERT_TRUE(c.driver->step(ctx, out).ok());
+  TEST_ASSERT_TRUE_MESSAGE(gClock - started <= plain::kCompactUrgentMs, "the crossing kept the turn past its bound");
+  TEST_ASSERT_EQUAL(plain::CompactStep::Stored, out.step);   // the first slice, swapped once
+  TEST_ASSERT_EQUAL(1, (int)c.digestsStored());
+}
+
 // Lane E2-FIX15 (D2): the bench's per-turn summary updates. Over 40 turns that each read a 16 KB file (about 4k
 // tokens) on the real engine, every crossing of the due mark writes the summary once, and between two writes each
 // turn's first request keeps the bytes of the turn before it ahead of everything new (the cached prefix holds).
@@ -3358,6 +3378,7 @@ int main(int, char**) {
   RUN_TEST(test_day_digests_are_taken_in_once_and_archived_before_the_swap);
   RUN_TEST(test_the_owner_ceiling_holds_the_attended_limits_and_lowers_them_only_by_choice);
   RUN_TEST(test_the_budget_view_reports_every_part_in_tokens);
+  RUN_TEST(test_an_urgent_crossing_keeps_all_its_slices_inside_one_bound);
   RUN_TEST(test_one_summary_write_per_crossing_and_the_prefix_holds_between);
   RUN_TEST(test_messages_right_after_the_mark_are_compacted_first_never_left_out);
   RUN_TEST(test_a_failing_summary_at_turn_open_still_answers_the_owner);
