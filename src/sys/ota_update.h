@@ -86,6 +86,8 @@ bool requestCheck(const char** whyOut = nullptr);
 // force = allow Same/Older (explicit web-UI downgrade). False when refused;
 // *whyOut (optional) gets a static reason string.
 bool requestInstall(bool dryRun, bool force, const char** whyOut = nullptr);
+// Lane E2-REP4: the battery gate a normal install applies refuses now (on battery below the floor).
+bool installNeedsPower();
 
 // ---- local (USB serial) firmware write --------------------------------------
 // A third update path beside the signed cloud OTA above: the running firmware

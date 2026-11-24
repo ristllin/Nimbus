@@ -260,6 +260,7 @@ String updateBack(bool confirm) {
   ask.state = otaupd::statusStr();
   ask.running = NIMBUS_FW_VERSION;
   ask.latest = latest.c_str();
+  ask.needPower = confirm && otaupd::installNeedsPower();   // E2-REP4: as a normal install
   const nimbus::ota::BackStep step = nimbus::ota::backStep(ask);
   const char* why = "";
   if (step == nimbus::ota::BackStep::StartCheck) {

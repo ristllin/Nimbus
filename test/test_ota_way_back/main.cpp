@@ -59,8 +59,27 @@ void test_no_install_without_a_fresh_settled_check() {
   TEST_ASSERT_EQUAL_INT(int(BackStep::Unsupported), int(backStep(none)));
 }
 
+// Lane E2-REP4: the forced install of the way back applies the battery gate a normal install applies:
+// low and not on power, it is not started and the owner is told to connect power.
+void test_the_way_back_checks_the_battery_like_a_normal_install() {
+  for (int pct : {10, 39, 40, 90})
+    for (bool power : {false, true}) {
+      InstallGateInput gi;
+      gi.battPct = pct;
+      gi.onExternalPower = power;
+      BackAsk a = settled("v5.2.1", true);
+      a.needPower = installGate(gi) == InstallGate::NeedPower;
+      const BackStep want = (pct < kManualBattFloorPct && !power) ? BackStep::NeedPower : BackStep::Install;
+      TEST_ASSERT_EQUAL_INT(int(want), int(backStep(a)));
+    }
+  BackAsk offer = settled("v5.2.1", false);
+  offer.needPower = true;
+  TEST_ASSERT_EQUAL_INT(int(BackStep::Offer), int(backStep(offer)));   // only the install itself waits
+  TEST_ASSERT_TRUE(backLine(BackStep::NeedPower, "v5.2.1", "v5.9.0").find("Connect power") != std::string::npos);
+}
+
 void test_every_line_is_plain_and_names_the_versions() {
-  for (int s = int(BackStep::Busy); s <= int(BackStep::NothingOlder); ++s) {
+  for (int s = int(BackStep::Busy); s <= int(BackStep::NeedPower); ++s) {
     const std::string line = backLine(BackStep(s), "v5.2.1", "v5.9.0");
     TEST_ASSERT_FALSE(line.empty());
     TEST_ASSERT_TRUE(line.find('"') == std::string::npos);
@@ -76,6 +95,7 @@ int main(int, char**) {
   RUN_TEST(test_the_owner_walks_back_to_an_engine1_release);
   RUN_TEST(test_never_a_same_newer_or_unreadable_release);
   RUN_TEST(test_no_install_without_a_fresh_settled_check);
+  RUN_TEST(test_the_way_back_checks_the_battery_like_a_normal_install);
   RUN_TEST(test_every_line_is_plain_and_names_the_versions);
   return UNITY_END();
 }

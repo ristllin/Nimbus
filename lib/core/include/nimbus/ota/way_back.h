@@ -33,6 +33,7 @@ enum class BackStep : uint8_t {
   Offer,         // the stable release is older: ask for `/update back yes`
   Install,       // confirmed and older: forced install of the stable release
   NothingOlder,  // the stable release is not older (or unreadable): nothing to go back to
+  NeedPower,     // confirmed and older, but the battery gate a normal install applies refuses (E2-REP4)
 };
 
 struct BackAsk {
@@ -42,6 +43,7 @@ struct BackAsk {
   const char* state = "";        // otaupd::statusStr()
   const char* running = "";      // NIMBUS_FW_VERSION
   const char* latest = "";       // otaupd::latestSeen(): that check's stable version
+  bool needPower = false;        // the battery gate of a normal install refuses now (installGate NeedPower)
 };
 
 inline BackStep backStep(const BackAsk& a) {
@@ -54,7 +56,8 @@ inline BackStep backStep(const BackAsk& a) {
   int ma = 0, mi = 0, pa = 0;
   const char* latest = a.latest ? a.latest : "";
   if (!parseVersion(latest, ma, mi, pa) || compareVersions(latest, a.running) >= 0) return BackStep::NothingOlder;
-  return a.confirm ? BackStep::Install : BackStep::Offer;
+  if (!a.confirm) return BackStep::Offer;
+  return a.needPower ? BackStep::NeedPower : BackStep::Install;   // E2-REP4: the forced install checks the battery too
 }
 
 // The owner's line for a step (Telegram copy: plain, no '"', names the next step).
@@ -76,6 +79,8 @@ inline std::string backLine(BackStep s, const char* latest, const char* running)
     case BackStep::NothingOlder:
       return "The stable release (" + (l.empty() ? std::string("none found") : l) + ") is not older than this firmware (" +
              r + "), so there is nothing to go back to.";
+    case BackStep::NeedPower:
+      return "The battery is too low to install " + l + ". Connect power, then send /update back yes again.";
   }
   return std::string();
 }
