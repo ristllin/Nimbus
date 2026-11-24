@@ -220,6 +220,12 @@ static void test_a_refused_field_is_resent_once_and_remembered() {
   TEST_ASSERT_EQUAL_UINT16(0, wire::refusedFieldsOf(e));
   e = wire::readErrorObject(R"({"error":{"message":"Unsupported parameter","code":"unsupported_parameter","param":"reasoning_effort"}})");
   TEST_ASSERT_EQUAL_UINT16(refused::kEffort, wire::refusedFieldsOf(e));
+  // E2-REP5 (review C): Mistral's 422 names the refused field only in detail[].loc.
+  e = wire::readErrorObject(R"({"detail":[{"type":"extra_forbidden","loc":["body","reasoning_effort"],"msg":"Extra inputs are not permitted"}]})");
+  TEST_ASSERT_EQUAL_UINT16(refused::kEffort, wire::refusedFieldsOf(e));
+  TEST_ASSERT_TRUE(wire::classifyProvider(wire::markerSetFor("mistral"), 422,
+                                          R"({"detail":[{"loc":["body","reasoning_effort"],"msg":"Extra inputs are not permitted"}]})")
+                       .refused & refused::kEffort);
 }
 
 // Engine 2's reasons are the cloud contract's 44, engine 1's 35 among them unchanged, and the

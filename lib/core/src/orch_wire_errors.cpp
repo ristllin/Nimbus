@@ -226,6 +226,7 @@ ErrorObject readErrorObject(const std::string& body) {
   filter["message"] = true;
   filter["status"] = true;
   filter["choices"][0]["finish_reason"] = true;
+  filter["detail"] = true;
   JsonDocument doc;
   if (deserializeJson(doc, body, DeserializationOption::Filter(filter)) || !doc.is<JsonObjectConst>()) return e;
   JsonVariantConst err = doc["error"];
@@ -242,6 +243,17 @@ ErrorObject readErrorObject(const std::string& body) {
   e.status = scalar(doc["status"]);
   e.finish = scalar(doc["choices"][0]["finish_reason"]);
   if (e.message.empty()) e.message = providerErrorText(body);
+  // Lane E2-REP5 (review C): a validation body (Mistral's 422, {"detail":[{"loc":["body","reasoning_effort"],
+  // "msg":"Extra inputs are not permitted"}]}) names the field only in loc: its last entry is the param.
+  if (e.param.empty()) {
+    JsonVariantConst detail = doc["detail"].is<JsonArrayConst>() ? JsonVariantConst(doc["detail"])
+                                                                 : JsonVariantConst(doc["message"]["detail"]);
+    for (JsonVariantConst d : detail.as<JsonArrayConst>()) {
+      JsonArrayConst loc = d["loc"].as<JsonArrayConst>();
+      if (loc.size() && loc[loc.size() - 1].is<const char*>())
+        e.param += (e.param.empty() ? "" : " ") + std::string(loc[loc.size() - 1].as<const char*>());
+    }
+  }
   return e;
 }
 
