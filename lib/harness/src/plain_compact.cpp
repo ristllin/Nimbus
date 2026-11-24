@@ -1848,11 +1848,17 @@ Status summaryArena(const Platform& p, const tx::Digest0Ask& ask, tx::TxArena& a
   return s;
 }
 
+// The rungs digest 0 may ask (E2-REP1: every one held is Busy, nothing sent).
+Status digest0Rungs(const CompactDeps& d, std::vector<SummarizerRung>& rungs) {
+  if (d.rungs) d.rungs(rungs);
+  if (dropHeld(d, rungs) && rungs.empty()) return Status::fail(Err::Busy, "plain::digest0Answer.held");
+  return rungs.empty() ? Status::fail(Err::NotFound, "plain::digest0Answer") : Status::success();
+}
+
 Status digest0Run(const CompactDeps& d, const tx::Digest0Ask& ask, tx::Digest0Answer& out) {
   std::vector<SummarizerRung> rungs;
-  if (d.rungs) d.rungs(rungs);
-  if (dropHeld(d, rungs) && rungs.empty()) return Status::fail(Err::Busy, "plain::digest0Answer.held");   // E2-REP1
-  if (rungs.empty()) return Status::fail(Err::NotFound, "plain::digest0Answer");
+  const Status found = digest0Rungs(d, rungs);
+  if (!found.ok()) return found;
   if (ask.summary.empty() || !ask.at) return Status::fail(Err::InvalidArgument, "plain::digest0Answer");
   const SummarizerRung& rung = rungs[std::min<size_t>(ask.attempt, rungs.size() - 1)];
   tx::TxArena arena;

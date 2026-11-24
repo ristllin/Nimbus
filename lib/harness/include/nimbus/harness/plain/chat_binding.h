@@ -767,22 +767,28 @@ class ChatBinding {
     const uint32_t t0 = d_.platform->nowMs();
     migrationStatus_ = tx::migrate(m, migration_);
     migrationMs_ = d_.platform->nowMs() - t0;
-    if (migrationStatus_.ok()) {
-      sameFailures_ = 0;
-      return;
-    }
-    const bool held = migrationStatus_.err == tx::Err::Busy;   // E2-REP1: the summarizer's provider is held
-    say(held ? "e2: the earlier engine's conversation waits for its summarizer's provider: nothing sent"
-             : "e2: the earlier engine's conversation was not imported this time");
+    if (importSettled()) return;
+    say("e2: the earlier engine's conversation was not imported this time");
     const bool noCard = d_.noCard && d_.noCard();   // no card at all: RAM by design, nothing to hold for
     importPending_ = !noCard && migrationStatus_.err != tx::Err::InvalidArgument;
-    if (held) return;   // the provider's cause, never the import's: not counted toward importStuck
     const bool same = !before.ok() && before.err == migrationStatus_.err &&
                       std::string(before.where ? before.where : "") == (migrationStatus_.where ? migrationStatus_.where : "");
     sameFailures_ = same ? sameFailures_ + 1 : 1;
     std::vector<std::string> names;
     cardAnswered_ = d_.files->list(tx::kTxRoot, names);   // the card answers: the cause is the import
     if (importStuck()) say("e2: the earlier engine's conversation fails to import the same way: the owner is offered /clear");
+  }
+  // The import answered Done; or (E2-REP1) it stopped because its summarizer's provider is held (nothing
+  // sent): it is pending and waits, the provider's cause, never the import's (not counted toward importStuck).
+  bool importSettled() {
+    if (migrationStatus_.ok()) {
+      sameFailures_ = 0;
+      return true;
+    }
+    if (migrationStatus_.err != nimbus::orch::tx::Err::Busy) return false;
+    say("e2: the earlier engine's conversation waits for its summarizer's provider: nothing sent");
+    importPending_ = !(d_.noCard && d_.noCard());
+    return true;
   }
   // RB-TG1: the chat's taken updates from the filled arena and head.json's high water.
   void rebuildSeen() {
@@ -1131,13 +1137,16 @@ class ChatBinding {
   // whole reply, then the outbound screen, once per reply (a resend after a refused allocation, from
   // a later part, keeps the first verdict), then the portable deliver function over the channel. A
   // withheld reply sends nothing of itself; the status line, the harness's own words, still goes.
+  // E2-REP1: a re-check's status line waits for its answer (noteHead sends it, or the park's words).
+  void holdProbeStatus(DeliverInput& go, DeliverOutcome& out) {
+    if (!probeTurn_ || !go.statusText || out.statusSent) return;
+    heldStatus_ = *go.statusText;
+    go.statusText = nullptr;
+    out.statusSent = true;
+  }
   Status deliverReply(const DeliverInput& in, DeliverOutcome& out) {
     DeliverInput go = in;
-    if (probeTurn_ && in.statusText && !out.statusSent) {   // E2-REP1: sent after the turn, by noteHead
-      heldStatus_ = *in.statusText;
-      go.statusText = nullptr;
-      out.statusSent = true;
-    }
+    holdProbeStatus(go, out);
     if (!d_.replyFilter && !d_.replyScreen) return deliverTurn(DeliverDeps{&channel_, nullptr, nullptr}, go, out);
     if (in.text && !in.text->empty() && !out.replyDone && in.turn) {
       if (in.fromPart == 0) {

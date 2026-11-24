@@ -278,6 +278,12 @@ static std::string sendKey(const std::string& name, ArduinoJson::JsonObjectConst
   return name;
 }
 
+// E2-REP1: engine 2's send names its chat `chat`; none from a device channel goes elsewhere (the owner's).
+static std::string plainSendKey(ArduinoJson::JsonObjectConst a, const ActionCaller& c) {
+  const std::string to = str(a, "chat");
+  return (!to.empty() && to != c.chat) || (to.empty() && deviceChannel(c.chat)) ? "send.other_chat" : "send";
+}
+
 // Sharing makes a file readable by everyone who talks to the device: the owner may
 // share any file, so only when writing now; stopping a share stays open.
 static std::string shareKey(ArduinoJson::JsonObjectConst a, const ActionCaller& c) {
@@ -306,10 +312,7 @@ std::string toolActionKey(const std::string& name, ArduinoJson::JsonObjectConst 
     return changeKey(name, a, "openq.edit.change", {"add", "remove"});
   if (name == "reply.telegram" || name == "files.send") return sendKey(name, a, c);
   if (name == "files.share") return shareKey(a, c);
-  if (name == "send") {   // E2-REP1: engine 2's send names its chat `chat`; none from a device channel goes elsewhere
-    const std::string to = str(a, "chat");
-    return (!to.empty() && to != c.chat) || (to.empty() && deviceChannel(c.chat)) ? "send.other_chat" : name;
-  }
+  if (name == "send") return plainSendKey(a, c);
   return name;
 }
 
