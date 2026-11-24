@@ -22,6 +22,7 @@
 #include "store.h"                          // providerOverBudget, recordProviderCall
 #include "tools_plain_send.h"               // lane E2-P-OUT1: send and speak
 #include "tools_plain_files.h"              // lane E2-P-OUT2: the files_admin and media tools
+#include "tools_plain_device.h"             // lane E2-P-TOOLS: the device, people, models and docs groups
 #include "transport_tls.h"                  // deviceProviderDeps
 
 namespace agent {
