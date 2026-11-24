@@ -91,6 +91,7 @@
 #include "nimbus/orch/voice_notes.h"    // voiceReasonUnconfirmed: an upload Telegram never confirmed
 #include "sys/tls_arbiter.h"
 #include "sys/heap_watch.h"   // failed-allocation ring, low-water ladder, spawn gate
+#include "sys/log_console.h"   // esp_log console writer (lane E2-STACK2)
 #include "sys/sd_dma_bounce.h"   // the card's reserved DMA buffer (before the mount)
 #include "nimbus/sd_recovery.h"     // the owner's one notice per memory-card outage
 #include "hw/hal_status.h"
@@ -3672,6 +3673,7 @@ void setup() {
   Serial.setRxBufferSize(nimbus::usbfw::kMaxChunk + 512);
 #endif
   Serial.begin(115200);
+  nimbus::logconsole::install();   // esp_log's lines without the deep stdout printf (E2-STACK2)
   // HWCDC (USB-serial-JTAG) TX must never block indefinitely: with no host
   // reading, buffered writes stall the writer - with our debug/heartbeat prints
   // that can wedge the loop and, observed live, the whole USB peripheral (a

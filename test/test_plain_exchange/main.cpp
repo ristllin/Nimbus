@@ -21,6 +21,7 @@
 #include "nimbus/harness/platform.h"
 #include "nimbus/harness/plain/exchange.h"
 #include "nimbus/harness/plain/route.h"
+#include "nimbus/orch/psram_alloc.h"
 #include "nimbus/orch/wire_limits.h"
 #include "nimbus/tg_html.h"
 #include "nimbus/utf8.h"
@@ -440,6 +441,38 @@ static void test_inputs_are_checked() {
   rig2.req.wire = nullptr;
   TEST_ASSERT_TRUE(rig2.run().err == plain::Err::InvalidArgument);
   TEST_ASSERT_EQUAL(0, (int)rig.model.requests().size() + (int)rig2.model.requests().size());
+}
+
+// Lane E2-STACK2: the exchange's state lives in the working set, not on the stack. When that
+// allocation fails the exchange says so and sends nothing; the state is given back on success.
+static void* gNoMemory(std::size_t) { return nullptr; }
+static int gLive = 0;
+static void* gCounting(std::size_t n) {
+  ++gLive;
+  return std::malloc(n);
+}
+static void gCountingFree(void* p) {
+  if (p) --gLive;
+  std::free(p);
+}
+static void test_the_exchange_state_is_allocated_and_given_back() {
+  Rig rig;
+  rig.model.push(sp::say("It is sunny."));
+  nimbus::orch::setWorkingAllocators(gNoMemory, nullptr);
+  const plain::Status st = rig.run();
+  nimbus::orch::setWorkingAllocators(nullptr, nullptr);
+  TEST_ASSERT_TRUE(st.err == plain::Err::TooLarge);
+  TEST_ASSERT_EQUAL_STRING("plain::runExchange: no memory for the exchange state", st.where);
+  TEST_ASSERT_EQUAL(0, (int)rig.model.requests().size());
+  Rig ok;
+  ok.model.push(sp::say("It is sunny."));
+  gLive = 0;
+  nimbus::orch::setWorkingAllocators(gCounting, gCountingFree);
+  const plain::Status st2 = ok.run();
+  nimbus::orch::setWorkingAllocators(nullptr, nullptr);
+  expectOk(st2);
+  TEST_ASSERT_EQUAL(0, gLive);
+  TEST_ASSERT_EQUAL_STRING("It is sunny.", ok.out.step.text.c_str());
 }
 
 static void test_a_plain_answer_is_one_request() {
@@ -1629,6 +1662,7 @@ int main(int, char**) {
   RUN_TEST(test_writer_pieces_and_splices);
   RUN_TEST(test_writer_random_bodies_parse_and_are_stable);
   RUN_TEST(test_inputs_are_checked);
+  RUN_TEST(test_the_exchange_state_is_allocated_and_given_back);
   RUN_TEST(test_a_plain_answer_is_one_request);
   RUN_TEST(test_the_output_cap_fits_the_body_and_the_time);
   RUN_TEST(test_retryable_classes_retry_twice_then_one_line);

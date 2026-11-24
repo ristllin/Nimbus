@@ -256,9 +256,9 @@
       "in": "^esp_log",
       "at": "log/src/log\\.c",
       "targets": [
-        "^vprintf$"
+        "^nimbus::logconsole::\\(anonymous namespace\\)::consoleVprintf\\("
       ],
-      "why": "esp_log's vprintf hook: nothing calls esp_log_set_vprintf, so the default vprintf"
+      "why": "esp_log's vprintf hook: setup() installs logconsole's writer (src/sys/log_console.cpp, esp_log_set_vprintf) before any task logs, and nothing else sets it"
     },
     {
       "in": "^heap_caps_alloc_failed$",
@@ -1182,9 +1182,9 @@
   ],
   "_aliases_why": "Typedefs and macros the source uses for a class: FileImplPtr and FSImplPtr are shared_ptrs of fs::FileImpl and fs::FSImpl (FS.h); WiFiClient(Secure) are the Arduino 3 names of NetworkClient(Secure); Serial is HWCDCSerial on these boards (ARDUINO_USB_CDC_ON_BOOT=1, ARDUINO_USB_MODE=1 in platformio.ini)",
   "stdout_context": {
-    "entries": "^(vprintf|printf|puts|putchar|esp_log_writev|esp_log_write)$",
+    "entries": "^(vprintf|printf|puts|putchar|esp_log_writev|esp_log_write)$|^nimbus::logconsole::",
     "family": "^(_vfprintf_r|vfprintf|__sbprintf|_fflush_r|fflush|__sflush_r|__swrite|_write_r|write|__sfvwrite_r|__sprint_r|_putc_r|__swbuf_r|_puts_r|_putchar_r|__sinit|__smakebuf_r|__swsetup_r|_fwrite_r|esp_vfs_write|__sseek|_lseek_r|lseek|esp_vfs_lseek|console_\\w+|__smakebuf_r|__swhatbuf_r|_fstat_r|fstat|esp_vfs_fstat)$",
     "files": "^(vfs_fat|vfs_littlefs)_",
-    "why": "printf, puts and esp_log write the console stream (stdout, fd 1, the console VFS over USB serial or UART); a file write never runs below them, so inside that stream's stdio calls the VFS reaches the console devices only"
+    "why": "printf, puts, esp_log and logconsole's writer (write() on STDOUT_FILENO) write the console stream (stdout, fd 1, the console VFS over USB serial or UART); a file write never runs below them, so inside that stream's stdio calls the VFS reaches the console devices only"
   }
 }

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <new>
 #include <string>
 #include <utility>
 
@@ -17,6 +18,7 @@
 #include "nimbus/orch/head_loop.h"   // classifyHttpStatus: engine 1's switch rule (E2-P-FO)
 #include "nimbus/orch/compact.h"   // isContextOverflowError: each provider's words for a size refusal
 #include "nimbus/orch/provider_error.h"   // providerErrorText: the message of a provider's error body
+#include "nimbus/orch/psram_alloc.h"   // workingAlloc: the exchange state off the stack
 #include "nimbus/orch/request_budget.h"
 #include "nimbus/orch/router_refusals.h"
 #include "nimbus/orch/tx/budget.h"
@@ -489,9 +491,23 @@ class Exchange {
 
 }  // namespace
 
+// The exchange's state (two RenderInput copies, the head, the request and the route: about 2.3 KB)
+// lives in the working set (PSRAM on the device), not on the caller's stack: a summarizer request
+// runs at the bottom of the Telegram task's deepest chain (lane E2-STACK2). Freed on every way out.
 Status runExchange(const ExchangeDeps& deps, const ExchangeRequest& req, ExchangeResult& out) {
-  Exchange ex(deps, req, out);
-  return ex.run();
+  void* mem = orch::workingAlloc(sizeof(Exchange));
+  if (!mem) {
+    out = ExchangeResult{};
+    return Status::fail(Err::TooLarge, "plain::runExchange: no memory for the exchange state");
+  }
+  struct Owned {
+    Exchange* ex;
+    ~Owned() {
+      ex->~Exchange();
+      orch::workingFree(ex);
+    }
+  } owned{new (mem) Exchange(deps, req, out)};
+  return owned.ex->run();
 }
 
 ExchangeErr classifyAnswer(int status, const std::string& body, bool routed) {

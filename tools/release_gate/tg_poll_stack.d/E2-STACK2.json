@@ -1,0 +1,10 @@
+{
+  "about": "Lane E2-STACK2: the Telegram archive's line reader on tg_poll (lib/core tg_archive_engine.cpp).",
+  "impossible_cycles": [
+    {
+      "caller": "^nimbus::tgarc::\\(anonymous namespace\\)::streamLines\\(",
+      "callee": "^std::function<bool \\(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&\\)>::operator\\(\\)",
+      "why": "tg_archive_engine.cpp: streamLines only calls the line callback its own file passes (forEachLine's wrapper, forEachLineUntil's caller in the same file such as Archive::indexHas); lib/core never holds a device callback, so it never reaches orchestrator chatFor's lambda, which the gate matched by signature alone"
+    }
+  ]
+}
