@@ -48,7 +48,8 @@ What is counted:
   the allowance that explains it. Off a lane branch it lists the allowance files committed
   since the baseline and warns about growth they do not explain.
 - Release floor: a product image (esp32s3, esp32s3-cyd, -35, -40 and their -e2 twins) with
-  less than 200,000 B free in its 6,553,600 B slot fails; under 300,000 B it warns.
+  less than its floor free in its 6,553,600 B slot fails: 200,000 B on an engine-2 image,
+  150,000 B on an engine-1 image (ruling 126); under 300,000 B it warns.
 - Before a parity lane starts, `image_projection.py` (beside the gate) states what its
   feature weighs in engine 1 (`--group <name>`, groups in `../parity_groups.json`); after it
   lands, the same tool over the before and after engine-2 maps lists what it added.

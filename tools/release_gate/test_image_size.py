@@ -579,7 +579,7 @@ PRODUCT_INI = INI + "".join(f"\n[env:{e}]\nextends = s3\n" for e in gate.PRODUCT
 
 @pytest.mark.parametrize("env", gate.PRODUCT_ENVS)
 def test_counter_a_product_image_under_the_release_floor_fails(tmp_path, env):
-    root, fw = make_root(tmp_path, ini=PRODUCT_INI, images={env: SLOT - gate.RELEASE_FLOOR_BYTES + 1})
+    root, fw = make_root(tmp_path, ini=PRODUCT_INI, images={env: SLOT - gate.release_floor(env) + 1})
     ok, _, fails, _ = run_gate(root, fw)
     assert not ok
     assert any(env in f and "release floor" in f for f in fails)
@@ -589,8 +589,18 @@ def test_a_product_image_at_the_floor_passes_with_a_warning_that_says_the_margin
     root, fw = make_root(tmp_path, ini=PRODUCT_INI, images={"esp32s3-cyd": SLOT - 213_520})
     ok, lines, fails, warns = run_gate(root, fw)
     assert ok and not fails
-    assert any("213520 B free" in w and "13520 B above the release floor" in w for w in warns)
+    assert any("213520 B free" in w and "63520 B above the release floor of 150000 B" in w for w in warns)
     assert any(ln.startswith("esp32s3-cyd ") and ln.endswith("WARN") for ln in lines)
+
+
+def test_ruling_126_the_old_engine_floor_is_150000_and_the_new_one_200000(tmp_path):
+    # 190,000 B free: inside the engine-1 floor, under the engine-2 one.
+    root, fw = make_root(tmp_path, ini=PRODUCT_INI, images={"esp32s3-cyd": SLOT - 190_000})
+    ok, _, fails, warns = run_gate(root, fw)
+    assert ok and not fails and any("40000 B above the release floor of 150000 B" in w for w in warns)
+    root, fw = make_root(tmp_path / "b", ini=PRODUCT_INI, images={"esp32s3-cyd-e2": SLOT - 190_000})
+    ok, _, fails, _ = run_gate(root, fw)
+    assert not ok and any("under the release floor of 200000 B" in f for f in fails)
 
 
 def test_the_warn_line_ends_at_300000_free(tmp_path):

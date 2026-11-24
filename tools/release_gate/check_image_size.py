@@ -18,10 +18,12 @@ printed with its partition table, app slot size, image size and headroom,
 production envs included.
 
 Release floor (lane E2-GATE, 24 Nov 2026): a product image (PRODUCT_ENVS: esp32s3,
-esp32s3-cyd, -35, -40 and their -e2 twins) with less than RELEASE_FLOOR_BYTES (200,000 B)
-free in its slot fails, and one under RELEASE_WARN_BYTES (300,000 B) warns: engine 2 must
-carry every feature of the released engine in the same slot, and a full slot found at
-release time is found too late.
+esp32s3-cyd, -35, -40 and their -e2 twins) with less than its floor free in its slot fails
+(release_floor(): RELEASE_FLOOR_BYTES, 200,000 B, on an engine-2 image; ENGINE1_FLOOR_BYTES,
+150,000 B, on an engine-1 image since ruling 126: the old engine is the way back and no longer
+developed), and one under RELEASE_WARN_BYTES (300,000 B) warns: engine 2 must carry every
+feature of the released engine in the same slot, and a full slot found at release time is
+found too late.
 
 One table: env, partitions, slot, image bytes, free bytes, the code change against
 image_baseline.json (docs pack apart; "~" marks a whole-image change when the ELF is
@@ -67,6 +69,7 @@ import sys
 
 WARN_BYTES = 64 * 1024
 RELEASE_FLOOR_BYTES = 200_000
+ENGINE1_FLOOR_BYTES = 150_000  # ruling 126 (24 Nov 2026): the old engine's product images
 RELEASE_WARN_BYTES = 300_000
 PRODUCT_ENVS = (
     "esp32s3",
@@ -162,17 +165,23 @@ def app_rows(rows: "list[dict[str, object]]") -> "list[dict[str, object]]":
     return [r for r in rows if r["type"] == "app"]
 
 
+def release_floor(env: str) -> int:
+    """The free bytes a product image keeps in its slot: 200,000 B on engine 2, 150,000 B on engine 1."""
+    return RELEASE_FLOOR_BYTES if is_engine2(env) else ENGINE1_FLOOR_BYTES
+
+
 def headroom_verdict(env: str, headroom: int, warn_bytes: int) -> "tuple[str, str]":
     """(OK/WARN/FAIL, detail) for an image that fits: the release floor on a product env, else the WARN line."""
-    if env in PRODUCT_ENVS and headroom < RELEASE_FLOOR_BYTES:
+    floor = release_floor(env)
+    if env in PRODUCT_ENVS and headroom < floor:
         return "FAIL", (
-            f"{env}: {headroom} B free in the slot, under the release floor of {RELEASE_FLOOR_BYTES} B: "
+            f"{env}: {headroom} B free in the slot, under the release floor of {floor} B: "
             "a product image keeps that room for the features still to come; cut bytes before this lands"
         )
     if env in PRODUCT_ENVS and headroom < RELEASE_WARN_BYTES:
         return "WARN", (
             f"{env}: {headroom} B free in the slot, under {RELEASE_WARN_BYTES} B; "
-            f"{headroom - RELEASE_FLOOR_BYTES} B above the release floor of {RELEASE_FLOOR_BYTES} B"
+            f"{headroom - floor} B above the release floor of {floor} B"
         )
     if headroom < warn_bytes:
         return "WARN", f"{env}: headroom {headroom} B is under {warn_bytes} B ({warn_bytes // 1024} KB)"
@@ -717,7 +726,7 @@ def main(argv: "list[str] | None" = None) -> int:
     if ok:
         print(
             f"[gate:image-size] PASS: every built image fits its app partition, every product image keeps "
-            f"{RELEASE_FLOOR_BYTES} B free (WARN under {RELEASE_WARN_BYTES} B; other envs under {args.warn_bytes} B)"
+            f"{RELEASE_FLOOR_BYTES} B free on engine 2 and {ENGINE1_FLOOR_BYTES} B on engine 1 (WARN under {RELEASE_WARN_BYTES} B; other envs under {args.warn_bytes} B)"
         )
     else:
         print("[gate:image-size] FAIL: see above")
