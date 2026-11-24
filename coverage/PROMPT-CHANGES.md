@@ -1406,3 +1406,12 @@ PC-0175, PC-0176: not used.
 - lane: E2-P-SUB
 - prd: section 6 (arrival: the report saved whole as agents/<id>-<name>.md, one item carrying it as an outside bulk result, then one head turn), AGENTS.md rule 9
 - why: lib/harness/include/nimbus/harness/plain/texts.h stubs: the line that opens a report turn's agent item (plain_agents.cpp agentReportNote): "[agent report] <name> id=<tag>", " failed" when the job ended without a result, " saved whole as agents/<tag>-<name>.md" for the file the JobEngine stored the whole reply in; then the report inside the outside-content fence jobs.h already uses for routines. Kept in the stubs class because, like a stub, it names where the whole bytes are kept (the report text itself is cut at 3,500 characters by the JobEngine); the device-notes class had 2 B left. Planned work, not a fix.
+### PC-0236: the hosted daemon registers engine 2's web_search, as the device does (engine 2)
+- catalog: e2
+- class: tool_results
+- kind: spec
+- bytes: 7097 -> 7137
+- sha8: d5a076a0 -> 9708011e
+- lane: RB-I1
+- prd: section 4 (web_search), inventory parity-daemon-hosted-release part (a) row A10
+- why: nimbusd/src/hosted_web_search.h is the hosted twin of src/agent/tools_plain.cpp's registration: the names "web_search" and "web.search" and the argument "query", the same words the device file already has, over the old engine's handler; its no-key refusal is texts.h kWebSearchNoKey, unchanged. No new sentence a model reads: the class grows only by the second file's copies of those names. Written by lane E2-P-HOST1 (RB-I1's hosts on engine 2). Planned work, not a fix (CUM-1010).

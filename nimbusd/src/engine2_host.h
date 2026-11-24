@@ -17,6 +17,7 @@
 #include "hosted_loops.h"   // the schedule tool and its fires (lane E2-SCHED)
 #include "hosted_notes.h"
 #include "hosted_tx.h"
+#include "hosted_web_search.h"   // web_search (lane E2-P-HOST1)
 #include "nimbus/harness/plain/chat_binding.h"   // the device's binding (lane E2-P-HOST1)
 #include "nimbus/harness/plain/chat_commands.h"   // /clear's generation
 #include "nimbus/harness/plain/chat_photos.h"
@@ -155,7 +156,7 @@ class Engine2Host {
     nimbus::orch::registerCalcTool(reg_);
     fileTools_.attach(reg_);
     history_.registerInto(reg_);
-    registerWebSearch();
+    registerHostedWebSearch(reg_, webInner_, o_.webSearch, o_.webSearchOpen);
     if (o_.loops) {
       o_.loops->attachSchedule(reg_);
       o_.loops->setStateFiles(&routineFiles_);
@@ -456,24 +457,6 @@ class Engine2Host {
     return true;
   }
   bool telegramTurn() const { return o_.turnProgress && !curChat_.empty() && curChat_ != o_.chatId; }
-
-  // web_search (lane E2-TOOLS on the device): the old engine's web.search handler on a private registry,
-  // reached with the engine-2 name and arguments ({query}). No search key: one plain line.
-  void registerWebSearch() {
-    const auto* decl = plain::toolDecl("web_search");
-    if (!decl || !o_.webSearch.search) return;
-    agent::websearch::registerWebSearchTool(webInner_, o_.webSearch);
-    reg_.add(
-        "web_search", decl->description,
-        [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) {
-          if (o_.webSearchOpen && !o_.webSearchOpen())
-            return nimbus::orch::ToolResult::fail(plain::texts::tool_results::kWebSearchNoKey);
-          ArduinoJson::JsonDocument args;
-          args["query"] = a["query"];
-          return webInner_.dispatch("web.search", args.as<ArduinoJson::JsonObjectConst>(), who);
-        },
-        plain::declSchema(*decl, false));
-  }
 
   // The skill store's files: <data>/mem/skills/<id>/SKILL.md (chatSkillsOf keeps the approved ones).
   std::vector<plain::SkillFile> skillFiles() const {

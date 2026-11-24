@@ -4,7 +4,7 @@
 # class core bytes=1595 ceiling=3072 entries=30 sha8=6bf20834
 # class device_notes bytes=2046 ceiling=2048 entries=78 sha8=2204d611
 # class stubs bytes=414 ceiling=512 entries=18 sha8=e548380a
-# class tool_results bytes=7188 ceiling=9216 entries=507 sha8=6ad8a571
+# class tool_results bytes=7228 ceiling=9216 entries=512 sha8=56f1887e
 # class probe bytes=1323 ceiling=1536 entries=3 sha8=29789b84
 # class summarizer bytes=1021 ceiling=1024 entries=17 sha8=a9622cfe
 # class tool_descriptions bytes=4866 ceiling=10240 entries=52 sha8=8e3dd670
@@ -636,6 +636,11 @@ tool_results	lib/harness/include/nimbus/harness/plain/texts.h	0dacc566	7	"no job
 tool_results	lib/harness/include/nimbus/harness/plain/texts.h	a71932c1	7	": open\n"
 tool_results	lib/harness/include/nimbus/harness/plain/texts.h	69bdfe15	12	"stopping id="
 tool_results	lib/harness/include/nimbus/harness/plain/texts.h	df08efc0	13	"no such job: "
+tool_results	nimbusd/src/hosted_web_search.h	2a719626	10	"web_search"
+tool_results	nimbusd/src/hosted_web_search.h	2a719626	10	"web_search"
+tool_results	nimbusd/src/hosted_web_search.h	a8b77192	5	"query"
+tool_results	nimbusd/src/hosted_web_search.h	a8b77192	5	"query"
+tool_results	nimbusd/src/hosted_web_search.h	15f83c80	10	"web.search"
 tool_results	src/agent/tools_plain.cpp	15f83c80	10	"web.search"
 tool_results	src/agent/tools_plain.cpp	a8b77192	5	"query"
 tool_results	src/agent/tools_plain.cpp	5e2d82cb	6	"tavily"
