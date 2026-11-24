@@ -138,6 +138,7 @@ Role roleOf(plan::PieceKind k) {
 }
 
 struct Grouper {
+  bool mergeUsers = false;   // the row's merge-users rule (caps::order::kMergeUsers): no two user messages in a row
   std::vector<Msg> msgs;
   std::vector<uint16_t> viewed;   // photos waiting for the end of the round's tool messages
   uint32_t viewedTurn = 0;
@@ -168,8 +169,11 @@ struct Grouper {
     flushViewed();
     // A piece that opens a message keeps it, even after a user message (text-mode history follows the owner's
     // message): joining it would change a message an earlier request sent (the stable prefix).
-    const bool join = !msgs.empty() && msgs.back().role == role && msgs.back().turn == pc.turn &&
-                      !(role == Role::User && (pc.flags & plan::kOpens));
+    // Lane E2-REP5: a row with the merge-users rule (every row of the table) gets one user message, so a strict
+    // chat template's role alternation holds; the earlier request's last message then grows at its end.
+    const bool sameRole = !msgs.empty() && msgs.back().role == role;
+    const bool join = sameRole && ((role == Role::User && mergeUsers) ||
+                                   (msgs.back().turn == pc.turn && !(role == Role::User && (pc.flags & plan::kOpens))));
     if (!join) {
       Msg m;
       m.role = role;
@@ -430,8 +434,9 @@ size_t reserveFor(const RenderInput& in, const plan::Plan& p) {
   return n;
 }
 
-Status groupPieces(const plan::Plan& p, bool text, std::vector<Msg>& out) {
+Status groupPieces(const plan::Plan& p, bool text, bool mergeUsers, std::vector<Msg>& out) {
   Grouper g;
+  g.mergeUsers = mergeUsers;
   for (uint32_t i = 0; i < p.pieces.size(); ++i) {
     const plan::PieceKind k = p.pieces[i].kind;
     // Text-mode history (calls and results as text) is the planner's (lane E2-R4b); a call it still hands
@@ -461,7 +466,8 @@ Status renderBody(const RenderInput& in, HttpRequest& out) {
   if (!st.ok()) return st;
   if (!p.anyBlock) return Status::fail(Err::InvalidArgument, "plain::chat.render.noMessages");
   std::vector<Msg> msgs;
-  if (!(st = groupPieces(p, text, msgs)).ok()) return st;
+  const bool merge = !in.route || !in.route->caps.provider || (in.route->caps.row.orderRules & caps::order::kMergeUsers);
+  if (!(st = groupPieces(p, text, merge, msgs)).ok()) return st;
   if (!text && in.tools->empty())
     for (const Msg& m : msgs)
       if (m.role == Role::Tool) return Status::fail(Err::InvalidArgument, "plain::chat.render.noTools");

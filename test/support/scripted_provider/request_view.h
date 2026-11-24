@@ -289,6 +289,18 @@ inline bool parseRequest(Dialect d, const std::string& body, RequestView& out) {
 // before anything new (images by their source, thinking with its signature). The model
 // and tool_choice are not compared: the last round after a guard trip sets tool_choice
 // none. Both views must have parsed.
+// Lane E2-REP5: a row with the merge-users rule joins a user message that follows the earlier request's last
+// user message into it, so that last message may grow at its end (its blocks kept, more after them).
+inline bool grewAtItsEnd(const RequestView& earlier, const RequestView& later, size_t i) {
+  const Message& a = earlier.messages[i];
+  const Message& b = later.messages[i];
+  if (i + 1 != earlier.messages.size() || a.role != "user" || b.role != a.role || b.blocks.size() <= a.blocks.size())
+    return false;
+  for (size_t k = 0; k < a.blocks.size(); ++k)
+    if (!(a.blocks[k] == b.blocks[k])) return false;
+  return true;
+}
+
 inline bool isPrefix(const RequestView& earlier, const RequestView& later, std::string& why) {
   if (earlier.systemBlocks != later.systemBlocks) {
     why = "system changed";
@@ -307,7 +319,7 @@ inline bool isPrefix(const RequestView& earlier, const RequestView& later, std::
     return false;
   }
   for (size_t i = 0; i < earlier.messages.size(); ++i)
-    if (!(earlier.messages[i] == later.messages[i])) {
+    if (!(earlier.messages[i] == later.messages[i]) && !grewAtItsEnd(earlier, later, i)) {
       why = "message " + std::to_string(i) + " changed";
       return false;
     }

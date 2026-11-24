@@ -201,6 +201,14 @@ void test_text_mode_sends_no_tools() {
                            out.body.c_str());
   q.body = out.body;
   TEST_ASSERT_TRUE_MESSAGE(wire_shape::chatRequest(q, wire_shape::ChatFlavor::Custom, why), why.c_str());
+  // E2-REP5 (review F6): the row's merge-users rule: the text-mode line joins the owner's message, so the roles
+  // alternate for a strict chat template (a round of turn 2 in text mode: owner, then the line).
+  const std::string id3 = c.call("read_file", "{}");
+  c.receipt(id3, "read_file", "bed 3: shade");
+  TXB_OK(txb::renderItems(fx, c, 0, out, c.turn));
+  for (size_t i = 1; i < out.view.messages.size(); ++i)
+    TEST_ASSERT_FALSE_MESSAGE(out.view.messages[i].role == "user" && out.view.messages[i - 1].role == "user",
+                              out.body.c_str());
 }
 
 // Design D2: the codec reads the route; it names no provider host, window, cap or price.
