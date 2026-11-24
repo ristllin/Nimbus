@@ -12,6 +12,7 @@
 
 #include "../support/tx_battery/fixtures.h"
 #include "../support/tx_battery/props.h"
+#include "../support/tx_battery/rows.h"
 #include "engine_tests.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/orch/tx/photo_text.h"
@@ -436,6 +437,35 @@ inline void test_a_photo_is_uploaded_once_and_named_by_its_file_id_after() {
   TEST_ASSERT_EQUAL(5, uploads);
 }
 
+// Lane E2-REP4 (review F3): a ten-photo album to a model whose table row takes eight (Mistral Small) is
+// sent with eight as pixels and the rest as their true line, so the provider never gets a request it
+// refuses; a row that takes the photo's format and size sends it as pixels.
+inline void test_an_album_past_the_rows_photo_count_sends_the_rest_as_lines() {
+  txb::Row row;
+  for (const txb::Row& r : txb::tableRows())
+    if (r.slot == nimbus::orch::caps::Slot::Mistral && !r.routed) row = r;
+  TEST_ASSERT_TRUE(row.slot == nimbus::orch::caps::Slot::Mistral);
+  txb::Battery b(row);
+  b.modelOverride = "mistral-small-latest";
+  std::vector<tx::Part> parts;
+  for (size_t i = 0; i < 10; ++i) {
+    const std::string ref = "p" + std::string(7, '0') + std::to_string(i);
+    b.photoStore[ref] = jpeg((char)('a' + i), 20000);
+    parts.push_back(photoPart(ref, 20000));
+  }
+  b.model.push(sp::say("Ten photos."));
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("ten photos", out, parts));
+  const std::string& body = lastBody(b);
+  size_t images = 0;
+  for (size_t at = body.find("\"type\":\"image_url\""); at != std::string::npos; at = body.find("\"type\":\"image_url\"", at + 1)) ++images;
+  TEST_ASSERT_EQUAL_MESSAGE(8, (int)images, "the request carried more photos than the row takes");
+  size_t lines = 0;
+  for (size_t at = body.find(tx::kPhotoOverLimit); at != std::string::npos; at = body.find(tx::kPhotoOverLimit, at + 1)) ++lines;
+  TEST_ASSERT_EQUAL_MESSAGE(2, (int)lines, "a photo past the row's count has no true line");
+  TEST_ASSERT_EQUAL(1, (int)b.model.requests().size());
+}
+
 inline void run() {
   RUN_TEST(test_a_photo_stays_in_view_across_turns_time_and_a_restart);
   RUN_TEST(test_a_photo_past_the_caps_gets_a_true_line_and_names_no_unbound_tool);
@@ -447,6 +477,7 @@ inline void run() {
   RUN_TEST(test_a_photo_the_provider_refuses_ends_in_a_reply_with_a_true_line);
   RUN_TEST(test_a_photo_is_uploaded_once_and_named_by_its_file_id_after);
   RUN_TEST(test_a_refused_photo_stays_refused_after_a_restart);
+  RUN_TEST(test_an_album_past_the_rows_photo_count_sends_the_rest_as_lines);
 }
 
 }  // namespace photo_tests

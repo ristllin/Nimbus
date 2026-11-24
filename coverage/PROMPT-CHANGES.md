@@ -1575,3 +1575,13 @@ PC-0175, PC-0176: not used.
 - lane: RB-I2
 - prd: section 4 (media behind more)
 - why: src/agent/tools_plain_files.cpp registerTools: the registered name "media_list", counted as model text because the model spells calls with it (as "media_stop"); no result line is new.
+
+### PC-0273: the line of a photo past the model row's photo limits (engine 2)
+- catalog: e2
+- class: stubs
+- kind: build
+- bytes: 492 -> 512
+- sha8: 33dccf84 -> b42c515f
+- lane: E2-REP4
+- prd: section 5 (photos), ROUTER-DESIGN.md section 7 (the table's image limits), ruling 116, AGENTS.md rule 9
+- why: lib/core/include/nimbus/orch/tx/photo_text.h kPhotoOverLimit, the third end of tx::photoAbsentLine. The planner (plain_plan.cpp rowTakes) now reads the model row's imagesMax, imageFormats and imageMaxKiB: a photo past the row's count (the open turn's own first, then the earlier ones newest first), in a format the row does not take, or larger than its size renders as "[photo p<ref> <when>: <description>; over the model limit]" instead of pixels, so a ten-photo album to a row that takes eight (Mistral Small and Medium) is no longer refused by the provider (review F3, analysis-2026-11-24/review-provider-wires.md). Red scenario: test_plain_conformance test_an_album_past_the_rows_photo_count_sends_the_rest_as_lines (ten image parts before the fix). PC-0274: not used.

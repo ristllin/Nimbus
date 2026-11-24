@@ -3,7 +3,7 @@
 # One entry per line: class, source, sha8, bytes, the text as a JSON string.
 # class core bytes=1706 ceiling=3072 entries=32 sha8=51b7732e
 # class device_notes bytes=2046 ceiling=2048 entries=78 sha8=2204d611
-# class stubs bytes=492 ceiling=512 entries=22 sha8=33dccf84
+# class stubs bytes=512 ceiling=512 entries=23 sha8=b42c515f
 # class tool_results bytes=8951 ceiling=9216 entries=635 sha8=ffa17b15
 # class probe bytes=1344 ceiling=1536 entries=6 sha8=f4dd133a
 # class summarizer bytes=1021 ceiling=1024 entries=17 sha8=a9622cfe
@@ -124,6 +124,7 @@ stubs	lib/core/include/nimbus/orch/tx/photo_text.h	f7faedee	11	"; view id=p"
 stubs	lib/core/include/nimbus/orch/tx/photo_text.h	1c1868da	15	" shows it again"
 stubs	lib/core/include/nimbus/orch/tx/photo_text.h	bc665f65	28	"this model cannot see photos"
 stubs	lib/core/include/nimbus/orch/tx/photo_text.h	0ca121a8	54	"the provider refused this photo, so it is not attached"
+stubs	lib/core/include/nimbus/orch/tx/photo_text.h	f8452349	20	"over the model limit"
 stubs	lib/core/include/nimbus/orch/tx/result_text.h	32ebb1ab	1	"("
 stubs	lib/core/include/nimbus/orch/tx/result_text.h	27e11f66	6	" ... ("
 stubs	lib/core/include/nimbus/orch/tx/result_text.h	0376d46c	72	"shown in full earlier in this conversation; not attached to this request"

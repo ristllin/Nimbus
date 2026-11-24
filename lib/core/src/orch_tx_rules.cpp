@@ -385,6 +385,7 @@ Status photoAbsentLine(const std::string& ref8, const std::string& when, const s
   s += ": ";
   if (!note.empty()) appendLine(s, note, kPhotoNoteMax, true);
   if (why == PhotoAbsent::Refused) s += std::string(note.empty() ? "" : "; ") + kPhotoRefused;
+  else if (why == PhotoAbsent::OverLimit) s += std::string(note.empty() ? "" : "; ") + kPhotoOverLimit;
   else if (note.empty()) s += kPhotoNoSight;
   s += ']';
   out.swap(s);

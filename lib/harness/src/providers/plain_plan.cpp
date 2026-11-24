@@ -122,6 +122,11 @@ struct RowRules {
   uint8_t order = caps::order::kEndsOnUser | caps::order::kResultsFirstInUser | caps::order::kNoEmptyText |
                   caps::order::kMergeUsers | caps::order::kNotOnlySystem;
   uint32_t realBytesMax = 0;   // the route's real-byte limit (0 = none)
+  // Lane E2-REP4: the row's image limits (0 = none): photos a request carries as pixels, the largest
+  // one in bytes, the formats it takes (caps::imgfmt).
+  uint16_t imagesMax = 0;
+  uint32_t imageMaxBytes = 0;
+  uint8_t imageFormats = 0;
 };
 
 RowRules rowRules(const RenderInput& in) {
@@ -133,6 +138,9 @@ RowRules rowRules(const RenderInput& in) {
   r.idRule = row.idRule;
   r.replayScope = row.replayScope;
   r.dropUnderRung = row.flags & caps::flag::kDropUnderRung;
+  r.imagesMax = row.imagesMax;
+  r.imageMaxBytes = (uint32_t)row.imageMaxKiB * 1024u;
+  r.imageFormats = row.imageFormats;
   // Text-mode history only for a request that offers no tools: a row without tools whose codec or pre-flight
   // sends none (a custom Messages head keeps its tools array until the verify step, lane R8).
   r.tools = (row.flags & caps::flag::kTools) || (in.tools && !in.tools->empty());
@@ -519,16 +527,33 @@ bool photoLine(const Builder& b, const tx::Item& u, const tx::Part& p, bool abse
                 : tx::photoStub(p.ref.substr(1), when, note, stub, b.in.bound.view).ok();
 }
 
+// Lane E2-REP4: does the row take this photo as pixels: within its count (`rank` among the request's
+// visible photos, which list the open turn's own first, then the earlier ones newest first, so the
+// oldest go past it first), one of its formats, and within its size for inline bytes?
+bool rowTakes(const RowRules& r, size_t rank, const PhotoBytes& px) {
+  if (r.imagesMax && rank >= r.imagesMax) return false;
+  if (r.imageFormats) {
+    const uint8_t fmt = px.mime == "image/jpeg" ? caps::imgfmt::kJpeg : px.mime == "image/png" ? caps::imgfmt::kPng
+                        : px.mime == "image/gif"  ? caps::imgfmt::kGif  : px.mime == "image/webp" ? caps::imgfmt::kWebp : 0;
+    if (fmt && !(r.imageFormats & fmt)) return false;
+  }
+  return !(px.fileId.empty() && r.imageMaxBytes && px.len > r.imageMaxBytes);
+}
+
 // A photo of an owner message: pixels when the open turn shows it (by file id, else inline bytes
 // spliced at send time), else its stub line. False when nothing is sent (a part whose ref is not a
 // photo ref has nothing to name).
 bool photoPiece(Builder& b, const tx::Item& u, uint32_t idx, const tx::Part& p, bool opens) {
   tx::PhotoAbsent why = tx::PhotoAbsent::Blind;
-  const bool absent = photoAbsent(b.in, p.ref, why);
-  const bool shown = !absent && std::find(b.f.photos.begin(), b.f.photos.end(), p.ref) != b.f.photos.end();
+  bool absent = photoAbsent(b.in, p.ref, why);
+  const auto pos = std::find(b.f.photos.begin(), b.f.photos.end(), p.ref);
+  const bool shown = !absent && pos != b.f.photos.end();
   PhotoBytes px;
-  if (shown && b.in.photo && b.in.photo(p.ref, px).ok() &&
-      (!px.fileId.empty() || (px.bytes && px.len && imageMime(px.mime)))) {
+  const bool got = shown && b.in.photo && b.in.photo(p.ref, px).ok();
+  if (got && !rowTakes(b.f.rules, (size_t)(pos - b.f.photos.begin()), px)) {
+    absent = true;
+    why = tx::PhotoAbsent::OverLimit;
+  } else if (got && (!px.fileId.empty() || (px.bytes && px.len && imageMime(px.mime)))) {
     const uint16_t at = b.photo(px, p.ref);
     Piece& pc = b.add(PieceKind::Photo, idx, u.turn);
     pc.photo = at;

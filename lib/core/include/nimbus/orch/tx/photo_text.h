@@ -15,6 +15,9 @@ inline constexpr char kPhotoViewClose[] = " shows it again";
 inline constexpr char kPhotoNoSight[] = "this model cannot see photos";
 // Lane E2-P-PHOTO (PC-0232): a photo the provider refused (its format) in this conversation.
 inline constexpr char kPhotoRefused[] = "the provider refused this photo, so it is not attached";
+// Lane E2-REP4 (PC-0273): past what the model's table row takes in one request (its photo count, the
+// formats or the size it accepts), so the provider is never sent a request it refuses.
+inline constexpr char kPhotoOverLimit[] = "over the model limit";
 
 }  // namespace tx
 }  // namespace orch

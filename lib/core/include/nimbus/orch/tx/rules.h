@@ -197,7 +197,9 @@ Status photoStub(const std::string& ref8, const std::string& when, const std::st
 // cannot see photos]'; Refused (the provider refused the photo in this conversation) gives '...:
 // <note>; the provider refused this photo, so it is not attached]' (no note: the reason alone).
 // The note as photoStub writes it. InvalidArgument for a bad ref.
-enum class PhotoAbsent : uint8_t { Blind = 0, Refused = 1 };
+// OverLimit (lane E2-REP4): past the model row's photo count, formats or size: '...: <note>; over the
+// model limit]'.
+enum class PhotoAbsent : uint8_t { Blind = 0, Refused = 1, OverLimit = 2 };
 Status photoAbsentLine(const std::string& ref8, const std::string& when, const std::string& note, PhotoAbsent why,
                        std::string& out);
 
