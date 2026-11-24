@@ -121,6 +121,40 @@ inline bool hostedTextDoc(const std::string& name) {
   return false;
 }
 
+// The person's readable text files, newest first, at most `max` (the device's scan order).
+inline std::vector<const nimbus::orch::FileEntry*> readableTextDocs(nimbus::orch::FileStore& s,
+                                                                   const nimbus::orch::Principal& who, size_t max,
+                                                                   size_t& candidates) {
+  const bool shared = who.owner || who.perms().readShared;
+  std::vector<const nimbus::orch::FileEntry*> docs;
+  for (const nimbus::orch::FileEntry* e : s.list())
+    if (hostedTextDoc(nimbus::orch::plainCopy(e->name)) && s.readableBy(*e, who.ns, who.owner, shared)) docs.push_back(e);
+  candidates = docs.size();
+  std::sort(docs.begin(), docs.end(), [](const nimbus::orch::FileEntry* x, const nimbus::orch::FileEntry* y) {
+    return x->createdAt != y->createdAt ? x->createdAt > y->createdAt : x->name < y->name;
+  });
+  if (docs.size() > max) docs.resize(max);
+  return docs;
+}
+
+// One file's hit: its path, the window around its first matching word on one line, and whether it is
+// outside content (inbox/, agents/ or another person's file).
+inline agent::plain::FileHit fileHitOf(const nimbus::orch::FileStore& s, const nimbus::orch::FileEntry& e,
+                                       const std::string& path, const std::string& body,
+                                       const nimbus::orch::LexQuery& lex, const nimbus::orch::Principal& who) {
+  agent::plain::FileHit h;
+  h.path = path;
+  h.excerpt = nimbus::utf8Window(body, nimbus::orch::lexFirstHit(body.data(), body.size(), lex), 40, 160);
+  for (char& ch : h.excerpt)
+    if (ch == '\n' || ch == '\r' || ch == '\t') ch = ' ';
+  JsonDocument args;
+  args["path"] = h.path;
+  std::string json;
+  serializeJson(args, json);
+  h.outside = agent::plain::readsOutsidePath("read_file", json) || !s.ownedBy(e, who.ns, false);
+  return h;
+}
+
 // The words inside the person's readable text files, newest 512 read, best first (the device's scan).
 inline bool hostedFileSearch(PosixFiles& files, const nimbus::orch::Principal& who, const std::string& query,
                              agent::plain::FileSearch& out) {
@@ -129,17 +163,8 @@ inline bool hostedFileSearch(PosixFiles& files, const nimbus::orch::Principal& w
   const nimbus::orch::LexQuery lex = nimbus::orch::lexParse(query);
   std::lock_guard<std::recursive_mutex> g(files.mutex());
   nimbus::orch::FileStore& s = files.toolsIndex();
-  const bool shared = who.owner || who.perms().readShared;
-  std::vector<const nimbus::orch::FileEntry*> docs;
-  for (const nimbus::orch::FileEntry* e : s.list())
-    if (hostedTextDoc(nimbus::orch::plainCopy(e->name)) && s.readableBy(*e, who.ns, who.owner, shared)) docs.push_back(e);
-  out.candidates = docs.size();
-  std::sort(docs.begin(), docs.end(), [](const nimbus::orch::FileEntry* x, const nimbus::orch::FileEntry* y) {
-    return x->createdAt != y->createdAt ? x->createdAt > y->createdAt : x->name < y->name;
-  });
-  if (docs.size() > kScanMax) docs.resize(kScanMax);
   std::vector<std::pair<int, agent::plain::FileHit>> hits;
-  for (const nimbus::orch::FileEntry* e : docs) {
+  for (const nimbus::orch::FileEntry* e : readableTextDocs(s, who, kScanMax, out.candidates)) {
     ++out.scanned;
     out.oldestT = e->createdAt;
     const std::string project = nimbus::orch::plainCopy(e->project), name = nimbus::orch::plainCopy(e->name);
@@ -147,18 +172,7 @@ inline bool hostedFileSearch(PosixFiles& files, const nimbus::orch::Principal& w
     if (!files.fetch(project, name, body)) continue;
     if (body.size() > kReadMax) body.resize(kReadMax);
     const int score = nimbus::orch::textMatchScore(body, query);
-    if (score <= 0) continue;
-    agent::plain::FileHit h;
-    h.path = project + "/" + name;
-    h.excerpt = nimbus::utf8Window(body, nimbus::orch::lexFirstHit(body.data(), body.size(), lex), 40, 160);
-    for (char& ch : h.excerpt)
-      if (ch == '\n' || ch == '\r' || ch == '\t') ch = ' ';
-    JsonDocument args;
-    args["path"] = h.path;
-    std::string json;
-    serializeJson(args, json);
-    h.outside = agent::plain::readsOutsidePath("read_file", json) || !s.ownedBy(*e, who.ns, false);
-    hits.emplace_back(score, std::move(h));
+    if (score > 0) hits.emplace_back(score, fileHitOf(s, *e, project + "/" + name, body, lex, who));
   }
   std::stable_sort(hits.begin(), hits.end(), [](const auto& x, const auto& y) { return x.first > y.first; });
   for (auto& h : hits) out.hits.push_back(std::move(h.second));

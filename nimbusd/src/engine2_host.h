@@ -222,16 +222,10 @@ class Engine2Host {
   // Lane E2-P-HOST2: a chat whose person is not the owner (roleOf) runs in a conversation of its own.
   PlainTurn say(const std::string& chat, const std::string& text, const char* ch) {
     const nimbus::orch::Role role = roleOf(chat);
-    if (role == nimbus::orch::Role::Admin && o_.model && o_.model() != bootModel_) {
-      const std::string why = start();
-      if (!why.empty()) {
-        std::fprintf(stderr, "[nimbusd] engine2: %s\n", why.c_str());
-        const bool head = engine2HeadOk(o_.head ? o_.head() : std::string(), o_.model());
-        if (o_.deliver) o_.deliver(chat, head ? kNoStartLine : kNotClaudeLine);
-        PlainTurn t;
-        t.stated = "plain-rig:failed:head";
-        return t;
-      }
+    if (role == nimbus::orch::Role::Admin && !ownerOnModel(chat)) {
+      PlainTurn t;
+      t.stated = "plain-rig:failed:head";
+      return t;
     }
     if (paused()) {   // fail closed: no head or summarizer request past the ceiling, on any channel
       if (o_.deliver) o_.deliver(chat, kPausedLine);
@@ -264,6 +258,18 @@ class Engine2Host {
     dropPhotos();
     tellSkillsLeftOut(chat);
     return t;
+  }
+
+  // A head model the owner changed since boot boots the owner's chat again; false (the owner told in one line)
+  // when it could not start.
+  bool ownerOnModel(const std::string& chat) {
+    if (!o_.model || o_.model() == bootModel_) return true;
+    const std::string why = start();
+    if (why.empty()) return true;
+    std::fprintf(stderr, "[nimbusd] engine2: %s\n", why.c_str());
+    const bool head = engine2HeadOk(o_.head ? o_.head() : std::string(), o_.model());
+    if (o_.deliver) o_.deliver(chat, head ? kNoStartLine : kNotClaudeLine);
+    return false;
   }
 
   // Lane E2-P-HOST2: one sub-agent's report as its own turn in the chat that started it (plain::deliverReports,
@@ -459,17 +465,9 @@ class Engine2Host {
     }
     std::string key;
     const bool keyRead = conversationKey(chat, key);
-    if (member_) {
-      const plain::ChatBindingConfig& c = member_->config();
-      const bool same = c.chatId == chat && c.role == role;
-      if (same && c.model == model && (!keyRead || c.chatKey == key)) return member_.get();
-      if (member_->unloaded() && !member_->reload()) {
-        if (same) return member_.get();
-        line = hostedOwnerLine(member_->elsewhereLine());
-        return nullptr;
-      }
-      member_.reset();   // another chat, role or model: the arena goes back before the next one
-    }
+    bool keep = false;
+    plain::ChatBinding* resident = residentMember(chat, role, model, keyRead ? key : std::string(), line, keep);
+    if (keep) return resident;
     line = kNoStartLine;
     if (!keyRead || !nimbus::orch::tx::chatKeyOk(key)) {
       std::fprintf(stderr, "[nimbusd] engine2: chat %s has no readable transcript key\n", chat.c_str());
@@ -485,6 +483,26 @@ class Engine2Host {
     }
     member_ = std::move(b);
     return member_.get();
+  }
+
+  // The resident member binding when it serves this chat (`keep`); a binding whose turns are held only in RAM
+  // keeps its chat and refuses another (null, `line` the true cause, keep true); else it is let go.
+  plain::ChatBinding* residentMember(const std::string& chat, nimbus::orch::Role role, const std::string& model,
+                                     const std::string& key, std::string& line, bool& keep) {
+    keep = false;
+    if (!member_) return nullptr;
+    const plain::ChatBindingConfig& c = member_->config();
+    const bool same = c.chatId == chat && c.role == role;
+    keep = same && c.model == model && (key.empty() || c.chatKey == key);
+    if (keep) return member_.get();
+    if (member_->unloaded() && !member_->reload()) {
+      keep = true;
+      if (same) return member_.get();
+      line = hostedOwnerLine(member_->elsewhereLine());
+      return nullptr;
+    }
+    member_.reset();   // another chat, role or model: the arena goes back before the next one
+    return nullptr;
   }
 
   // One turn of `b` in `chat` and what follows it: the parts sent, the answer's row in engine 1's day stream,

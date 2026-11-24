@@ -94,6 +94,12 @@ class WebApi {
 
  private:
   // Home + Assistant snapshots (instant: engine snapshot + immutable config).
+  // Lane E2-P-HOST2: the engine this instance runs and the one its next start takes.
+  bool tryEngine(const std::string& m, const std::string& base, const std::string& body, ApiResp& out) {
+    if (base != "/api/engine") return false;
+    out = m == "POST" ? enginePost(body) : engineGet();
+    return true;
+  }
   bool tryStatus(const std::string& m, const std::string& base, const std::string& body,
                  ApiResp& out) {
     if (base == "/api/state" && m == "GET")   { out = stateResp();  return true; }
@@ -103,7 +109,6 @@ class WebApi {
     if (base == "/api/connect" && m == "GET") { out = connectResp(); return true; }
     if (base == "/api/config")                { out = m == "POST" ? configPost(body) : configGet(); return true; }
     if (base == "/api/verify" && m == "POST") { out = verifyPost(body); return true; }
-    if (base == "/api/engine")                { out = m == "POST" ? enginePost(body) : engineGet(); return true; }
     return false;
   }
 
@@ -111,7 +116,7 @@ class WebApi {
   // read the ?turn=<id> the client polls its own turn's reply with.
   bool tryChat(const std::string& m, const std::string& base, const std::string& path,
                const std::string& body, ApiResp& out) {
-    if (base != "/api/chat") return false;
+    if (base != "/api/chat") return tryEngine(m, base, body, out);   // lane E2-P-HOST2: /api/engine beside it
     out = m == "POST" ? chatPost(body) : chatGet(path);
     return true;
   }
