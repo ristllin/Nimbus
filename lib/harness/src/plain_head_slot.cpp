@@ -74,6 +74,26 @@ std::string hostOf(const std::string& base) {
 
 Status bad(const char* where) { return Status::fail(Err::InvalidArgument, where); }
 
+// A routed head: the selector's upstream wire under the router's host (design section 10).
+Status routedSlot(const SlotSettings& s, HeadSlot& out) {
+  caps::Slot slot;
+  const nimbus::orch::RouterRoute rr = nimbus::orch::resolveRouterRoute(out.model);
+  if (!caps::slotFromHost(rr.upstream.c_str(), &slot) || slot == caps::Slot::CustomChat) return bad("plain::headSlotFor.upstream");
+  out.dialect = dialectOf(slot);
+  out.endpoint.host = hostOf(s.routerHost);
+  out.endpoint.routed = true;
+  return out.endpoint.host.empty() ? bad("plain::headSlotFor.router") : Status::success();
+}
+
+// The owner's endpoint (design section 3.3): its convention's wire, text mode until verified.
+Status customSlot(const SlotSettings& s, HeadSlot& out) {
+  if (!customEndpointOf(s.customBase, out.endpoint)) return bad("plain::headSlotFor.custom");
+  const bool messages = s.customConv == "anthropic";
+  out.dialect = messages ? Dialect::AnthropicMessages : s.customTools ? Dialect::ChatCompletions : Dialect::Flat;
+  out.endpoint.toolsVerified = !messages && s.customTools;
+  return Status::success();
+}
+
 }  // namespace
 
 Status headSlotFor(const SlotSettings& s, const std::string& provider, const std::string& model, HeadSlot& out) {
@@ -83,23 +103,9 @@ Status headSlotFor(const SlotSettings& s, const std::string& provider, const std
   if (model.empty()) return bad("plain::headSlotFor.model");
   const std::function<std::string(const std::string&)> keyOf = s.key;
   out.endpoint.key = [keyOf, provider] { return keyOf ? keyOf(provider) : std::string(); };
+  if (provider == "cumulo") return routedSlot(s, out);
+  if (provider == "custom") return customSlot(s, out);
   caps::Slot slot;
-  if (provider == "cumulo") {   // the selector's upstream wire, under the router's path (design section 10)
-    const nimbus::orch::RouterRoute rr = nimbus::orch::resolveRouterRoute(model);
-    if (!caps::slotFromHost(rr.upstream.c_str(), &slot) || slot == caps::Slot::CustomChat)
-      return bad("plain::headSlotFor.upstream");
-    out.dialect = dialectOf(slot);
-    out.endpoint.host = hostOf(s.routerHost);
-    out.endpoint.routed = true;
-    return out.endpoint.host.empty() ? bad("plain::headSlotFor.router") : Status::success();
-  }
-  if (provider == "custom") {   // the owner's endpoint (design section 3.3)
-    if (!customEndpointOf(s.customBase, out.endpoint)) return bad("plain::headSlotFor.custom");
-    const bool messages = s.customConv == "anthropic";
-    out.dialect = messages ? Dialect::AnthropicMessages : s.customTools ? Dialect::ChatCompletions : Dialect::Flat;
-    out.endpoint.toolsVerified = !messages && s.customTools;
-    return Status::success();
-  }
   if (!caps::slotFromHost(provider.c_str(), &slot)) return bad("plain::headSlotFor.provider");
   out.dialect = dialectOf(slot);
   out.endpoint.host = slot == caps::Slot::Zai && !s.zaiHost.empty() ? hostOf(s.zaiHost) : tableHost(slot);

@@ -576,19 +576,31 @@ plain::Status railKeep(const plain::TurnCtx& t, const plain::ToolCall& c) {
 
 bool sayInstead(const String& chatId, const char* line);   // below
 
+// The configured head on its provider slot (lane E2-R8a); false (logged) when no slot reaches it.
+bool headNow(const plain::SlotSettings& set, plain::HeadSlot& head) {
+  const String host = store::resolvedOrchHost();
+  const std::string provider(host.c_str()), model(store::orchModel(host).c_str());
+  if (plain::headSlotFor(set, provider, model, head).ok()) return true;
+  alogf("e2: the head %s/%s names no provider slot engine 2 can reach", provider.c_str(), model.c_str());
+  return false;
+}
+
+// A custom chat endpoint whose verify found no window or no tool call runs in text mode: told once a boot.
+void tellTextMode(const String& chatId, const plain::HeadSlot& head) {
+  static bool told = false;
+  if (head.dialect != plain::Dialect::Flat || told) return;
+  told = true;
+  sayInstead(chatId, kTextModeLine);
+}
+
 // The chat's binding for the configured head (its provider slot and model) and this role, booted
 // (null when it could not start).
 plain::ChatBinding* chatFor(const String& chatId, nimbus::orch::Role role) {
   s_noStartWhy = nullptr;
-  const String host = store::resolvedOrchHost();
-  const std::string provider(host.c_str());
-  const std::string model(store::orchModel(host).c_str());
   const plain::SlotSettings set = slotSettings();
   plain::HeadSlot head;
-  if (!plain::headSlotFor(set, provider, model, head).ok()) {
-    alogf("e2: the head %s/%s names no provider slot engine 2 can reach", provider.c_str(), model.c_str());
-    return nullptr;
-  }
+  if (!headNow(set, head)) return nullptr;
+  const std::string provider = head.provider, model = head.model;
   bool keep = false;
   plain::ChatBinding* resident = residentFor(chatId, head, role, keep);
   if (keep) return resident;
@@ -697,12 +709,7 @@ plain::ChatBinding* chatFor(const String& chatId, nimbus::orch::Role role) {
   logImport(*b);
   if (!st.ok()) return nullptr;
   s_chat = std::move(b);
-  // A custom chat endpoint whose verify found no window or no tool call runs in text mode: told once a boot.
-  static bool textTold = false;
-  if (head.dialect == plain::Dialect::Flat && !textTold) {
-    textTold = true;
-    sayInstead(chatId, kTextModeLine);
-  }
+  tellTextMode(chatId, head);
   return s_chat.get();
 }
 
