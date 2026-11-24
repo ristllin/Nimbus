@@ -10,7 +10,7 @@
 #include "nimbus/harness/jobs.h"   // kOutsideContentOpen: the one fence (RB-Q2a)
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/orch/action_rules.h"   // actionRuleRow
-#include "nimbus/orch/mcp_client.h"     // isNamespaced: a remote tool server's tool
+#include "nimbus/orch/mcp_client.h"     // serverOf: a remote tool server's tool
 #include "nimbus/orch/path_rules.h"
 #include "nimbus/orch/tool_groups.h"   // kMoreTool
 
@@ -103,7 +103,7 @@ bool unplaced(const std::string& name) {
 }
 
 bool rowMatches(const RailRow& r, Use use, const ToolCall& call, ArduinoJson::JsonObjectConst a, const TurnCtx& turn) {
-  if (r.args == Args::Connector) return orch::mcp::isNamespaced(call.name);
+  if (r.args == Args::Connector) return !orch::mcp::serverOf(call.name).empty();   // mcp.<server>.<tool>
   if (r.use != use || (r.tool && call.name != r.tool)) return false;
   return argsMatch(r.args, a, turn);
 }
