@@ -288,6 +288,30 @@ void test_chat_checker_custom_text_mode_and_its_faults() {
   TEST_ASSERT_FALSE(wire_shape::chatRequest(req("/v1/responses", kMistralGood), ChatFlavor::Mistral, why));
 }
 
+// Lane E2-P-CONN2: the provider-side tools engine 1 attaches (an MCP server, a first-party connector, the
+// code sandbox) pass, and each fault of their shape is refused.
+void test_responses_checker_reads_the_provider_side_tools_and_refuses_each_fault() {
+  std::string good = kResponsesGood;
+  const std::string fn = R"(}}}],"tool_choice")";
+  good.replace(good.find(fn), fn.size(),
+               R"(}}},{"type":"mcp","require_approval":"never","server_label":"github","server_url":"https://mcp.github.example.test/"},)"
+               R"({"type":"mcp","require_approval":"never","server_label":"gmail","connector_id":"connector_gmail","authorization":"tok"},)"
+               R"({"type":"code_interpreter","container":{"type":"auto"}}],"tool_choice")");
+  eachFaultRefused(
+      good,
+      {
+          {R"("server_url":"https://mcp.github)", R"("server_url":"http://mcp.github)", "a server_url that is not https"},
+          {R"("server_label":"gmail")", R"("server_label":"github")", "a server_label repeated"},
+          {R"(,"authorization":"tok")", "", "a connector_id without its authorization"},
+          {R"("connector_id":"connector_gmail",)", R"("connector_id":"connector_gmail","server_url":"https://x.test/",)", "both server_url and connector_id"},
+          {R"("require_approval":"never","server_label":"github")", R"("require_approval":"sometimes","server_label":"github")", "require_approval unknown"},
+          {R"("server_label":"github",)", R"("server_label":"github","headers":{},)", "an unknown mcp key"},
+          {R"("container":{"type":"auto"})", R"("container":{"type":"manual"})", "a container that is not auto"},
+          {R"({"type":"code_interpreter",)", R"({"type":"web_search_preview",)", "a provider tool engine 1 never sends"},
+      },
+      responsesCheck);
+}
+
 // ---- the committed goldens ----------------------------------------------------------------------
 const char* kGoldens = "test/support/goldens/wire/";
 
@@ -378,6 +402,7 @@ void test_every_golden_request_passes_its_dialect_checker_and_messages_bodies_ar
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_responses_checker_accepts_the_documented_shape_and_refuses_each_fault);
+  RUN_TEST(test_responses_checker_reads_the_provider_side_tools_and_refuses_each_fault);
   RUN_TEST(test_chat_checker_mistral_accepts_the_documented_shape_and_refuses_each_fault);
   RUN_TEST(test_chat_checker_zai_accepts_the_documented_shape_and_refuses_each_fault);
   RUN_TEST(test_chat_checker_custom_text_mode_and_its_faults);

@@ -60,6 +60,7 @@ messages-anthropic-direct/ladder_rung3_omit_through.req
 messages-anthropic-direct/max_tokens_cut_call.parse
 messages-anthropic-direct/near_cap_photo_turn.req
 messages-anthropic-direct/one_call.req
+messages-anthropic-direct/one_call_connectors.req
 messages-anthropic-direct/open_turn_thinking.req
 messages-anthropic-direct/photo_in_view_file_ref.req
 messages-anthropic-direct/photo_in_view_inline.req
@@ -103,6 +104,8 @@ responses-openai-direct/incomplete_reasoning_only.parse
 responses-openai-direct/ladder_rung3_omit_through.req
 responses-openai-direct/near_cap_photo_turn.req
 responses-openai-direct/one_call.req
+responses-openai-direct/one_call_connectors.req
+responses-openai-direct/one_call_connectors_member.req
 responses-openai-direct/open_turn_reasoning.req
 responses-openai-direct/photo_in_view.req
 responses-openai-direct/photo_three_turns_later.req

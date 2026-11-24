@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "nimbus/harness/plain/wire.h"
+#include "nimbus/orch/connectors_wire.h"   // lane E2-P-CONN2
 #include "nimbus/orch/tx/item.h"
 
 // transcripts.h - the stored transcripts the route goldens render (lane E2-R2a, router design
@@ -166,6 +167,8 @@ inline std::string payload(const std::string& marker, size_t bytes) {
 // The facts around a transcript for one request: everything RenderInput takes besides the items.
 enum class Sys : uint8_t { Chat, Summarizer };
 enum class Photos : uint8_t { FileRef, Inline };
+// Lane E2-P-CONN2: the fixture connectors on the head (HeadEndpoint::connectors), for whose turn.
+enum class Conn : uint8_t { None, Owner, Member };
 
 struct Facts {
   std::string effort = "medium";   // HeadEndpoint::effort ("" = none sent)
@@ -182,7 +185,38 @@ struct Facts {
   Sys system = Sys::Chat;
   uint16_t dayStartMin = 240;
   uint32_t openTurn = 0;           // 0: the transcript's last turn
+  Conn conn = Conn::None;
 };
+
+// Lane E2-P-CONN2: the owner's connectors as engine 1's blob parse gives them, the Code sandbox on: one
+// Anthropic server with a token and one without, a LAN server and a disabled one (never sent), an
+// OpenAI server and a first-party connector with a token, a Mistral Studio connector.
+inline std::vector<nimbus::orch::ConnectorInfo> fixtureConnectors() {
+  auto one = [](const char* name, const char* prov, const char* kind, const char* url, bool on) {
+    nimbus::orch::ConnectorInfo c;
+    c.name = c.type = name;
+    c.prov = prov;
+    c.kind = kind;
+    c.url = url;
+    c.enabled = on;
+    return c;
+  };
+  std::vector<nimbus::orch::ConnectorInfo> cs = {
+      one("docs", "anthropic", "mcp", "https://mcp.docs.example.test/mcp", true),
+      one("tickets", "anthropic", "mcp", "https://tickets.example.test/sse", true),
+      one("nas", "anthropic", "mcp", "http://192.168.1.20:8080/mcp", true),
+      one("old", "anthropic", "mcp", "https://old.example.test/mcp", false),
+      one("github", "openai", "mcp", "https://mcp.github.example.test/", true),
+      one("gmail", "openai", "connector", "", true),
+      one("gcal", "mistral", "connector", "", true),
+  };
+  cs[5].connectorId = "connector_gmail";
+  nimbus::orch::applyCodeSandbox(cs, true);
+  return cs;
+}
+inline std::string fixtureBearer(const nimbus::orch::ConnectorInfo& c) {
+  return c.name == "docs" || c.name == "gmail" ? "fixture-bearer-" + c.name : std::string();
+}
 
 struct Case {
   std::string name;

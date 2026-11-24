@@ -8,6 +8,7 @@
 #include "nimbus/harness/http.h"
 #include "nimbus/harness/plain/route.h"
 #include "nimbus/harness/plain/wire.h"
+#include "nimbus/orch/tool_registry.h"   // Principal (lane E2-P-CONN2)
 #include "nimbus/orch/tx/arena.h"
 #include "transcripts.h"
 
@@ -44,6 +45,7 @@ struct World {
   RowFacts row;
   plain::Route route;              // a chat row's route and pre-flight (lane E2-R6)
   plain::PreflightState own;
+  nimbus::orch::Principal who;     // lane E2-P-CONN2: the turn's person when connectors ride
 
   tx::Status load(const Case& c) {
     tx::Status st = arena.init(1 << 22, [](size_t n) { return std::malloc(n); }, [](void* p) { std::free(p); });
@@ -66,12 +68,19 @@ struct World {
     turn.model = row.model;
     turn.dialect = row.dialect;
     turn.dayStartMin = c.facts.dayStartMin;
+    if (c.facts.conn == Conn::None) return;
+    who = nimbus::orch::principalForRole("2002", c.facts.conn == Conn::Owner ? nimbus::orch::Role::Admin
+                                                                              : nimbus::orch::Role::User);
+    turn.who = &who;
   }
   void setHead(const Facts& f) {
     head.host = row.headHost;
     head.effort = f.effort;
     head.routed = row.routed;
     head.key = [] { return std::string(kFixtureKey); };
+    if (f.conn == Conn::None) return;
+    head.connectors = fixtureConnectors;
+    head.bearer = fixtureBearer;
   }
   void setSystem(const Facts& f) {
     if (f.system == Sys::Summarizer) {   // plain_compact.cpp SummarizerSystem: summary as core, ask as digests

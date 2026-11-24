@@ -448,6 +448,11 @@ inline void responsesCases(std::vector<Case>& out) {
   out.push_back(make("summarizer_structured", summarizerSlice(), f, sig));
   f.schema = false;
   out.push_back(make("summarizer_lines", summarizerSlice(), f, sig));
+  f = base;   // lane E2-P-CONN2: the owner's connectors and the sandbox; a member's turn gets the sandbox only
+  f.conn = Conn::Owner;
+  out.push_back(make("one_call_connectors", oneCall(), f, sig));
+  f.conn = Conn::Member;
+  out.push_back(make("one_call_connectors_member", oneCall(), f, sig));
   out.push_back(make("text_only", firstMessage(), base, kResponsesRouted));
   out.push_back(make("one_call", oneCall(), base, kResponsesRouted));
 }
@@ -510,6 +515,9 @@ inline std::vector<Case> requestCases() {
   f.schema = false;
   out.push_back(make("summarizer_lines", summarizerSlice(), f));
   out.push_back(make("restart_mid_turn", restartMidTurn()));
+  f = Facts();
+  f.conn = Conn::Owner;   // lane E2-P-CONN2: the owner's Anthropic tool servers
+  out.push_back(make("one_call_connectors", oneCall(), f));
   f = Facts();
   f.routed = true;
   out.push_back(make("text_only", firstMessage(), f, kRouted));

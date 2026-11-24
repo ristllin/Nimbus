@@ -246,6 +246,29 @@ void test_every_battery_request_has_the_documented_shape() {
   TEST_ASSERT_TRUE(n > 20);
 }
 
+// Lane E2-P-CONN2: an answer in which a provider-side connector ran (mcp_list_tools, then a reasoning item
+// and the mcp_call it came with, then the message): the step is outside content and keeps the text; the
+// reasoning item that preceded the mcp_call is not kept (it is never sent without the item after it),
+// the one before the message is. Without an mcp_call the step is not outside.
+void test_a_provider_connector_run_marks_the_step_outside_and_drops_its_reasoning() {
+  const std::string head = R"({"object":"response","model":"gpt-5.6","status":"completed","output":[)";
+  const std::string list = R"({"type":"mcp_list_tools","id":"mcpl_1","server_label":"github","tools":[]},)";
+  const std::string r1 = R"({"type":"reasoning","id":"rs_c1","summary":[],"encrypted_content":"gAAAA1"},)";
+  const std::string call = R"({"type":"mcp_call","id":"mcp_1","server_label":"github","name":"search","arguments":"{}","output":"3 issues"},)";
+  const std::string r2 = R"({"type":"reasoning","id":"rs_c2","summary":[],"encrypted_content":"gAAAA2"},)";
+  const std::string msg = R"({"type":"message","role":"assistant","content":[{"type":"output_text","text":"Three open issues."}]}]})";
+  plain::ParsedStep step;
+  TEST_ASSERT_TRUE(parse(head + list + r1 + call + r2 + msg, step).ok());
+  TEST_ASSERT_TRUE(step.outside);
+  TEST_ASSERT_EQUAL_STRING("Three open issues.", step.text.c_str());
+  TEST_ASSERT_EQUAL_STRING("end", plain::stopSlug(step.stop));
+  TEST_ASSERT_EQUAL(1, (int)step.meta.size());
+  TEST_ASSERT_TRUE(step.meta[0].bytes.find("rs_c2") != std::string::npos);
+  TEST_ASSERT_TRUE(parse(head + r2 + msg, step).ok());
+  TEST_ASSERT_FALSE(step.outside);
+  TEST_ASSERT_EQUAL(1, (int)step.meta.size());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_the_stop_table_over_every_synthetic_answer);
@@ -255,5 +278,6 @@ int main(int, char**) {
   RUN_TEST(test_the_row_decides_include_breakpoints_and_the_cache_key);
   RUN_TEST(test_the_route_gives_the_path_and_the_cap);
   RUN_TEST(test_every_battery_request_has_the_documented_shape);
+  RUN_TEST(test_a_provider_connector_run_marks_the_step_outside_and_drops_its_reasoning);
   return UNITY_END();
 }

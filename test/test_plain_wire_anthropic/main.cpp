@@ -43,6 +43,9 @@
 #include "nimbus/harness/plain/request.h"
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/harness/plain/wire.h"
+#include "nimbus/orch/connector_grant.h"   // lane E2-P-CONN2
+#include "nimbus/orch/connectors_wire.h"
+#include "nimbus/orch/tool_registry.h"
 #include "nimbus/orch/tx/rules.h"
 #include "nimbus/orch/wire_limits.h"
 #include "nimbus/utf8.h"
@@ -258,6 +261,7 @@ struct Seen {
   int marks = 0;
   bool fileSource = false;
   bool anyToolBlock = false;
+  std::set<std::string> servers;   // lane E2-P-CONN2: mcp_servers names, each taken by one toolset
 };
 
 bool textBlock(JsonObjectConst b, C& c, const std::string& w, Seen& s) {
@@ -441,13 +445,43 @@ bool toolChoice(JsonObjectConst tc, const std::set<std::string>& names, C& c) {
   return onlyKeys(tc, {"type", "name", "disable_parallel_tool_use"}, c, "tool_choice");
 }
 
-bool tools(JsonObjectConst root, C& c, Seen& s) {
-  JsonVariantConst ts = root["tools"];
-  if (ts.isNull()) return root["tool_choice"].isNull() ? true : c.fail("tool_choice without tools");
-  std::set<std::string> names;
+// Lane E2-P-CONN2: the MCP connector (beta mcp-client-2025-11-20), read 24 Nov 2026 at
+// https://platform.claude.com/docs/en/agents-and-tools/mcp-connector: each mcp_servers entry
+// {"type":"url","url":https,"name" unique,"authorization_token"?}; each server taken by exactly one
+// {"type":"mcp_toolset","mcp_server_name"} tool, and a toolset names a server that exists.
+bool mcpServers(JsonVariantConst ms, C& c, Seen& s) {
+  if (ms.isNull()) return true;
+  if (!ms.is<JsonArrayConst>() || ms.size() == 0) return c.fail("mcp_servers is not a non-empty list");
   size_t i = 0;
-  for (JsonObjectConst t : ts.as<JsonArrayConst>())
-    if (!toolEntry(t, "tools[" + std::to_string(i++) + "]", c, s, names)) return false;
+  for (JsonObjectConst m : ms.as<JsonArrayConst>()) {
+    const std::string w = "mcp_servers[" + std::to_string(i++) + "]";
+    if (std::string(m["type"] | "") != "url") return c.fail(w + ": type is not url");
+    if (std::string(m["url"] | "").rfind("https://", 0) != 0) return c.fail(w + ": url is not https");
+    if (!pattern(m["name"] | "", 64) || !s.servers.insert(m["name"] | "").second) return c.fail(w + ": name pattern or repeated");
+    if (!m["authorization_token"].isNull() && !*(m["authorization_token"] | "")) return c.fail(w + ": empty authorization_token");
+    if (!onlyKeys(m, {"type", "url", "name", "authorization_token"}, c, w)) return false;
+  }
+  return true;
+}
+bool toolset(JsonObjectConst t, const std::string& w, C& c, std::set<std::string>& taken, const Seen& s) {
+  const std::string name = t["mcp_server_name"] | "";
+  if (!s.servers.count(name)) return c.fail(w + ": a toolset names no server");
+  if (!taken.insert(name).second) return c.fail(w + ": two toolsets for one server");
+  return onlyKeys(t, {"type", "mcp_server_name"}, c, w);
+}
+
+bool tools(JsonObjectConst root, C& c, Seen& s) {
+  if (!mcpServers(root["mcp_servers"], c, s)) return false;
+  JsonVariantConst ts = root["tools"];
+  if (ts.isNull())
+    return root["tool_choice"].isNull() && s.servers.empty() ? true : c.fail("tool_choice or mcp_servers without tools");
+  std::set<std::string> names, taken;
+  size_t i = 0;
+  for (JsonObjectConst t : ts.as<JsonArrayConst>()) {
+    const std::string w = "tools[" + std::to_string(i++) + "]";
+    if (!t["type"].isNull() ? !toolset(t, w, c, taken, s) : !toolEntry(t, w, c, s, names)) return false;
+  }
+  if (taken != s.servers) return c.fail("a server no toolset takes");
   return toolChoice(root["tool_choice"], names, c);
 }
 
@@ -460,7 +494,7 @@ bool headerMap(const agent::HttpRequest& r, std::map<std::string, std::string>& 
   return true;
 }
 
-bool headers(const agent::HttpRequest& r, bool fileSource, C& c) {
+bool headers(const agent::HttpRequest& r, bool fileSource, bool mcp, C& c) {
   if (r.method != "POST") return c.fail("method " + r.method);
   if (r.path.size() < 9 || r.path.compare(r.path.size() - 9, 9, "/messages") != 0) return c.fail("path " + r.path);
   std::map<std::string, std::string> h;
@@ -469,6 +503,8 @@ bool headers(const agent::HttpRequest& r, bool fileSource, C& c) {
     return c.fail("content-type or anthropic-version");
   const bool beta = h["anthropic-beta"].find("files-api-2025-04-14") != std::string::npos;
   if (fileSource != beta) return c.fail(fileSource ? "a file source without the files beta" : "the files beta without a file source");
+  if (mcp != (h["anthropic-beta"].find("mcp-client-2025-11-20") != std::string::npos))
+    return c.fail(mcp ? "mcp_servers without the mcp-client beta" : "the mcp-client beta without mcp_servers");
   const size_t keys = h.count("x-api-key") + h.count("authorization");
   if (r.tls ? keys != 1 : keys != 0) return c.fail(r.tls ? "not exactly one key header" : "a key on a cleartext socket");
   return true;
@@ -500,7 +536,7 @@ bool outputConfigOk(JsonObjectConst oc, C& c) {
 
 bool envelope(JsonObjectConst root, C& c) {
   if (root.isNull()) return c.fail("the body is not an object");
-  if (!onlyKeys(root, {"model", "max_tokens", "system", "tools", "tool_choice", "messages", "output_config"}, c, "body"))
+  if (!onlyKeys(root, {"model", "max_tokens", "system", "tools", "tool_choice", "mcp_servers", "messages", "output_config"}, c, "body"))
     return false;
   if (std::string(root["model"] | "").empty()) return c.fail("model missing");
   if (!root["max_tokens"].is<unsigned>() || (root["max_tokens"] | 0u) < 1) return c.fail("max_tokens missing or 0");
@@ -518,7 +554,7 @@ bool request(const agent::HttpRequest& r, const std::string& body, std::string& 
   ok = ok && envelope(root, c) && system(root["system"], c, s) && tools(root, c, s) && messages(root["messages"], c, s);
   ok = ok && (s.marks <= 4 || c.fail(std::to_string(s.marks) + " cache points (at most 4)"));
   ok = ok && (!s.anyToolBlock || !root["tools"].isNull() || c.fail("tool blocks without tools"));
-  ok = ok && headers(r, s.fileSource, c);
+  ok = ok && headers(r, s.fileSource, !s.servers.empty(), c);
   why = c.why;
   return ok;
 }
@@ -2169,6 +2205,130 @@ void test_the_measured_framing_per_block_is_inside_the_battery_allowances() {
   }
 }
 
+// ---- lane E2-P-CONN2: the owner's tool servers ride the owner's request ----------------------------
+namespace {
+std::vector<nimbus::orch::ConnectorInfo> conn2List() {
+  auto one = [](const char* name, const char* prov, const char* url, bool on) {
+    nimbus::orch::ConnectorInfo c;
+    c.name = name;
+    c.prov = prov;
+    c.kind = "mcp";
+    c.url = url;
+    c.enabled = on;
+    return c;
+  };
+  std::vector<nimbus::orch::ConnectorInfo> cs = {one("docs", "anthropic", "https://mcp.docs.example.test/mcp", true),
+                                                 one("nas", "anthropic", "http://192.168.1.20/mcp", true),
+                                                 one("off", "anthropic", "https://off.example.test/mcp", false),
+                                                 one("github", "openai", "https://mcp.github.example.test/", true)};
+  nimbus::orch::applyCodeSandbox(cs, true);
+  return cs;
+}
+}  // namespace
+
+// The owner's turn carries his enabled, cloud-reachable Anthropic servers (engine 1's attach rules: a LAN
+// address, a disabled server and another provider's are left off; the sandbox is not Anthropic's) as
+// mcp_servers with one toolset each and the beta header, a body the checker accepts; the checker refuses
+// each fault of that shape. A member's turn, a routed head, a request with no tools and a task scoped to
+// nothing send the bytes of a request without connectors.
+void test_the_owners_tool_servers_ride_the_owners_request_and_no_one_elses() {
+  Rig rig;
+  txb::Convo c;
+  c.ownerTurn("hi", "hello");
+  c.openTurn();
+  c.owner("what is in my docs?");
+  Out plainOut;
+  RENDER_OK(rig, c, plainOut);
+  const nimbus::orch::Principal owner = nimbus::orch::principalForRole("1", nimbus::orch::Role::Admin);
+  const nimbus::orch::Principal member = nimbus::orch::principalForRole("2", nimbus::orch::Role::User);
+  rig.fx.head.connectors = conn2List;
+  rig.fx.head.bearer = [](const nimbus::orch::ConnectorInfo& k) { return k.name == "docs" ? std::string("tok-docs") : std::string(); };
+  rig.fx.turn.who = &owner;
+  Out out;
+  RENDER_OK(rig, c, out);
+  EXPECT_API_OK(out, "owner with tool servers");
+  TEST_ASSERT_TRUE(out.body.find(R"({"type":"mcp_toolset","mcp_server_name":"docs"}],"tool_choice")") != std::string::npos);
+  TEST_ASSERT_TRUE(out.body.find(R"("mcp_servers":[{"type":"url","url":"https://mcp.docs.example.test/mcp","name":"docs","authorization_token":"tok-docs"}])") != std::string::npos);
+  TEST_ASSERT_TRUE(out.body.find("192.168") == std::string::npos && out.body.find("github") == std::string::npos &&
+                   out.body.find("code_interpreter") == std::string::npos && out.body.find("\"off\"") == std::string::npos);
+  struct Bad {
+    const char* from;
+    const char* to;
+  };
+  const Bad bad[] = {
+      {R"("mcp_server_name":"docs")", R"("mcp_server_name":"other")"},                     // names no server
+      {R"(,{"type":"mcp_toolset","mcp_server_name":"docs"})", ""},                          // a server no toolset takes
+      {R"("url":"https://mcp.docs)", R"("url":"http://mcp.docs)"},                          // not https
+      {R"("authorization_token":"tok-docs")", R"("authorization_token":"")"},             // empty token
+      {R"("name":"docs","authorization)", R"("name":"docs","headers":{},"authorization)"},  // unknown key
+      {R"({"type":"url","url")", R"({"type":"sse","url")"},                                // type
+  };
+  for (const Bad& b : bad) {
+    std::string body = out.body;
+    const size_t at = body.find(b.from);
+    TEST_ASSERT_TRUE_MESSAGE(at != std::string::npos, b.from);
+    body.replace(at, std::strlen(b.from), b.to);
+    std::string why;
+    TEST_ASSERT_FALSE_MESSAGE(chk::request(out.req, body, why), (std::string("accepted: ") + b.from).c_str());
+  }
+  agent::HttpRequest noBeta = out.req;
+  noBeta.headers.erase(std::remove_if(noBeta.headers.begin(), noBeta.headers.end(),
+                                      [](const std::pair<std::string, std::string>& h) { return h.first == "anthropic-beta"; }),
+                       noBeta.headers.end());
+  std::string why;
+  TEST_ASSERT_FALSE_MESSAGE(chk::request(noBeta, out.body, why), "mcp_servers without the beta");
+  TEST_ASSERT_FALSE_MESSAGE(chk::request(out.req, plainOut.body, why), "the beta without mcp_servers");
+  // No one else's request moves: a member, a routed head, no tools, a task scoped to nothing.
+  rig.fx.turn.who = &member;
+  RENDER_OK(rig, c, out);
+  TEST_ASSERT_TRUE_MESSAGE(out.req.body == plainOut.req.body && out.req.headers == plainOut.req.headers, "member");
+  rig.fx.turn.who = &owner;
+  {
+    const nimbus::orch::ConnectorGrantScope none(nimbus::orch::ConnectorGrant::None);
+    RENDER_OK(rig, c, out);
+    TEST_ASSERT_TRUE_MESSAGE(out.req.body == plainOut.req.body, "a task scoped to nothing");
+  }
+  rig.fx.head.routed = true;
+  Out routedPlain;
+  rig.fx.head.connectors = nullptr;
+  RENDER_OK(rig, c, routedPlain);
+  rig.fx.head.connectors = conn2List;
+  RENDER_OK(rig, c, out);
+  TEST_ASSERT_TRUE_MESSAGE(out.req.body == routedPlain.req.body, "routed");
+  rig.fx.head.routed = false;
+  rig.fx.tools.clear();
+  rig.fx.head.connectors = nullptr;
+  Out noToolsPlain;
+  RENDER_OK(rig, c, noToolsPlain);
+  rig.fx.head.connectors = conn2List;
+  RENDER_OK(rig, c, out);
+  TEST_ASSERT_TRUE_MESSAGE(out.req.body == noToolsPlain.req.body && out.req.headers == noToolsPlain.req.headers, "no tools");
+}
+
+// The answer of a turn whose connector ran: the mcp blocks are not stored, the text after them is, and
+// the step is outside content; an answer with no mcp_tool_result is not.
+void test_a_tool_server_result_in_the_answer_marks_the_step_outside() {
+  const plain::WireCodec* wire = nullptr;
+  TEST_ASSERT_TRUE(plain::wireFor(plain::Dialect::AnthropicMessages, wire).ok());
+  agent::HttpResponse r;
+  r.status = 200;
+  r.body = R"({"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-5-5","content":[)"
+           R"({"type":"mcp_tool_use","id":"mcptoolu_1","name":"search","server_name":"docs","input":{"q":"beds"}},)"
+           R"({"type":"mcp_tool_result","tool_use_id":"mcptoolu_1","is_error":false,"content":[{"type":"text","text":"bed 3: chard"}]},)"
+           R"({"type":"text","text":"Bed 3 has chard."}],"stop_reason":"end_turn","stop_sequence":null,)"
+           R"("usage":{"input_tokens":10,"output_tokens":5}})";
+  plain::ParsedStep step;
+  TEST_ASSERT_TRUE(wire->parse(r, step).ok());
+  TEST_ASSERT_TRUE(step.outside);
+  TEST_ASSERT_EQUAL_STRING("Bed 3 has chard.", step.text.c_str());
+  TEST_ASSERT_EQUAL(0, (int)step.calls.size());
+  TEST_ASSERT_EQUAL((int)plain::StopReason::EndTurn, (int)step.stop);
+  const size_t at = r.body.find(R"({"type":"mcp_tool_result")");
+  r.body.erase(at, r.body.find(R"({"type":"text","text":"Bed 3)") - at);
+  TEST_ASSERT_TRUE(wire->parse(r, step).ok());
+  TEST_ASSERT_FALSE(step.outside);
+}
+
 }  // namespace
 
 #include "parse_tests.h"
@@ -2199,6 +2359,8 @@ int main(int, char**) {
   RUN_TEST(test_stored_states_the_api_refuses_are_rendered_into_ones_it_takes);
   RUN_TEST(test_a_ladder_rung_between_rounds_of_a_turn_with_signed_thinking_is_accepted_by_the_provider);
   RUN_TEST(test_the_measured_framing_per_block_is_inside_the_battery_allowances);
+  RUN_TEST(test_the_owners_tool_servers_ride_the_owners_request_and_no_one_elses);
+  RUN_TEST(test_a_tool_server_result_in_the_answer_marks_the_step_outside);
   parse_tests::run();
   return UNITY_END();
 }

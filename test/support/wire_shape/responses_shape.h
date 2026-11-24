@@ -15,6 +15,12 @@
 // reasoning items only with store:false and include "reasoning.encrypted_content", and each
 // followed by the call or message it came with; tools flat, names unique; tool_choice a documented
 // value naming a known tool; max_output_tokens at least 16; Bearer headers on POST .../responses.
+// Lane E2-P-CONN2: the provider-side tools engine 1 attaches, read 24 Nov 2026 at
+//   https://platform.openai.com/docs/guides/tools-remote-mcp
+//   https://platform.openai.com/docs/guides/tools-code-interpreter
+// an mcp entry has a unique server_label and exactly one of server_url (https) and connector_id, a
+// connector_id one has its authorization, require_approval is "always" or "never"; a code_interpreter
+// entry has a container {"type":"auto"} or a container id; nothing else.
 #include <set>
 
 #include "common.h"
@@ -157,7 +163,34 @@ inline bool input(JsonObjectConst root, Calls& s, C& c) {
   return !s.reasoningPending || c.fail("the input ends on a reasoning item");
 }
 
+// Lane E2-P-CONN2: a remote MCP server or first-party connector run by the provider.
+inline bool mcpEntry(JsonObjectConst t, std::set<std::string>& labels, C& c, const std::string& w) {
+  if (!pattern(str(t["server_label"]), 64)) return c.fail(w + ": server_label pattern");
+  if (!labels.insert(str(t["server_label"])).second) return c.fail(w + ": server_label repeated");
+  const bool url = !t["server_url"].isNull(), conn = !t["connector_id"].isNull();
+  if (url == conn) return c.fail(w + ": an mcp tool needs exactly one of server_url and connector_id");
+  if (url && str(t["server_url"]).rfind("https://", 0) != 0) return c.fail(w + ": server_url is not https");
+  if (conn && (str(t["connector_id"]).empty() || str(t["authorization"]).empty()))
+    return c.fail(w + ": a connector_id without its authorization");
+  if (!t["authorization"].isNull() && str(t["authorization"]).empty()) return c.fail(w + ": empty authorization");
+  if (!t["require_approval"].isNull() && !oneOf(str(t["require_approval"]), {"always", "never"}))
+    return c.fail(w + ": require_approval '" + str(t["require_approval"]) + "'");
+  return onlyKeys(t, {"type", "server_label", "server_url", "connector_id", "authorization", "require_approval"}, c, w);
+}
+
+inline bool codeInterpreterEntry(JsonObjectConst t, C& c, const std::string& w) {
+  JsonVariantConst k = t["container"];
+  if (k.is<const char*>()) {
+    if (str(k).empty()) return c.fail(w + ": empty container id");
+  } else if (str(k["type"]) != "auto" || !onlyKeys(k.as<JsonObjectConst>(), {"type", "file_ids"}, c, w + ".container")) {
+    return c.fail(w + ": container is neither an id nor {\"type\":\"auto\"}");
+  }
+  return onlyKeys(t, {"type", "container"}, c, w);
+}
+
 inline bool toolEntry(JsonObjectConst t, std::set<std::string>& names, C& c, const std::string& w) {
+  if (str(t["type"]) == "mcp") return mcpEntry(t, names, c, w);   // labels share the names' set: never a function's
+  if (str(t["type"]) == "code_interpreter") return codeInterpreterEntry(t, c, w);
   if (str(t["type"]) != "function") return c.fail(w + ": type is not function");
   if (!t["function"].isNull()) return c.fail(w + ": a nested Chat-style function object (Responses tools are flat)");
   if (!pattern(str(t["name"]), 64)) return c.fail(w + ": name pattern");
