@@ -192,10 +192,9 @@ failed`. `meal-log-day` seeds one file so that defect is not what it measures.
 - **Engine 2 on arm A** (`--engine 2`): its file tools count under the old engine's names in
   `tool_called` checks (`read_file` as `files_read`, `grade.ENGINE2_NAMES`), and its notes
   (`<data>/mem/notes/*.md`, the state's `notes`) are read as memory by `memory_regex`, and its pinned
-  notes block is shown to the judge as recalled memory. nimbusd has no clear for engine 2, so at a
-  `new_conversation` step the rig stops the daemon, moves `<data>/mem/tx` and `compact_ctl.txt` aside into
-  the arm folder (`engine2-cleared-cN`) and starts it again: engine 2 starts the new conversation empty,
-  with notes and files kept, as engine 1 and the loop do (lane E2-H2H).
+  notes block is shown to the judge as recalled memory. At a `new_conversation` step the rig sends
+  engine 2's own `/clear yes` on the web chat and requires its done line: engine 2 starts the new
+  conversation empty, with notes and files kept, as engine 1 and the loop do (lanes E2-H2H, E2-H2H2).
 - **composite** = half the share of checks passed + half the judge mean scaled to 0..1.
   The harness wins a repetition when its composite is more than 0.05 above the loop's,
   loses when more than 0.05 below, ties otherwise.
