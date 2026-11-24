@@ -477,6 +477,24 @@ class ChatBinding {
     return true;
   }
 
+  // Lane E2-FIX13: does the conversation in RAM hold this message as a person's item already (its
+  // day-stream row `m`, or one of its update ids)? A message kept during the read-in and answered
+  // before a restart is found here, so it is not answered a second time.
+  bool holdsMessage(const std::vector<uint64_t>& src, uint64_t m) const {
+    namespace tx = nimbus::orch::tx;
+    if (!arena_) return false;
+    tx::Item it;
+    for (size_t i = arena_->count(); i-- > 0;) {
+      tx::ArenaEntry e;
+      if (!arena_->header(i, e).ok() || e.kind != tx::ItemKind::User || !arena_->get(i, it).ok()) continue;
+      if (m && it.m == m) return true;
+      for (uint64_t a : it.src)
+        for (uint64_t b : src)
+          if (a && a == b) return true;
+    }
+    return false;
+  }
+
  private:
   void say(const char* line) const {
     if (d_.log) d_.log(std::string(line));
