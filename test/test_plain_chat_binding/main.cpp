@@ -409,9 +409,11 @@ static void test_a_turn_that_read_an_inbox_file_keeps_its_note_change_pending() 
 // Lane E2-P-CONN1 (PC-0252 to PC-0254): a tool server's tools, registered the way both engines
 // register them (mcp::registerServerTools, over engine 1's tools/list fixture), are offered behind
 // `more` in the connectors group; a call reaches the server's own tool with its arguments and the
-// answer (engine 1's tools/call fixture through its parser) reaches the model; the turn that read it
-// is outside content, so its note change goes to the pending shelf. Counter-test: the same note in a
-// turn that reached no tool server is written.
+// answer (engine 1's tools/call fixture through its parser) reaches the model. After outside content
+// (the listing, the answer) engine 1's rule applies: a second server call runs (connectors.cpp
+// callToolPreflight never reads the taint), and a change to what persists (the note, as engine 1's
+// standing rules and skills) is held for the owner: it goes to the pending shelf and never runs.
+// Counter-test: the same note in a turn that reached no tool server is written.
 static void test_a_tool_servers_tools_are_behind_more_and_its_answer_taints_the_turn() {
   namespace mc = nimbus::orch::mcp;
   const mc::ToolsListResult listed = mc::parseToolsList(200, "text/event-stream", mcpfix::kToolsListBody, "everything");
@@ -438,14 +440,21 @@ static void test_a_tool_servers_tools_are_behind_more_and_its_answer_taints_the_
       return plain::Status::success();
     };
     TEST_ASSERT_TRUE(dev.boot().ok());
-    if (server) dev.model.push(sp::calls({{"more", R"({"name":"mcp_everything_echo","args":{"message":"nimbus-mcp-ok"}})", ""}}));
+    if (server) {
+      dev.model.push(sp::calls({{"more", R"({"group":"connectors"})", ""}}));
+      dev.model.push(sp::calls({{"more", R"({"name":"mcp_everything_echo","args":{"message":"nimbus-mcp-ok"}})", ""}}));
+      // The second call follows the server's answer (outside content): engine 1 runs it, so engine 2 does.
+      dev.model.push(sp::calls({{"more", R"({"name":"mcp_everything_echo","args":{"message":"second"}})", ""}}));
+    }
     dev.model.push(sp::calls({{"note", R"({"op":"set","key":"pin1","value":"from the server"})", ""}}));
     dev.model.push(sp::say("Done."));
     TEST_ASSERT_TRUE(dev.say("echo through the tool server").ok());
-    TEST_ASSERT_EQUAL(server, (int)calls.size());
+    TEST_ASSERT_EQUAL(server ? 2 : 0, (int)calls.size());
     if (server) {
+      TEST_ASSERT_TRUE_MESSAGE(has(dev.model.requests()[1].body, "mcp_everything_echo(message"), "the connectors listing");
       TEST_ASSERT_EQUAL_STRING("everything/echo/nimbus-mcp-ok", calls[0].c_str());
-      TEST_ASSERT_TRUE_MESSAGE(has(dev.model.requests()[1].body, "Echo: nimbus-mcp-ok"), "the answer reaches the model");
+      TEST_ASSERT_EQUAL_STRING("everything/echo/second", calls[1].c_str());
+      TEST_ASSERT_TRUE_MESSAGE(has(dev.model.requests()[2].body, "Echo: nimbus-mcp-ok"), "the answer reaches the model");
     }
     // The tools index of the first request names the server's tools in the connectors group.
     TEST_ASSERT_TRUE_MESSAGE(has(dev.model.requests()[0].body, "connectors: mcp_everything_echo(message)"),

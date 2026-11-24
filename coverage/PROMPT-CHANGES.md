@@ -1502,3 +1502,13 @@ PC-0175, PC-0176: not used.
 - lane: E2-P-TOOLS
 - prd: section 1 step 6 (a restart or a head switch runs after the reply is sent and the turn is closed), section 4, AGENTS.md rule 9
 - why: texts.h tool_results gains device_control's leads "applied: ", "not applied: ", "action must be an object" and " (runs after this reply is sent)" (engine 1's device.control wrote the first two in orchestrator_e1.cpp); the applier's own summary tokens and refusals are device_apply.cpp's, unchanged and catalogued with engine 1. The rest of the growth is src/agent/tools_plain_device.h's registry names and the action rule key "device.control" it reads, no sentence. Planned work, not a fix.
+
+### PC-0252: /mcp approve and deny move to a file both engines link (engine 1)
+- catalog: e1
+- class: device_notes
+- kind: remove
+- bytes: 54884 -> 54663
+- sha8: 645e6e2a -> 1193384b
+- lane: E2-P-CONN1
+- prd: inventory parity-autonomy-memory-safety row C1 and parity-tools-commands-surfaces row /mcp (engine 2 binds engine 1's remote tool servers and /mcp)
+- why: the seven /mcp replies ("Usage: /mcp approve <name>  |  /mcp deny <name>", "No MCP server named ...", "Approved MCP server ...", "Removed approval for MCP server ...") left src/agent/orchestrator_e1.cpp's /mcp branch unchanged into src/agent/connectors_approval.cpp (connectors::mcp::approvalCommand), which engine 1's /mcp and engine 2's (commands_plain.cpp) both call. They are owner-facing replies of a slash command, never sent to a model; the catalog had them under device_notes only because orchestrator_e1.cpp is listed whole. No text a model reads changed: the class shrinks by those 221 B. The registration of a server's tools moved to the shared mcp::registerServerTools; the fallback description "<slug> tool" stays in src/agent/connectors.cpp (same bytes, same class). The rails' new connector row (plain_rails.cpp) adds no text. PC-0253, PC-0254: not used.

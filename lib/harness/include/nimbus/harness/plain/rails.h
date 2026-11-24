@@ -57,6 +57,8 @@ enum class RailArgs : uint8_t {
                        // the rail cannot see: it goes to pending)
   ScheduleChange = 5,  // schedule op create or update (a routine, or a reminder beyond fixed
                        // text), to this chat
+  Connector = 6,       // a remote tool server's tool (mcp.<server>.<tool>), whatever its class: the
+                       // row's use is not read (lane E2-P-CONN1)
 };
 
 // One row of the table. `tool` null: every tool of `use`; else that tool only.

@@ -284,6 +284,14 @@ String update(const std::string& args) {
   return args.empty() ? otaInstallReply() : String("Send /update on its own to install a pending update.");
 }
 
+// /skill and /prefs (E2-P-SKILL: engine 1's store and rules file), /mcp (E2-P-CONN1: engine 1's approval).
+bool storeVerb(const std::string& v) { return v == "skill" || v == "prefs" || v == "mcp"; }
+
+String storeCommand(const std::string& v, const std::string& args) {
+  if (v == "mcp") return String(connectors::mcp::approvalCommand(args).c_str());
+  return agent::tools::skillsplain::command(v, args);
+}
+
 void shared(const nimbus::orch::Command& cmd, const String& chatId, bool owner, bool pseudo) {
   const std::string& v = cmd.verb;
   if (v == "help" || v == "start") return help(chatId);
@@ -297,8 +305,7 @@ void shared(const nimbus::orch::Command& cmd, const String& chatId, bool owner, 
   if (v == "loops") return say(chatId, selfTag() + loops::loopsText());
   if (v == "loop") return loop(chatId, cmd.args);
   if (v == "remind") return remind(chatId, cmd.args);
-  if (v == "skill" || v == "prefs") return say(chatId, selfTag() + agent::tools::skillsplain::command(v, cmd.args));   // E2-P-SKILL
-  if (v == "mcp") return say(chatId, selfTag() + String(connectors::mcp::approvalCommand(cmd.args).c_str()));   // E2-P-CONN1
+  if (storeVerb(v)) return say(chatId, selfTag() + storeCommand(v, cmd.args));
   if (v == "usage" || v == "budget" || v == "model") return say(chatId, selfTag() + spending(cmd, chatId, owner, pseudo));
   alogf("e2: /%s has no shared handler", v.c_str());   // the route table and this list disagree
   say(chatId, selfTag() + kNotYetLine);

@@ -94,7 +94,9 @@ const Probe kProbes[] = {
     {"models.list", R"({"refresh":true})", R, 0},                     // a known Control name stays Control
     {"device_control", R"({"action":"restart"})", R, -1},
     {"tenant_set_role", R"({"chat":"2002","role":"admin"})", R, -1},
-    {"mcp_mail_send", R"({"to":"x@example.test","body":"files"})", R, -1},   // a connector
+    {"mcp_mail_send", R"({"to":"x@example.test","body":"files"})", R, -1},   // not a server tool's name: an unknown effect
+    {"mcp.mail.send", R"({"to":"x@example.test","body":"files"})", A, -1},   // a tool server's tool runs, as on engine 1 (E2-P-CONN1)
+    {"mcp.mail.list_inbox", R"({})", A, -1},
     {"big_read", R"({"tag":"x"})", R, 1},                               // no use row and an effect: fail closed
     {"note", "", P, -1},                                                // no arguments: {}
     {"read_file", R"({"path":)", R, -1},                                 // not JSON

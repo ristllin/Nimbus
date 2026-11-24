@@ -2,7 +2,7 @@
 # Regenerate with --write. Gate: tools/release_gate/check_no_prompt_patch.py (coverage/PROMPT-CHANGES.md).
 # One entry per line: class, source, sha8, bytes, the text as a JSON string.
 # class system bytes=43781 ceiling=47989 entries=411 sha8=035ecd2c
-# class device_notes bytes=54884 ceiling=54203 entries=1474 sha8=645e6e2a
+# class device_notes bytes=54663 ceiling=54203 entries=1467 sha8=1193384b
 # class tool_descriptions bytes=21789 ceiling=23131 entries=99 sha8=62a30ab5
 # class tool_results bytes=34918 ceiling=41962 entries=1059 sha8=702310bb
 # class side_prompts bytes=7395 ceiling=9795 entries=117 sha8=68383f73
@@ -1622,13 +1622,6 @@ device_notes	src/agent/orchestrator_e1.cpp	ebd0a61c	76	"That is not a valid trac
 device_notes	src/agent/orchestrator_e1.cpp	bd81b424	8	"Playing "
 device_notes	src/agent/orchestrator_e1.cpp	dc30cd3d	83	"Cleared this conversation and its active task. Long-term memory and files are kept."
 device_notes	src/agent/orchestrator_e1.cpp	b2f8e29d	117	"Clear this conversation and the current active task? Long-term memory and files are kept. Send /clear yes to confirm."
-device_notes	src/agent/orchestrator_e1.cpp	8cce087f	47	"Usage: /mcp approve <name>  |  /mcp deny <name>"
-device_notes	src/agent/orchestrator_e1.cpp	736bd2c1	21	"No MCP server named \""
-device_notes	src/agent/orchestrator_e1.cpp	a4e786b5	32	"\". Add it on the web page first."
-device_notes	src/agent/orchestrator_e1.cpp	89eaec90	21	"Approved MCP server \""
-device_notes	src/agent/orchestrator_e1.cpp	64e57217	40	"\". Its tools will be discovered shortly."
-device_notes	src/agent/orchestrator_e1.cpp	f602010b	33	"Removed approval for MCP server \""
-device_notes	src/agent/orchestrator_e1.cpp	14c89d6c	27	"\". Its tools are retracted."
 device_notes	src/agent/orchestrator_e1.cpp	cc7e1bec	70	"Compacting this conversation in the background - I'll confirm shortly."
 device_notes	src/agent/orchestrator_e1.cpp	dbfdb2a6	107	"Usage: /remind <when> <what> - e.g. /remind 30m take the cake out. Time is a span like 45s, 30m, 2h, or 1d."
 device_notes	src/agent/orchestrator_e1.cpp	84e1b00b	61	"that time is out of range - pick between 2 minutes and 7 days"

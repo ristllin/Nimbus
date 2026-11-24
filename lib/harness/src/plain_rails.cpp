@@ -10,6 +10,7 @@
 #include "nimbus/harness/jobs.h"   // kOutsideContentOpen: the one fence (RB-Q2a)
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/orch/action_rules.h"   // actionRuleRow
+#include "nimbus/orch/mcp_client.h"     // isNamespaced: a remote tool server's tool
 #include "nimbus/orch/path_rules.h"
 #include "nimbus/orch/tool_groups.h"   // kMoreTool
 
@@ -28,6 +29,10 @@ using Args = RailArgs;
 // RB-Q2a's toolUseFor (one classification for both rails); the first row that matches decides;
 // a call no row matches is refused. A row naming a tool comes before its class's catch-all row.
 const RailRow kTaintExemptions[] = {
+    // A tool server's tool runs as on the released engine (lane E2-P-CONN1, the owner's ruling): engine 1
+    // checks only access, the server's approval and its breaker (connectors.cpp callToolPreflight), never
+    // whether the turn read outside content (engine.cpp marks the turn, nothing more).
+    {Use::Control, nullptr, Args::Connector, Verdict::Allow},
     {Use::Read, orch::kMoreTool, Args::Listing, Verdict::Allow},    // a listing of a group's tools
     {Use::Read, orch::kMoreTool, Args::Any, Verdict::Refuse},       // a `more` call whose target is not known
     {Use::Read, nullptr, Args::Any, Verdict::Allow},                // reads change nothing
@@ -86,6 +91,7 @@ bool argsMatch(RailArgs rule, ArduinoJson::JsonObjectConst a, const TurnCtx& tur
     case Args::ScheduleList: return field(a, "op") == "list";
     case Args::FixedReminder: return fixedReminder(a, turn);
     case Args::ScheduleChange: return changeOp(a) && thisChat(a, turn);
+    case Args::Connector: return false;   // read by name in rowMatches
   }
   return false;   // not a RailArgs value
 }
@@ -97,6 +103,7 @@ bool unplaced(const std::string& name) {
 }
 
 bool rowMatches(const RailRow& r, Use use, const ToolCall& call, ArduinoJson::JsonObjectConst a, const TurnCtx& turn) {
+  if (r.args == Args::Connector) return orch::mcp::isNamespaced(call.name);
   if (r.use != use || (r.tool && call.name != r.tool)) return false;
   return argsMatch(r.args, a, turn);
 }
