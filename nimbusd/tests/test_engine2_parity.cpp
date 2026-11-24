@@ -12,7 +12,8 @@
 //       waits); a read of the owner's own file does not;
 //   (f) the engine choice: mem/engine.json wins, else NIMBUSD_ENGINE, else 1; each engine-2 turn leaves its
 //       rows in engine 1's day stream, tagged e2 (the way back), and the binding's lines name no card;
-//   (h) lane E2-P-SUB2: a routine a member set runs on the member's binding and posts to the member's chat;
+//   (h) lane E2-P-SUB2: a routine for a member's chat runs on the member's binding and posts to the member's chat
+//       (lane E2-REP3: the owner sets it; a member's own schedule call is refused, as on engine 1);
 //   (g) /api/state says which engine answers, engine 2's version line and turn count; POST /api/engine stores
 //       the next start's choice; engine 1's state is as before.
 #include <sys/stat.h>
@@ -398,9 +399,16 @@ void caseMemberRoutine(ndtest::Ctx& c) {
   // Noon UTC (the test offset is 0): outside quiet hours, so the routine's output goes at once.
   const uint64_t have = nimbusd::vclock::epoch() % 86400;
   nimbusd::vclock::advance(have <= 12 * 3600 ? 12 * 3600 - have : 86400 - (have - 12 * 3600));
+  // Lane E2-REP3: a member cannot set a routine on engine 2 (engine 1's rule, loop.create is the owner's); the
+  // owner sets one for the member's chat (the routines page), and it runs on the member's binding.
   h.model.push(sp::call("schedule", R"({"op":"create","kind":"routine","every":"every 5 min","text":"say the word COMET"})"));
-  h.model.push(sp::say("Set."));
+  h.model.push(sp::say("I cannot."));
   (void)h.host->say("777", "every five minutes say COMET", "tg");
+  c.ok(has(h.model.last().body, "only the device's owner can set up a routine"), "a member's routine is refused");
+  JsonDocument every;
+  deserializeJson(every, R"({"kind":"interval","every_seconds":300})");
+  c.ok(loops.create("comet", "say the word COMET", "777", every.as<JsonObjectConst>(), false, false).ok,
+       "the owner sets a routine for the member's chat");
   std::vector<nimbus::orch::LoopRecord> back;
   c.ok(nimbus::orch::loadLoops(slurp(dir + "/loops.json"), back) && back.size() == 1, "the member's routine is stored");
   c.ok(!back.empty() && back[0].chatId == "777", "...under the member's chat");

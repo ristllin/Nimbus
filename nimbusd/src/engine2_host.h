@@ -25,6 +25,7 @@
 #include "nimbus/harness/plain/chat_commands.h"   // /clear's generation
 #include "nimbus/harness/plain/chat_photos.h"
 #include "nimbus/harness/plain/chat_skills.h"
+#include "nimbus/harness/plain/head_gate.h"   // gateMessage, headHeld: the provider park (lane E2-REP3)
 #include "nimbus/harness/plain/history.h"   // search and view (lane E2-SRCH)
 #include "nimbus/harness/plain/schedule_binding.h"   // heldFileOn, heldPathFor, drainHeld (lane E2-SCHED)
 #include "nimbus/harness/plain/texts.h"
@@ -32,6 +33,7 @@
 #include "nimbus/orch/blob_store.h"
 #include "nimbus/orch/calc_tool.h"
 #include "nimbus/orch/episodic.h"
+#include "nimbus/orch/action_rules.h"   // who may call what (lane E2-REP3)
 #include "nimbus/orch/media_label.h"   // validRef
 #include "nimbus/orch/router_route.h"  // resolveRouterRoute
 #include "nimbus/orch/spend_ceiling.h"   // kSpendFrozenError (lane E2-FIX7)
@@ -91,6 +93,9 @@ struct Engine2Options {
   std::function<std::string()> model;                // the head model now (a router selector on "cumulo")
   std::function<std::string()> summarizerModel;      // the compaction and routine model (the sub-agent pick)
   std::function<std::string()> key;                  // the head slot's key, read at render time
+  // Lane E2-REP3: the key of one slot ("cumulo": the router's); null: `key`. A chat kept on its earlier head
+  // (turns held in RAM, below) sends that head's key, never the new one's.
+  std::function<std::string(const std::string& slot)> keyFor;
   std::string routerHost = "app.cumulo-nimbus.ai";   // lane E2-R8b: the Cumulo router's host
   std::function<int32_t(uint32_t)> utcOffsetMin;     // minutes east of UTC at an instant
   std::function<uint16_t()> dayStartMin;
@@ -171,6 +176,15 @@ inline constexpr char kNoStartLine[] = "The assistant could not start. Check the
 inline constexpr char kNoHeadLine[] =
     "This assistant cannot run on the chosen provider. Pick a provider with a key on Assistant > Providers and try "
     "again.";
+
+// Lane E2-REP3: the owner changed the model while the conversation is held in RAM (the volume did not store it):
+// the chat stays on the earlier model until those turns are stored, so none is dropped.
+inline constexpr char kHeadWaitsLine[] =
+    "The new model takes over once this conversation can be stored again. Until then the earlier model answers.";
+// /clear stored the new conversation's number, but the turns held in RAM are not stored in it yet.
+inline constexpr char kClearHeldLine[] =
+    "Started a new conversation. Your latest messages are kept in memory only, and stored at its start once the "
+    "instance disk answers again.";
 
 // What a person's message gets while paid calls are paused (the web chat's own refusal, lane DEF).
 inline constexpr char kPausedLine[] =
@@ -281,6 +295,7 @@ class Engine2Host {
     std::function<std::string()> status;
     if (o_.status) status = [this] { return o_.status(head_.slot.provider, head_.slot.model); };
     registerHostedDeviceTools(reg_, o_.e1Tools, status);
+    installAccess();
   }
   Engine2Host(const Engine2Host&) = delete;
   Engine2Host& operator=(const Engine2Host&) = delete;
@@ -335,9 +350,21 @@ class Engine2Host {
       if (o_.deliver) o_.deliver(chat, line);
       return t;
     }
+    // Lane E2-REP3: the provider park (the device's gateMessage): a refused key or credit holds the head; the
+    // person gets engine 1's notice, then its short answer, then silence, and the message is left to the import.
+    const plain::MessageGate gate = plain::gateMessage(gateDeps(), chat, text, /*personWrote=*/true);
+    if (gate.verdict == plain::GateVerdict::Held) {
+      std::fprintf(stderr, "[nimbusd] engine2: %s holds the head (%s): no request\n", head_.slot.provider.c_str(), gate.why);
+      if (o_.captureRow) o_.captureRow(chat, "user", text, plain::ownerRowTags(std::string(), false));
+      if (!gate.line.empty() && o_.deliver) o_.deliver(chat, gate.line);
+      PlainTurn t;
+      t.stated = "plain-rig:held";
+      return t;
+    }
     plain::ChatMessage msg;
     msg.ch = ch;
     msg.tzMinutes = tzNow();
+    msg.probe = gate.probe;
     // The device's photo path (orchestrator_plain.cpp): parts for every photo, and for a head that cannot
     // see, each one's description and the text without the "attached" words.
     photoSet_ = nimbus::orch::takeTurnImages(chat, text);
@@ -348,6 +375,8 @@ class Engine2Host {
     // written by the channel's offer), tagged e2 so engine 2's own import never takes it.
     if (!photoSet_ && o_.captureRow) o_.captureRow(chat, "user", text, plain::ownerRowTags(std::string(), true));
     PlainTurn t = runTurn(*b, chat, msg);
+    if (gate.probe && !t.status.ok() && t.out.headRequests == 0)   // the re-check sent nothing: it goes back
+      nimbus::orch::providerPark().releaseProbe(head_.slot.provider.c_str());
     dropPhotos();
     tellSkillsLeftOut(chat);
     return t;
@@ -358,6 +387,10 @@ class Engine2Host {
   bool ownerOnModel(const std::string& chat) {
     const Engine2Head now = headNow();
     if (now == head_) return true;
+    if (heldOnOldHead()) {   // lane E2-REP3: never drop the turns held in RAM (ruling 81); the old head answers
+      if (o_.deliver) o_.deliver(chat, kHeadWaitsLine);
+      return true;
+    }
     const std::string why = start();
     if (why.empty()) return true;
     std::fprintf(stderr, "[nimbusd] engine2: %s\n", why.c_str());
@@ -371,6 +404,11 @@ class Engine2Host {
     const plain::Status busy = plain::Status::fail(nimbus::orch::tx::Err::Busy, "nimbusd::Engine2Host::reportTurn");
     const nimbus::orch::Role role = roleOf(chat);
     std::string line;
+    std::string held;
+    if (!paused() && headHeldNow(held)) {   // lane E2-REP3: the report waits while the park holds the head
+      std::fprintf(stderr, "[nimbusd] engine2: an agent report for %s waits: %s\n", chat.c_str(), held.c_str());
+      return busy;
+    }
     plain::ChatBinding* b = paused() ? nullptr : role == nimbus::orch::Role::Admin ? binding_.get() : memberFor(chat, role, line);
     if (!b) return busy;
     plain::ChatMessage msg;
@@ -405,7 +443,7 @@ class Engine2Host {
     if (held && !binding_->storeHeldAs(key).ok()) {
       // Still held: every later turn stores them into `key` first (ChatBinding::reload).
       std::fprintf(stderr, "[nimbusd] engine2: /clear: the turns held in RAM are not stored in %s yet\n", key.c_str());
-      return kClearDoneLine;
+      return kClearHeldLine;   // lane E2-REP3: the true line, not "the earlier one stays stored"
     }
     const std::string why = start();
     std::fprintf(stderr, "[nimbusd] engine2: /clear: conversation %s%s%s\n", key.c_str(), why.empty() ? "" : ": ",
@@ -465,6 +503,12 @@ class Engine2Host {
     if (paused() && o_.loops->firesAsRoutine(req.id)) {   // a routine waits while paused; a reminder still goes
       o.deferred = true;
       o.error = nimbus::orch::kSpendFrozenError;
+      return o;
+    }
+    std::string held;
+    if (o_.loops->firesAsRoutine(req.id) && headHeldNow(held)) {   // lane E2-REP3: the park holds the head
+      o.deferred = true;
+      o.error = "paid requests are held: " + held;
       return o;
     }
     plain::ChatBinding* target = binding_.get();
@@ -530,6 +574,58 @@ class Engine2Host {
 
  private:
   agent::HttpTransport* transport() { return o_.transport ? o_.transport : &http_; }
+
+  // ---- lane E2-REP3 ---------------------------------------------------------------------------------
+  std::string keyOf(const std::string& slot) const { return o_.keyFor ? o_.keyFor(slot) : o_.key ? o_.key() : ""; }
+  // The owner's binding holds turns only in RAM and the volume still does not take them: it keeps its head.
+  bool heldOnOldHead() {
+    if (!binding_ || !binding_->unloaded() || binding_->reload()) return false;
+    std::fprintf(stderr, "[nimbusd] engine2: the owner's chat keeps %s %s until its turns held in RAM are stored\n",
+                 head_.slot.provider.c_str(), head_.slot.model.c_str());
+    return true;
+  }
+  plain::MessageGateDeps gateDeps() const {
+    plain::MessageGateDeps g;
+    g.provider = head_.slot.provider;
+    g.key = [this] { return keyOf(head_.slot.provider); };
+    g.nowMs = [] { return uint32_t(vclock::steadyMs()); };
+    return g;   // no inbound screen (the instance has no classifier) and no per-provider limit
+  }
+  bool headHeldNow(std::string& why) const {
+    return plain::headHeld(head_.slot.provider, keyOf(head_.slot.provider), false, uint32_t(vclock::steadyMs()), why);
+  }
+  // Who may call what: the released engine's table (nimbus::orch action rules, as NimbusdRig installs it on
+  // engine 1's registry), with engine 2's own names read as engine 1's: schedule by its operation and kind
+  // (loop.list, loop.create, wakeup.set; an update or a delete changes an entry, loop.cancel), the agent tools
+  // as session.*, send as reply.telegram or files.send (another chat: their other_chat rows), speak as
+  // reply.speak. note keeps each person's own notes (memory.write's row). A person's own message is attended;
+  // anything else (a routine, a report, a resumed turn) is not.
+  static std::string actionKey(const std::string& name, ArduinoJson::JsonObjectConst a, const std::string& turnChat) {
+    const std::string op = a["op"] | "", kind = a["kind"] | "", chat = a["chat"] | "";
+    if (name == "schedule") {
+      if (op == "list") return "loop.list";
+      if (op == "create") return kind == "wakeup" ? "wakeup.set" : "loop.create";
+      return "loop.cancel";
+    }
+    if (name == "agent_start") return "session.spawn";
+    if (name == "agent_list") return "session.list";
+    if (name == "agent_stop") return "session.terminate";
+    if (name == "note") return "memory.write";
+    if (name == "speak") return "reply.speak";
+    if (name == "send") {
+      const std::string base = kind == "file" || kind == "photo" ? "files.send" : "reply.telegram";
+      return !chat.empty() && chat != turnChat ? base + ".other_chat" : base;
+    }
+    return name;
+  }
+  void installAccess() {
+    reg_.setAccessResolver([this](const std::string& name, ArduinoJson::JsonObjectConst args,
+                                  const nimbus::orch::Principal& who) {
+      const nimbus::orch::ActionCaller c = nimbus::orch::actionCaller(who, !attended_);
+      const std::string why = nimbus::orch::actionRefusal(actionKey(name, args, curChat_), c);
+      return why.empty() ? nimbus::orch::ToolRegistry::Verdict::allow() : nimbus::orch::ToolRegistry::Verdict::deny(why);
+    });
+  }
   Engine2Head headNow() const {
     return engine2Head(o_.head ? o_.head() : std::string(), o_.model ? o_.model() : std::string(), o_.routerHost);
   }
@@ -573,7 +669,7 @@ class Engine2Host {
   // RAM is never dropped with them (ruling 81): another chat is refused with the true cause meanwhile. Null, with
   // `line` the person's line, when no turn can run for the chat.
   plain::ChatBinding* memberFor(const std::string& chat, nimbus::orch::Role role, std::string& line) {
-    if (!(headNow() == head_)) {   // a head change: the owner's chat boots on the new head first
+    if (!(headNow() == head_) && !heldOnOldHead()) {   // a head change: the owner's chat boots on the new head first
       const std::string why = start();
       if (!why.empty()) {
         std::fprintf(stderr, "[nimbusd] engine2: %s\n", why.c_str());
@@ -628,6 +724,7 @@ class Engine2Host {
   PlainTurn runTurn(plain::ChatBinding& b, const std::string& chat, const plain::ChatMessage& msg) {
     curChat_ = chat;
     inTurn_ = true;
+    attended_ = msg.trigger == plain::Trigger::Owner;
     sent_.clear();
     unsent_.clear();
     gateSeen_ = gate_.refused();
@@ -635,6 +732,7 @@ class Engine2Host {
     PlainTurn t;
     t.status = b.turn(msg, t.out);
     inTurn_ = false;
+    attended_ = false;
     const bool stopped = gate_.refused() != gateSeen_ || pausedTold_;
     if (stopped && !pausedTold_) (void)deliverPart(kPausedLine);   // the ceiling stopped it and no part went yet
     curChat_.clear();
@@ -689,7 +787,8 @@ class Engine2Host {
     // the owner's to the chat of the running turn.
     const std::string to = owner ? std::string() : chat;
     d.sendPart = [this, to](const std::string&, const std::string& part) { return deliverPart(part, to); };
-    d.key = o_.key;
+    d.key = [this] { return keyOf(head_.slot.provider); };   // lane E2-REP3: the key of the head the chat runs on
+    d.parkHead = true;   // lane E2-REP3: the shared park learns what the head answered (the device's E2-FIX14)
     d.pinnedNotes = [this](const nimbus::orch::Principal& who) { return notes_.pinnedBlock(who); };
     d.compactCtl = hostedTextIO(o_.dataDir + "/mem/compact_ctl.txt");
     d.log = [](const std::string& line) { std::fprintf(stderr, "[nimbusd] engine2: %s\n", line.c_str()); };
@@ -911,7 +1010,8 @@ class Engine2Host {
   }
   CeilingGate gate_{[this] { return transport(); }, [this] { return paused(); },
                     [this](const agent::HttpResponse& r) { answered(r); }};   // every engine-2 request (E2-R8b)
-  bool inTurn_ = false;       // a person's turn runs (lane E2-REP3: its answers count as pending spend)
+  bool inTurn_ = false;
+  bool attended_ = false;     // a person's own message runs (lane E2-REP3: the action rules' attended turn)       // a person's turn runs (lane E2-REP3: its answers count as pending spend)
   uint32_t gateSeen_ = 0;     // the gate's refusals the person was told of
   bool pausedTold_ = false;   // the pause line went out in this turn
   uint64_t lastTurnEnd_ = 0;

@@ -4,12 +4,18 @@
 //   (2) send: a second message to this chat, a stored file and a photo to Telegram, a voice note as text;
 //   (3) the docs group (docs_list, docs_search, docs_read) and device_status, which names the instance's truth;
 //   (4) the monthly ceiling is checked before each request of a turn with the spend of its earlier requests;
-//   (5) on its own provider key the instance says in /api/state that members are not moderated.
+//   (5) on its own provider key the instance says in /api/state that members are not moderated;
+// and the review's findings (24 Nov): (A) a member cannot list, change or delete the owner's schedule or set a
+// wake-up (the released engine's rules and lines), the owner still can; (B) a head change keeps the owner's turns
+// held in RAM (the chat stays on its earlier model and says so); (C) a refused key parks the head: the next
+// message sends no request.
+#include <sys/stat.h>
 #include <cstdlib>
 #include <string>
 #include <vector>
 
 #include "../../test/support/scripted_provider/scripted_provider.h"
+#include "nimbus/orch/provider_park.h"
 #include "daemon_http.h"
 #include "engine2_route.h"
 #include "http_control.h"
@@ -238,6 +244,117 @@ void caseModeration(ndtest::Ctx& c) {
   }
 }
 
+
+void caseMemberSchedule(ndtest::Ctx& c) {
+  std::printf("  (A) who may use the schedule\n");
+  setenv("NIMBUSD_TEST_CLOCK", "1", 1);
+  const std::string dir = ndtest::scratchDir("e2rep3sched");
+  Host h(dir);
+  nimbusd::HostedLoops loops;
+  nimbusd::HostedLoopHooks hooks;
+  hooks.world = [] { return nimbus::orch::deliveryWorld("bot-token-fake", "1001,777", "1001"); };
+  loops.begin(dir, hooks);
+  h.o.loops = &loops;
+  h.o.roleOf = [](const std::string& chat) {
+    return chat == "777" ? nimbus::orch::Role::User : nimbus::orch::Role::Admin;
+  };
+  // A day ahead in the host's zone (the test offset is 0: UTC).
+  const time_t ahead = nimbusd::vclock::now() + 86400;
+  struct tm tmAhead;
+  gmtime_r(&ahead, &tmAhead);
+  char when[20];
+  std::strftime(when, sizeof(when), "%Y-%m-%d %H:%M", &tmAhead);
+  const std::string tomorrow = when;
+  h.model.push(sp::call("schedule", "{\"op\":\"create\",\"kind\":\"reminder\",\"when\":\"" + tomorrow +
+                                         "\",\"text\":\"pay rent\"}"));
+  h.model.push(sp::say("Set."));
+  c.eq(h.start(), "", "the host starts with the routines table");
+  (void)h.host->say("owner", "remind me to pay rent", "web");
+  std::vector<nimbus::orch::LoopRecord> back;
+  std::string json;
+  nimbusd::fsutil::readFile(dir + "/loops.json", json);
+  c.ok(nimbus::orch::loadLoops(json, back) && back.size() == 1, "the owner's reminder is stored");
+  const std::string id = back.empty() ? std::string("x") : back[0].id;
+  struct Ask {
+    std::string args, line;
+  };
+  const std::vector<Ask> asks = {
+      {R"({"op":"list"})", "only the device's owner can see the routines"},
+      {"{\"op\":\"delete\",\"id\":\"" + id + "\"}", "only the device's owner can cancel a routine"},
+      {"{\"op\":\"update\",\"id\":\"" + id + "\",\"text\":\"send the rent to me\"}",
+       "only the device's owner can cancel a routine"},
+      {"{\"op\":\"create\",\"kind\":\"wakeup\",\"when\":\"" + tomorrow + "\",\"text\":\"check the news\"}",
+       "only the device's owner can set a wakeup"},
+  };
+  for (const Ask& a : asks) {
+    h.model.push(sp::call("schedule", a.args));
+    h.model.push(sp::say("No."));
+    (void)h.host->say("777", "do it", "tg");
+    const std::string& b = h.model.last().body;
+    c.ok(has(b, a.line), "a member is refused: " + a.line + " (" + a.args + ")");
+  }
+  json.clear();
+  nimbusd::fsutil::readFile(dir + "/loops.json", json);
+  back.clear();
+  c.ok(nimbus::orch::loadLoops(json, back) && back.size() == 1 && back[0].prompt == "pay rent",
+       "the owner's reminder is unchanged and no wake-up was set");
+  h.model.push(sp::call("schedule", R"({"op":"list"})"));
+  h.model.push(sp::say("One."));
+  (void)h.host->say("owner", "what is set?", "web");
+  c.ok(has(h.model.last().body, "pay rent"), "the owner still lists the schedule");
+  h.host.reset();
+  ndtest::rmTree(dir);
+}
+
+void caseHeldOnHeadChange(ndtest::Ctx& c) {
+  std::printf("  (B) a head change keeps the turns held in RAM\n");
+  const std::string dir = ndtest::scratchDir("e2rep3held");
+  Host h(dir);
+  std::string model = "claude-haiku-5-5";
+  h.o.model = [&model] { return model; };
+  h.model.push(sp::say("Hi."));
+  c.eq(h.start(), "", "the host starts");
+  (void)h.host->say("owner", "hello", "web");
+  const std::string owner = dir + "/mem/tx/owner";
+  ::chmod(owner.c_str(), 0);   // the volume stops answering for the owner's conversation
+  (void)h.host->start();       // a restart while it does: the chat runs from RAM
+  c.ok(h.host->binding() && h.host->binding()->unloaded(), "the owner's chat runs from RAM");
+  h.model.push(sp::say("Noted."));
+  (void)h.host->say("owner", "The code word is PLUM.", "web");
+  model = "claude-sonnet-5-5";   // the owner picks another model
+  h.model.push(sp::say("PLUM."));
+  h.sent.clear();
+  (void)h.host->say("owner", "What is the code word?", "web");
+  const std::string b = h.model.last().body;
+  c.ok(has(b, "The code word is PLUM."), "the turn held in RAM is still in the conversation");
+  c.ok(has(b, "claude-haiku-5-5"), "...which stays on the earlier model until it is stored");
+  c.ok(!h.sent.empty() && h.sent[0].text == nimbusd::kHeadWaitsLine, "the owner is told why");
+  ::chmod(owner.c_str(), 0700);
+  h.host.reset();
+  ndtest::rmTree(dir);
+}
+
+void caseParkedHead(ndtest::Ctx& c) {
+  std::printf("  (C) a refused key parks the head\n");
+  const std::string dir = ndtest::scratchDir("e2rep3park");
+  Host h(dir);
+  sp::Step refused;
+  refused.status = 401;
+  refused.errorBody = R"({"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}})";
+  h.model.push(refused);
+  c.eq(h.start(), "", "the host starts");
+  (void)h.host->say("owner", "hello", "web");
+  const size_t asked = h.model.requests().size();
+  h.sent.clear();
+  const nimbusd::PlainTurn t = h.host->say("owner", "hello again", "web");
+  c.ok(h.model.requests().size() == asked, "the next message sends no request while the key is refused");
+  c.eq(t.stated, std::string("plain-rig:held"), "...the park holds the head");
+  c.ok(h.sent.size() <= 1, "...and the person gets at most engine 1's one line");
+  nimbus::orch::providerPark().clear();
+  h.host.reset();
+  ndtest::rmTree(dir);
+}
+
 }  // namespace
 
 int main() {
@@ -251,6 +368,9 @@ int main() {
   caseDocsAndStatus(c);
   caseCeiling(c);
   caseModeration(c);
+  caseMemberSchedule(c);
+  caseHeldOnHeadChange(c);
+  caseParkedHead(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   return c.failures ? 1 : 0;
 }

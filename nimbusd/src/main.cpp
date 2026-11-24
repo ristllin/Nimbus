@@ -240,6 +240,7 @@ std::string startEngine2(const nimbusd::Config& cfg, nimbusd::NimbusdRig& rig, n
   };
   o.summarizerModel = [&rig] { return rig.subModelFor(rig.hostBadge()); };
   o.key = [&rig] { return rig.engineKey(rig.hostBadge()); };
+  o.keyFor = [&rig](const std::string& slot) { return rig.engineKey(slot); };   // lane E2-REP3
   o.routerHost = nimbusd::kCumuloHost;
   o.utcOffsetMin = [](uint32_t t) {
     std::lock_guard<std::mutex> lk(nimbusd::hosted::tzMutex());

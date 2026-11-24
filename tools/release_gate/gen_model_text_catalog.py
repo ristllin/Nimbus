@@ -289,6 +289,8 @@ E2_EXTRA_SOURCES: tuple = (
     ("src/agent/tools_plain.cpp", "tool_results"),
     # E2-P-HOST1: the hosted engine-2 registration of the same web_search over the old web.search (names, argument).
     ("nimbusd/src/hosted_web_search.h", "tool_results"),
+    # E2-REP3: the hosted docs group and device_status on engine 2 (registry names, JSON keys; no prose).
+    ("nimbusd/src/hosted_e2_device.h", "tool_results"),
     # E2-P-OUT1: send and speak (their argument and kind words; the result lines are texts.h).
     ("src/agent/tools_plain_send.h", "tool_results"),
     # E2-P-OUT2: the files_admin and media tools over engine 1's handlers: their descriptions (namespace

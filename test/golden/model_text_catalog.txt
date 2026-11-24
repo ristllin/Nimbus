@@ -4,7 +4,7 @@
 # class core bytes=1706 ceiling=3072 entries=32 sha8=51b7732e
 # class device_notes bytes=2046 ceiling=2048 entries=78 sha8=2204d611
 # class stubs bytes=512 ceiling=512 entries=23 sha8=b42c515f
-# class tool_results bytes=8951 ceiling=9216 entries=635 sha8=ffa17b15
+# class tool_results bytes=9025 ceiling=9216 entries=646 sha8=0010cad5
 # class probe bytes=1344 ceiling=1536 entries=6 sha8=f4dd133a
 # class summarizer bytes=1021 ceiling=1024 entries=17 sha8=a9622cfe
 # class tool_descriptions bytes=10255 ceiling=10240 entries=121 sha8=3e8cdb20
@@ -692,6 +692,17 @@ tool_results	lib/harness/include/nimbus/harness/plain/texts.h	d9621d53	9	"applie
 tool_results	lib/harness/include/nimbus/harness/plain/texts.h	7fd68c5a	13	"not applied: "
 tool_results	lib/harness/include/nimbus/harness/plain/texts.h	8b3e93c2	24	"action must be an object"
 tool_results	lib/harness/include/nimbus/harness/plain/texts.h	1411592c	32	" (runs after this reply is sent)"
+tool_results	nimbusd/src/hosted_e2_device.h	3b9c358f	4	"file"
+tool_results	nimbusd/src/hosted_e2_device.h	3b9c358f	4	"file"
+tool_results	nimbusd/src/hosted_e2_device.h	a5614527	2	"id"
+tool_results	nimbusd/src/hosted_e2_device.h	aaf23206	5	"title"
+tool_results	nimbusd/src/hosted_e2_device.h	3b9c358f	4	"file"
+tool_results	nimbusd/src/hosted_e2_device.h	aaf23206	5	"title"
+tool_results	nimbusd/src/hosted_e2_device.h	4697ef32	8	"sections"
+tool_results	nimbusd/src/hosted_e2_device.h	a7e557a3	11	"docs.search"
+tool_results	nimbusd/src/hosted_e2_device.h	c0211539	9	"docs.read"
+tool_results	nimbusd/src/hosted_e2_device.h	bbb1c2a2	9	"docs.list"
+tool_results	nimbusd/src/hosted_e2_device.h	e96848ef	13	"device.status"
 tool_results	nimbusd/src/hosted_web_search.h	2a719626	10	"web_search"
 tool_results	nimbusd/src/hosted_web_search.h	2a719626	10	"web_search"
 tool_results	nimbusd/src/hosted_web_search.h	a8b77192	5	"query"
