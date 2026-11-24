@@ -597,6 +597,19 @@ static void test_a_refused_removal_does_not_send_the_line_again() {
   TEST_ASSERT_EQUAL(0, (int)plain::answerWaiting(in, f));
   TEST_ASSERT_TRUE(in.empty());
   TEST_ASSERT_EQUAL(1, lines);
+
+  // A message kept while the answered one's removal is refused: the next write leaves it out, so a
+  // restart never finds it again.
+  (void)in.hold(tgMessage("answered", 1002, 0x71));
+  dev.card.refuseWrites = true;
+  TEST_ASSERT_EQUAL(1, (int)plain::answerWaiting(in, f));
+  dev.card.refuseWrites = false;
+  TEST_ASSERT_EQUAL((int)plain::HoldVerdict::Kept, (int)in.hold(tgMessage("next", 1003, 0x72)));
+  TEST_ASSERT_EQUAL(1, (int)in.messages().size());
+  plain::WaitingInbox after(&dev.files, kChat);
+  TEST_ASSERT_TRUE(after.load().ok());
+  TEST_ASSERT_EQUAL(1, (int)after.messages().size());
+  TEST_ASSERT_EQUAL_STRING("next", after.messages()[0].text.c_str());
 }
 
 int main(int, char**) {

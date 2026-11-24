@@ -209,6 +209,13 @@ HoldVerdict WaitingInbox::hold(const WaitingMessage& m) {
   if (!m.src.empty() && holds(m.src)) return HoldVerdict::Duplicate;
   if (msgs_.size() >= kWaitingMax) return HoldVerdict::Full;
   msgs_.push_back(m);
+  if (frontDone_) {   // E2-REP6: the answered first message, whose removal was refused, leaves with this write
+    std::vector<WaitingMessage> rest(msgs_.begin() + 1, msgs_.end());
+    if (!save(rest).ok()) return HoldVerdict::KeptInRam;
+    msgs_ = std::move(rest);
+    frontDone_ = false;
+    return HoldVerdict::Kept;
+  }
   return save(msgs_).ok() ? HoldVerdict::Kept : HoldVerdict::KeptInRam;
 }
 
