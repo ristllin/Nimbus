@@ -19,6 +19,7 @@ void partToJson(const tx::Part& p, JsonObject o) {
   o["ref"] = p.ref;
   o["mime"] = p.mime;
   o["b"] = p.bytes;
+  if (!p.note.empty()) o["n"] = p.note;   // E2-REP4: a blind head's description
 }
 
 void msgToJson(const WaitingMessage& m, JsonObject o) {
@@ -33,6 +34,8 @@ void msgToJson(const WaitingMessage& m, JsonObject o) {
   for (const std::string& s : m.stored) stored.add(s);
   JsonArray parts = o["parts"].to<JsonArray>();
   for (const tx::Part& p : m.parts) partToJson(p, parts.add<JsonObject>());
+  if (!m.blindText.empty()) o["bt"] = m.blindText;   // E2-REP4
+  if (m.photosBlind) o["blind"] = true;
 }
 
 // A message as stored; false when a field a turn needs is missing or of the wrong kind.
@@ -58,8 +61,11 @@ bool msgFromJson(JsonObjectConst o, WaitingMessage& m) {
     part.ref = p["ref"].as<const char*>();
     part.mime = p["mime"] | "";
     part.bytes = p["b"] | (uint32_t)0;
+    part.note = p["n"] | "";
     m.parts.push_back(part);
   }
+  m.blindText = o["bt"] | "";
+  m.photosBlind = o["blind"] | false;
   return true;
 }
 

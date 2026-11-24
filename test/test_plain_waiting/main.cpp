@@ -172,6 +172,9 @@ struct Device {
       msg.m = w.m;
       msg.parts = w.parts;
       msg.stored = w.stored;
+      // As the device answers a kept message (E2-REP4): a head that takes no images reads the kept text.
+      msg.photosBlind = !msg.parts.empty() && blindHead;
+      if (msg.photosBlind && !w.blindText.empty()) msg.text = w.blindText;
       plain::TurnOutcome out;
       turns.push_back(binding->turn(msg, out));
       return plain::WaitingAnswer::Done;
@@ -187,6 +190,7 @@ struct Device {
   nimbus::orch::ToolRegistry reg;
   DeadRows deadRows;
   bool importFails = false;
+  bool blindHead = false;   // the answering head takes no images (E2-REP4)
   nimbus::orch::TurnImages* stored = nullptr;   // the photos the card keeps
   std::vector<std::string> sent;
   std::vector<plain::Status> turns;
@@ -384,6 +388,39 @@ static void test_a_kept_photo_reaches_its_turn_from_the_card() {
   TEST_ASSERT_EQUAL(1, (int)count(dev.model.last().body, "\"type\":\"image\""));
 }
 
+// Lane E2-REP4: a photo kept during the read-in for a head that takes no images keeps its description
+// and its true text across a restart; the answer shows the description, never the "attached" claim.
+static void test_a_kept_photo_keeps_its_description_for_a_blind_head() {
+  Device dev;
+  plain::WaitingInbox in(&dev.files, kChat);
+  TEST_ASSERT_TRUE(in.load().ok());
+  plain::WaitingMessage m = tgMessage("what is this? [image 1/1 ref=0123456789abcdef] (attached: the photo itself is in this message)", 902, 0x61);
+  nimbus::orch::tx::Part p;
+  p.kind = nimbus::orch::tx::PartKind::Image;
+  p.ref = "p0123456789abcdef";
+  p.mime = "image/jpeg";
+  p.bytes = 14;
+  p.note = "a red bicycle against a brick wall";
+  m.parts.push_back(p);
+  m.blindText = "what is this? [image 1/1 ref=0123456789abcdef]";
+  m.photosBlind = true;
+  (void)in.hold(m);
+  plain::WaitingInbox reread(&dev.files, kChat);   // as a restart reads it
+  TEST_ASSERT_TRUE(reread.load().ok());
+  const plain::WaitingMessage& back = reread.messages()[0];
+  TEST_ASSERT_EQUAL_STRING("a red bicycle against a brick wall", back.parts[0].note.c_str());
+  TEST_ASSERT_EQUAL_STRING(m.blindText.c_str(), back.blindText.c_str());
+  TEST_ASSERT_TRUE(back.photosBlind);
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  dev.blindHead = true;
+  dev.model.push(sp::say("A red bicycle."));
+  TEST_ASSERT_EQUAL(1, (int)plain::answerWaiting(reread, dev.drain()));
+  const std::string& body = dev.model.last().body;
+  TEST_ASSERT_TRUE_MESSAGE(has(body, "a red bicycle against a brick wall"), "the kept description was lost");
+  TEST_ASSERT_FALSE_MESSAGE(has(body, "the photo itself is in this message"), "the answer claims an attached photo");
+  TEST_ASSERT_EQUAL(0, (int)count(body, "\"type\":\"image\""));
+}
+
 // Ruling 116: a list the card cannot read is not an empty one; a list that does not decode is set
 // aside whole; a removal the card refused leaves the message first, found taken on the next pass.
 static void test_an_unread_list_is_never_empty_and_a_refused_removal_is_not_lost() {
@@ -501,5 +538,6 @@ int main(int, char**) {
   RUN_TEST(test_an_unread_list_is_never_empty_and_a_refused_removal_is_not_lost);
   RUN_TEST(test_the_list_is_bounded_and_runs_in_ram_with_no_card);
   RUN_TEST(test_a_cut_kept_turn_is_resumed_once_and_not_answered_again);
+  RUN_TEST(test_a_kept_photo_keeps_its_description_for_a_blind_head);
   return UNITY_END();
 }

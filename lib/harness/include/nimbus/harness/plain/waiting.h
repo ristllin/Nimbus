@@ -41,6 +41,11 @@ struct WaitingMessage {
   std::vector<uint64_t> src;                       // Telegram update ids (none for the web chat)
   std::vector<std::string> stored;                 // the files stored for it (TurnInput::stored)
   std::vector<nimbus::orch::tx::Part> parts;       // its photos (Image parts; bytes stay on the card)
+  // Lane E2-REP4: the text as a head that takes no images reads it (photoTextBlind; "" = the same as
+  // text) and whether the head was blind when it was kept (each part then carries its description as
+  // its note). The answer applies them when the head that answers takes no images.
+  std::string blindText;
+  bool photosBlind = false;
   int16_t tzMinutes = 0;
   uint64_t m = 0;                                  // its day-stream row, written when it arrived
 };

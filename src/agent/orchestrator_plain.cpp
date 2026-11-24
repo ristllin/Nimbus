@@ -1024,7 +1024,12 @@ bool keepMessage(const String& text, const String& fromName, const String& chatI
   const String host = store::resolvedOrchHost();
   w.text = std::string(text.c_str(), text.length());
   w.from = std::string(fromName.c_str(), fromName.length());
-  w.parts = plain::photoParts(s_photos.get(), host.c_str(), std::string(store::orchModel(host).c_str()));
+  const std::string model(store::orchModel(host).c_str());
+  w.parts = plain::photoParts(s_photos.get(), host.c_str(), model);
+  // E2-REP4: kept for an answer on a head that takes no images (the description and the true text).
+  w.photosBlind = !w.parts.empty() && !nimbus::orch::headTakesImages(host.c_str(), model);
+  const std::string blindText = plain::photoTextBlind(s_photos.get(), w.text);
+  if (blindText != w.text) w.blindText = blindText;
   w.tzMinutes = (int16_t)(utcOffsetAt((uint32_t)time(nullptr)));
   w.m = rowNumber(captureOwnerRow(text, fromName, chatId, true));
   const plain::HoldVerdict v = in->hold(w);
@@ -1088,6 +1093,10 @@ plain::WaitingAnswer answerKept(const plain::WaitingMessage& w, const String& ch
   msg.src = w.src;
   msg.stored = w.stored;
   msg.parts = w.parts;   // the photos' bytes come from the card's copy (the photo hook)
+  // E2-REP4: a head that takes no images reads each photo's kept description and the true text.
+  const String host = store::resolvedOrchHost();
+  msg.photosBlind = !msg.parts.empty() && !nimbus::orch::headTakesImages(host.c_str(), store::orchModel(host).c_str());
+  if (msg.photosBlind && !w.blindText.empty()) msg.text = w.blindText;
   msg.tzMinutes = w.tzMinutes;
   msg.m = w.m;
   alogf("e2: a message to %s kept during the read-in is answered now", chatId.c_str());

@@ -63,15 +63,19 @@ inline std::vector<nimbus::orch::tx::Part> photoParts(nimbus::orch::TurnImages* 
 // The message text for a head that takes no images: each attached photo's segment ("... (attached:
 // the photo itself is in this message)", not true for it) becomes its bracket alone; the photo's
 // own line carries the description. A seeing head, or no set: the text unchanged.
-inline std::string photoText(const nimbus::orch::TurnImages* set, const std::string& host, const std::string& model,
-                             const std::string& text) {
-  if (!set || nimbus::orch::headTakesImages(host, model)) return text;
+// photoTextBlind: that text whatever the head (lane E2-REP4: kept for a kept message's answer).
+inline std::string photoTextBlind(const nimbus::orch::TurnImages* set, const std::string& text) {
+  if (!set) return text;
   std::string out = text;
   for (const nimbus::orch::TurnImage& img : set->items) {
     const size_t at = img.segment.empty() || img.tag.empty() ? std::string::npos : out.find(img.segment);
     if (at != std::string::npos) out.replace(at, img.segment.size(), img.tag);
   }
   return out;
+}
+inline std::string photoText(const nimbus::orch::TurnImages* set, const std::string& host, const std::string& model,
+                             const std::string& text) {
+  return !set || nimbus::orch::headTakesImages(host, model) ? text : photoTextBlind(set, text);
 }
 
 // The photo hook's answer for `ref` from `set` (the bytes stay the set's). NotFound when the set
