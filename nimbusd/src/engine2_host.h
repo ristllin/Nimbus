@@ -190,7 +190,7 @@ class Engine2Host {
     c.dayStartMin = dayStart();
     c.profile = o_.profile;
     std::unique_ptr<plain::ChatBinding> b(new plain::ChatBinding(c, bindingDeps()));
-    held_.load();
+    (void)held_.load();
     const plain::Status st = b->boot();
     if (b->migrationRan()) logImport(*b);
     if (!st.ok())
