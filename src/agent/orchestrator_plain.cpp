@@ -48,6 +48,7 @@
 #endif
 
 #include <Arduino.h>
+#include <esp_attr.h>   // RTC_NOINIT_ATTR - the held-items mark (E2-BFIX1)
 #include <esp_heap_caps.h>
 #include <string.h>   // memcpy, strncpy - the staged update notice
 #include <time.h>     // localtime_r, gmtime_r - utcOffsetAt
@@ -165,6 +166,10 @@ constexpr const char* kClearNotStoredLine =
 constexpr const char* kSkillTooLargeLine =
     "Your skill %s is too large to ride every message (%u B; notes and skills share 4,096 B). It is "
     "listed among your skills instead, and read when a message needs it.";
+
+// Lane E2-BFIX1: the person's line when a restart came before storage took a turn the device held in RAM.
+constexpr const char* kHeldLostLine =
+    "The device restarted before the card stored the last exchange, so it is not kept in this conversation.";
 
 bool                  s_begun = false;   // tg_poll only (begin runs before the poll task starts)
 std::atomic<bool>     s_inTurn{false};   // written on tg_poll, read by the web task (the spinner)
@@ -833,6 +838,62 @@ void logTurn(const plain::ChatBinding& b, const plain::TurnOutcome& out, const p
         (unsigned)h.readTotalMs, (unsigned)h.readBytes);
 }
 
+// ---- held items across a restart (lane E2-BFIX1) ---------------------------------------
+// A chat whose turn items storage refused and the engine still holds in RAM (tx::TxLog::flushHeld writes
+// them in order once the card takes a line). The mark lives in RTC memory (44 B of RTC slow memory, no
+// DRAM): a restart, a crash or a watchdog keeps it, and the next boot tells the person once. A power
+// cut loses it; the turn's own storage line already said what is kept only until a restart.
+struct HeldMark {
+  uint32_t magic;
+  char chat[40];
+};
+constexpr uint32_t kHeldMagic = 0x48454c44u;   // "HELD"
+RTC_NOINIT_ATTR HeldMark s_heldMark;
+uint32_t s_heldFlushAt = 0;    // tg_poll only: the last flush try
+uint8_t s_heldTellTries = 0;   // tg_poll only: the boot's line, tried a bounded number of times
+
+void noteHeld(plain::ChatBinding& b) {
+  plain::PlainEngine* e = b.engine();
+  const bool held = e && e->heldItems() > 0;
+  if (!held) {
+    if (s_heldMark.magic == kHeldMagic && strncmp(s_heldMark.chat, b.config().chatId.c_str(), sizeof s_heldMark.chat) == 0)
+      s_heldMark.magic = 0;
+    return;
+  }
+  if (b.config().chatId.size() >= sizeof s_heldMark.chat) return;   // never a chat id cut short
+  strncpy(s_heldMark.chat, b.config().chatId.c_str(), sizeof s_heldMark.chat);
+  s_heldMark.magic = kHeldMagic;
+  alogf("e2: %u item(s) of %s held for the card", (unsigned)e->heldItems(), b.config().chatId.c_str());
+}
+
+// Between turns, every 5 s while items are held: the card takes them now if it will.
+void flushHeldItems() {
+  if (!s_chat || s_inTurn.load(std::memory_order_relaxed)) return;
+  plain::PlainEngine* e = s_chat->engine();
+  if (!e || !e->heldItems() || millis() - s_heldFlushAt < 5000) return;
+  s_heldFlushAt = millis();
+  const uint32_t before = e->heldItems();
+  {
+    PsramFirstScope psramFirst;
+    (void)e->flushHeld();
+  }
+  if (e->heldItems() < before)
+    alogf("e2: %u held item(s) of %s stored, %u still held", (unsigned)(before - e->heldItems()),
+          s_chat->config().chatId.c_str(), (unsigned)e->heldItems());
+  noteHeld(*s_chat);
+}
+
+// Once after a boot: a mark the last run left means its held items never reached the card.
+void tellHeldLost() {
+  if (s_heldMark.magic != kHeldMagic || s_heldTellTries >= 20) return;
+  ++s_heldTellTries;
+  s_heldMark.chat[sizeof s_heldMark.chat - 1] = '\0';
+  const String chat(s_heldMark.chat);
+  if (!sayInstead(chat, kHeldLostLine)) return;   // tried again at the next poll
+  s_heldMark.magic = 0;
+  alogf("e2: %s told its last exchange was not kept (a restart came before the card took it)", chat.c_str());
+}
+
 // The line a message gets when no engine-2 turn can run for it; empty: a turn can run.
 const char* refusalFor(const String& host) {
   if (!store::providerHasKey(host)) return kNoKeyLine;
@@ -957,6 +1018,7 @@ bool turnFor(plain::ChatBinding& b, const String& chatId, const plain::ChatMessa
   if (out.modelUnusable) markUnusable(b.config().provider, b.config().model);
   afterTurn(msg.probe, st, out);   // E2-FIX14: a turn refused before its first request gives the re-check back
   logTurn(b, out, st, millis() - t0);
+  noteHeld(b);   // E2-BFIX1: items storage still holds in RAM are named at the next boot if a restart comes first
   if (!msg.parts.empty())
     alogf("e2: photos=%u bytes=%u psramFree=%u psramLargest=%u", (unsigned)msg.parts.size(),
           (unsigned)(s_photos ? s_photos->bytes() : 0), (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
@@ -1907,6 +1969,8 @@ int pollJobs() {
   tools::skillsplain::pump();       // E2-P-SKILL: the Rules page's answers to held notes
   bootLostChat();         // once: a person's message a restart cut is resumed (E2-FIX12)
   bootOwnerChat();        // once: the owner chat's transcript and seen index before its next message
+  tellHeldLost();         // E2-BFIX1: once, a turn the last run held in RAM and never stored
+  flushHeldItems();       // E2-BFIX1: and what this run holds, to the card once it takes a line
   loadWaitingLists();     // E2-FIX13: the messages a restart left kept for the read-in
   answerKeptMessages();   // and those kept, answered in order once their chat's read-in ended
   drainTerminates();      // the journal's staged terminates (web stops), on the journal's writer task

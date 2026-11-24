@@ -53,6 +53,7 @@ struct PlainEngine::ChatState {
   bool storageEpisode = false;         // storage refused an item and has stored none since
   bool noteDue = false;                // a stored gap note is still owed for the last episode
   bool noteShown = false;              // the model has seen the note in this episode (RAM at least)
+  uint32_t lostAtEpisode = 0;          // TxLog::lostCount() when the episode began (lane E2-BFIX1)
   uint64_t droppedThru = 0;            // the newest q given up from RAM (the restart fill, a full arena)
   // A full arena (ruling 60): the oldest closed turns left RAM (storage keeps them). The
   // omission line names them until a digest covers them.
@@ -121,6 +122,7 @@ struct Turn {
   std::vector<uint64_t> callQ;         // the q of each call of the round being run (pairing)
   uint64_t curCallQ = 0;               // the q of the call whose result is being stored
   bool storeFailed = false;            // the arena refused an item: the turn ends
+  uint32_t lostAtOpen = 0;             // TxLog::lostCount() at the open (E2-BFIX1: an item given up this turn)
   bool storageLineDue = false;
   bool fileSetChanged = false;
   bool sawOutside = false;
@@ -199,6 +201,7 @@ class TurnRun {
   // The loop. Everything around it is durability: each answer and each result is stored
   // before the next request leaves. Kept out of line: runTurn's own frame stays small.
   __attribute__((noinline)) Status run(const TurnInput& in) {
+    t_.lostAtOpen = d_.log->lostCount();
     Status st = open(in);
     while (st.ok() && !t_.storeFailed) {
       if ((st = boundary()).ok()) st = ask();                              // render, post, read
@@ -263,11 +266,22 @@ class TurnRun {
     if (!ok && !c_.storageEpisode) {
       c_.storageEpisode = c_.noteDue = t_.storageLineDue = true;
       c_.noteShown = false;
+      c_.lostAtEpisode = d_.log->lostCount();
       event("not-stored");
     }
     if (ok) c_.storageEpisode = false;
+    heldWritten();
     return Status::success();
   }
+
+  // Lane E2-BFIX1: the log wrote every item it held, in order, and gave none up: the episode left
+  // no hole, so no gap note is owed for it.
+  void heldWritten() {
+    if (c_.noteDue && d_.log->isOpen() && !d_.log->heldCount() && d_.log->lostCount() == c_.lostAtEpisode)
+      c_.noteDue = false;
+  }
+  // The turn left an item off storage: one still held in RAM, or one given up this turn.
+  bool turnUnstored() const { return d_.log->heldCount() || d_.log->lostCount() != t_.lostAtOpen || !d_.log->isOpen(); }
 
   Status note(const std::string& text, tx::NoteClass cls, bool* stored = nullptr) {
     tx::Item& h = blank(tx::ItemKind::DeviceNote);
@@ -1938,6 +1952,8 @@ class TurnRun {
   Status close() {
     settle();
     switchedLine();
+    (void)d_.log->flushHeld(*d_.arena);   // E2-BFIX1: the turn's buffers are gone; what storage refused goes now, in order
+    heldWritten();
     closingFacts();
     deliver();
     Status st = storeDelivery();   // the d item and afterDeliver, before the scan below allocates
@@ -1956,7 +1972,8 @@ class TurnRun {
   void closingFacts() {
     if (t_.cause.empty()) t_.cause = "stopped";
     if (t_.storeFailed) refusedLine();
-    else if (t_.storageLineDue && !c_.unloaded) setStatus(StatusLine::StorageState, texts::device_notes::kStorageLine);
+    else if (t_.storageLineDue && !c_.unloaded && turnUnstored())
+      setStatus(StatusLine::StorageState, texts::device_notes::kStorageLine);
     if (t_.sawOutside) event("change:outside");
     if (t_.sawMeta) event("change:thinking");   // closed-turn thinking is not replayed (ruling 13)
     if (t_.longArgs) event("change:long-args");   // its long arguments show as stubs from now (RB-H81)
@@ -2309,10 +2326,21 @@ Status PlainEngine::runTurn(const TurnInput& in, TurnOutcome& out) {
   return st;
 }
 
+Status PlainEngine::flushHeld() {
+  if (!chat_ || !chat_->booted || !deps_.log || !deps_.arena || !deps_.log->heldCount()) return Status::success();
+  const Status st = deps_.log->flushHeld(*deps_.arena);
+  if (chat_->noteDue && deps_.log->isOpen() && !deps_.log->heldCount() && deps_.log->lostCount() == chat_->lostAtEpisode)
+    chat_->noteDue = false;   // written whole: no hole to name
+  return st;
+}
+
+uint32_t PlainEngine::heldItems() const { return deps_.log ? deps_.log->heldCount() : 0; }
+
 Status PlainEngine::idle(const IdleCtx& ctx, IdleOutcome& out) {
   out = IdleOutcome{};
   if (!chat_ || !chat_->booted) return Status::fail(Err::InvalidArgument, "plain::PlainEngine::idle");
   if (chat_->unloaded) return Status::success();   // no compaction over RAM-only numbers
+  (void)flushHeld();   // E2-BFIX1: what storage refused goes first, in order
   if (deps_.hooks) out = deps_.hooks->runIdleStep(ctx);
   return Status::success();
 }

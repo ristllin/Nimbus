@@ -180,6 +180,10 @@ static void test_refusals_write_nothing_and_are_counted() {
   TEST_ASSERT_EQUAL(2u, f.holds().refusedFloor);
   c.largest = tx::kCardWriteInternalFloor;   // at the floor: allowed
   TEST_ASSERT_TRUE(f.append("/mem/tx/1/seg-000001.jsonl", "x", 1));
+  // E2-BFIX1: the owner's everyday heap (largest internal block 7,156 B on the bench) writes.
+  c.largest = 7156;
+  TEST_ASSERT_TRUE(f.append("/mem/tx/1/seg-000001.jsonl", "y", 1));
+  TEST_ASSERT_EQUAL(2u, f.holds().refusedFloor);
 }
 
 static void test_rename_replaces_its_target() {

@@ -734,6 +734,9 @@ Status TxLog::adopt(const HeadState& h, const std::vector<uint32_t>& segs) {
 
 Status TxLog::open(HeadState& head) {
   open_ = false;
+  lost_ += held_;   // never written in order now: a reopen merges what RAM holds itself (plain reopen)
+  held_ = 0;
+  heldFrom_ = 0;
   Status st = txDir(chatKey_, dir_);
   if (!st.ok()) return Status::fail(Err::InvalidArgument, "tx::TxLog::open");
   std::vector<uint32_t> segs;
@@ -877,10 +880,14 @@ Status TxLog::writeLine(const char* line, size_t len, uint64_t q, StoreState& st
   return Status::success();
 }
 
+// Lane E2-BFIX1: a line of a higher q never goes to storage before the items store() holds.
+static Status heldFirst(const char* where) { return Status::fail(Err::NotStored, where); }
+
 Status TxLog::append(const Item& item, StoreState& state) {
   state = StoreState::NotStored;
   Status st = encodeLine(item, line_);
   if (!st.ok()) return st;
+  if (held_) return heldFirst("tx::TxLog::append: held items go first");
   return writeLine(line_.data(), line_.size(), item.q, state);
 }
 
@@ -889,12 +896,55 @@ Status TxLog::appendLine(const char* line, size_t len, StoreState& state) {
   LineHeader h;
   Status st = checkLine(line, len, h);
   if (!st.ok()) return Status::fail(st.err, "tx::TxLog::appendLine");
+  if (held_) return heldFirst("tx::TxLog::appendLine: held items go first");
+  return writeChecked(line, len, h.q, state);
+}
+
+Status TxLog::writeChecked(const char* line, size_t len, uint64_t q, StoreState& state) {
   if (line[len - 1] != '\n') {
     line_.assign(line, len);
     line_ += '\n';
-    return writeLine(line_.data(), line_.size(), h.q, state);
+    return writeLine(line_.data(), line_.size(), q, state);
   }
-  return writeLine(line, len, h.q, state);
+  return writeLine(line, len, q, state);
+}
+
+// The arena's line at `at` to storage (it passed checkLine when the arena took it).
+Status TxLog::writeArenaLine(const TxArena& arena, size_t at, uint64_t q, StoreState& state) {
+  state = StoreState::NotStored;
+  const char* data = nullptr;
+  size_t len = 0;
+  const Status st = arena.line(at, data, len);
+  if (!st.ok() || len == 0) return st.ok() ? Status::fail(Err::Torn, "tx::TxLog::writeArenaLine") : st;
+  return writeChecked(data, len, q, state);
+}
+
+Status TxLog::flushHeld(TxArena& arena) {
+  if (!held_) return Status::success();
+  size_t from = arena.count();   // the held items are the arena's newest: walk back to the oldest
+  ArenaEntry e;
+  while (from > 0 && arena.header(from - 1, e).ok() && e.q >= heldFrom_) --from;
+  uint32_t found = 0;
+  for (size_t i = from; i < arena.count(); ++i) {
+    if (!arena.header(i, e).ok() || !(e.flags & kItemNotStored)) continue;
+    StoreState state = StoreState::NotStored;
+    (void)writeArenaLine(arena, i, e.q, state);
+    if (state != StoreState::Stored) {   // refused: the rest stay held, from this one
+      heldFrom_ = e.q;
+      uint32_t left = 0;
+      for (size_t j = i; j < arena.count(); ++j)
+        if (arena.header(j, e).ok() && (e.flags & kItemNotStored)) ++left;
+      if (found + left < held_) lost_ += held_ - found - left;   // held items the arena let go
+      held_ = left;
+      return Status::success();
+    }
+    (void)arena.setFlags(i, static_cast<uint8_t>(e.flags & ~kItemNotStored));
+    ++found;
+  }
+  if (found < held_) lost_ += held_ - found;   // held items the arena let go: never written
+  held_ = 0;
+  heldFrom_ = 0;
+  return Status::success();
 }
 
 Status TxLog::store(const Item& item, TxArena& arena, StoreState& state) {
@@ -902,13 +952,21 @@ Status TxLog::store(const Item& item, TxArena& arena, StoreState& state) {
   Status st = arena.append(item);
   if (!st.ok()) return st;
   const size_t at = arena.count() - 1;
-  const char* data = nullptr;
-  size_t len = 0;
-  if (!(st = arena.line(at, data, len)).ok()) return st;
-  st = appendLine(data, len, state);
-  if (state == StoreState::Stored) return Status::success();
+  if (held_) (void)flushHeld(arena);   // the new item is not flagged yet: only the held ones go
+  (void)writeArenaLine(arena, at, item.q, state);
+  if (state == StoreState::Stored) {
+    if (held_) {   // storage took this line and refused an older one: the held items are given up
+      lost_ += held_;
+      held_ = 0;
+      heldFrom_ = 0;
+    }
+    return Status::success();
+  }
   ArenaEntry e;
   if (arena.header(at, e).ok()) (void)arena.setFlags(at, static_cast<uint8_t>(e.flags | kItemNotStored));
+  if (!open_) return Status::success();   // a closed log: the caller's reopen merges what RAM holds
+  if (!held_) heldFrom_ = item.q;
+  ++held_;
   return Status::success();
 }
 

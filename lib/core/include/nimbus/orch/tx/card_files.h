@@ -56,10 +56,15 @@ class CardOps {
   virtual bool listNames(const std::string& dir, std::vector<std::string>& names) = 0;
 };
 
-// The largest free internal block a card write needs left (DECISION, lane E2-DEV): the SD
-// driver's bounce buffer is one sector, the card lock's holder may log; 8 KB keeps every write
-// clear of the TLS handshake's own floor, which the turn admission checks separately.
-inline constexpr uint32_t kCardWriteInternalFloor = 8192;
+// The largest free internal block a card write needs left. Lane E2-BFIX1 (was 8 KB, lane E2-DEV):
+// the owner's device runs every day with a largest internal block of 7 to 10 KB, so an 8 KB floor
+// refused every transcript write there (bench E2-BENCH3: 39 refusals in one turn at 7,156 B, while
+// the Telegram archive and the files store wrote to the same card at that heap). A write runs under
+// the turn's PSRAM-first scope: the file's buffers come from PSRAM, and the SD driver bounces each
+// sector through one 512 B DMA-capable internal block. 4 KB is the driver floor the card's own
+// recovery uses (memory_subsystem.cpp kSetupMinDmaBlock), eight times that bounce; below it a
+// refused item is held in RAM and written in order once the card takes a line (tx::TxLog::flushHeld).
+inline constexpr uint32_t kCardWriteInternalFloor = 4096;
 
 // The longest card-lock hold of each kind of call, and how many calls were refused. readTotalMs and
 // readBytes add up every read and size call (lane E2-BENCH: the card time a turn's requests spend

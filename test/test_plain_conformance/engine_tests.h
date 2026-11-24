@@ -243,18 +243,19 @@ inline void test_an_effect_runs_only_when_its_intent_is_stored() {
   TXB_OK(b.owner("save v1", out));
   TEST_ASSERT_EQUAL(0, b.world.runsOf("write_file"));
   TEST_ASSERT_TRUE(bodyHas(b.model.last(), texts::tool_results::kNotRunUnrecorded));
-  TEST_ASSERT_TRUE(bodyHas(b.model.last(), texts::device_notes::kNotStored));
-  TEST_ASSERT_EQUAL(2, (int)b.sent.size());
+  // E2-BFIX1: the card took the next line, so the held intent was written before it, in order:
+  // nothing is missing from storage, so no gap note and no storage line.
+  TEST_ASSERT_FALSE(bodyHas(b.model.last(), texts::device_notes::kNotStored));
+  TEST_ASSERT_EQUAL(1, (int)b.sent.size());
   TEST_ASSERT_EQUAL_STRING("It did not save.", b.sent[0].text.c_str());
-  TEST_ASSERT_EQUAL_STRING(texts::device_notes::kStorageLine, b.sent[1].text.c_str());
   std::string why;
   for (const auto& r : b.model.requests()) TEST_ASSERT_TRUE_MESSAGE(txb::viewPaired(r.view, why), why.c_str());
-  // Storage works again: the next effect runs, and no second storage line is sent.
+  // Storage works again: the next effect runs, and no storage line is sent.
   b.model.push(sp::call("write_file", R"({"path":"notes/x.md","text":"v2"})"));
   b.model.push(sp::say("Saved."));
   TXB_OK(b.owner("save v2", out));
   TEST_ASSERT_EQUAL(1, b.world.runsOf("write_file"));
-  TEST_ASSERT_EQUAL(3, (int)b.sent.size());
+  TEST_ASSERT_EQUAL(2, (int)b.sent.size());
 }
 
 // No card at all: the log answers Io at boot and the chat runs from RAM. Reads answer,
@@ -576,13 +577,16 @@ inline void test_an_effect_through_more_needs_its_intent() {
   }
 }
 
-// A result the card refused (kept in RAM), a turn that then closes on the card, a restart:
-// the call is answered "outcome unknown" at the next open, so the request stays paired.
+// A result the card refused (kept in RAM), the card refusing until a restart: the call is answered
+// "outcome unknown" at the next open, so the request stays paired. (E2-BFIX1: the items after the
+// result are held behind it, so the card refuses from the result on; a single refusal is written later.)
 inline void test_a_result_lost_to_the_card_is_closed_after_a_restart() {
   txb::Battery b;
   TXB_OK(b.boot());
-  b.files.refuseWhen = [](const char* data, size_t len) {
-    return std::string(data, len).find("\"k\":\"r\"") != std::string::npos;
+  b.files.refuseWhen = [&b](const char* data, size_t len) {
+    const bool r = std::string(data, len).find("\"k\":\"r\"") != std::string::npos;
+    if (r) b.files.refuseAll = true;
+    return r;
   };
   b.model.push(sp::call("write_file", R"({"path":"notes/x.md","text":"v1"})"));
   b.model.push(sp::say("Saved."));
@@ -597,6 +601,39 @@ inline void test_a_result_lost_to_the_card_is_closed_after_a_restart() {
   TEST_ASSERT_TRUE(bodyHas(b.model.last(), "outcome unknown"));
   std::string why;
   TEST_ASSERT_TRUE_MESSAGE(txb::viewPaired(b.model.last().view, why), why.c_str());
+}
+
+// Lane E2-BFIX1 (bench E2-BENCH3, check G): a turn whose every write the card refused (the internal
+// memory floor on a heap shaped like the owner's device) is held in RAM, then written whole and in
+// order once the card takes a line again; after a restart the conversation holds the answer.
+inline void test_a_turn_the_card_refused_is_stored_once_the_card_takes_it() {
+  txb::Battery b;
+  TXB_OK(b.boot());
+  b.world.files["notes/a.md"] = "alpha";
+  b.files.refuseAll = true;   // every write of this turn refused
+  b.model.push(sp::call("read_file", R"({"path":"notes/a.md"})"));
+  b.model.push(sp::say("The file says alpha; the total is 7015."));
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("Read notes/a.md and give me the total.", out));
+  TEST_ASSERT_EQUAL_STRING("The file says alpha; the total is 7015.", out.text.c_str());
+  b.files.refuseAll = false;   // the turn's buffers are released: the card takes lines again
+  plain::IdleOutcome io;
+  TXB_OK(b.idle(io));
+  std::vector<tx::Item> items;
+  TXB_OK(b.stored(items));
+  bool answer = false;
+  for (size_t i = 0; i < items.size(); ++i) {
+    if (i) TEST_ASSERT_TRUE_MESSAGE(items[i].q > items[i - 1].q, "stored out of q order");
+    answer = answer || items[i].x.find("the total is 7015") != std::string::npos;
+  }
+  TEST_ASSERT_TRUE_MESSAGE(answer, "the answer the card refused was never stored");
+  TEST_ASSERT_EQUAL(1, (int)countKind(items, tx::ItemKind::TurnEnd));
+  TXB_OK(b.powerCycle());
+  b.model.push(sp::say("I said 7015."));
+  b.advance(60);
+  TXB_OK(b.owner("What total did you give me?", out));
+  TEST_ASSERT_TRUE_MESSAGE(bodyHas(b.model.last(), "the total is 7015"), "the answer is gone after a restart");
+  expectPaired(b);
 }
 
 // Slow tools inside one round: once the time limit has passed no further call starts; the
@@ -2822,6 +2859,7 @@ inline void run() {
   RUN_TEST(test_a_refused_allocation_ends_the_turn_with_a_status_never_an_abort);
   RUN_TEST(test_an_effect_through_more_needs_its_intent);
   RUN_TEST(test_a_result_lost_to_the_card_is_closed_after_a_restart);
+  RUN_TEST(test_a_turn_the_card_refused_is_stored_once_the_card_takes_it);
   RUN_TEST(test_no_call_starts_past_the_soft_wall);
   RUN_TEST(test_a_late_round_gets_only_the_time_left);
   RUN_TEST(test_a_turn_without_a_head_fails_loudly);

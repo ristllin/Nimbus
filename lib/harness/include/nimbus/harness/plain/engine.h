@@ -281,6 +281,10 @@ class PlainEngine {
   Status runTurn(const TurnInput& in, TurnOutcome& out);
   // One unit of idle work through the idleStep seam.
   Status idle(const IdleCtx& ctx, IdleOutcome& out);
+  // Lane E2-BFIX1: the items storage refused, written now in order (tx::TxLog::flushHeld); a
+  // refusal leaves them held. heldItems(): how many are held in RAM only.
+  Status flushHeld();
+  uint32_t heldItems() const;
   // Once at boot: open the log (Io: run from RAM), fill the arena after thru, load the
   // digests, then the bootResume seam.
   Status boot(const BootCtx& ctx);
