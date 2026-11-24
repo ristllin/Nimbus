@@ -760,3 +760,28 @@ def test_off_a_lane_branch_the_change_is_reported_with_the_files_since_the_basel
     assert "allowance committed since the baseline: E2-Y (20000 B)" in out
     assert "since base 20000" in out
     assert "esp32s3-cyd: code +30000 B against the baseline, 20000 B explained" in out
+
+
+def test_counter_on_a_lane_branch_an_unreadable_baseline_fails(tmp_path, capsys):
+    root, args, _ = lane_repo(tmp_path)
+    with open(args[args.index("--baseline") + 1], "w", encoding="utf-8") as f:
+        f.write("{not json")
+    assert gate.main(args) == 1
+    assert "cannot read the baseline" in capsys.readouterr().out
+
+
+def test_counter_on_a_lane_branch_a_bin_without_its_elf_fails(tmp_path, capsys):
+    # Without the ELF the whole image would be compared, and a docs cut could hide code growth.
+    root, args, _ = lane_repo(tmp_path)
+    os.remove(os.path.join(root, ".pio", "build", E2, "firmware.elf"))
+    assert gate.main(args) == 1
+    assert f"{E2}: firmware.elf cannot be read" in capsys.readouterr().out
+
+
+def test_no_git_is_no_answer_not_a_crash(monkeypatch):
+    def boom(*_a, **_k):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(gate.subprocess, "run", boom)
+    assert gate.git("/nowhere", "status")[0] == 127
+    assert gate.infer_lane("/nowhere") is None

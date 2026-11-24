@@ -224,14 +224,20 @@ def main(argv: "list[str] | None" = None) -> int:
         if not (args.elf and args.variant):
             print("FAIL static DRAM: --elf and --variant go together")
             return 1
-        return 0 if check_file(args.elf, args.variant, ceilings, declared(args.variant)) and not lfails else 1
-    checked, ok = 0, not lfails
+        lane_ok = not (lfails and args.variant in e2)  # a bad declaration fails the engine-2 images only
+        return 0 if check_file(args.elf, args.variant, ceilings, declared(args.variant)) and lane_ok else 1
+    return check_built(ceilings, declared, {v for v in e2 if lfails})
+
+
+def check_built(ceilings: dict, declared, failed: "set[str]") -> int:
+    """Every variant whose image is built in this tree; `failed`: variants already failed (a bad declaration)."""
+    checked, ok = 0, True
     for variant, row in ceilings.items():
         path = os.path.join(REPO, ".pio", "build", row["env"], "firmware.elf")
         if not os.path.exists(path):
             continue
         checked += 1
-        ok = check_file(path, variant, ceilings, declared(variant)) and ok
+        ok = check_file(path, variant, ceilings, declared(variant)) and variant not in failed and ok
     if checked == 0:
         print("FAIL static DRAM: no shipped image is built (pio run -e esp32s3 first)")
         return 1

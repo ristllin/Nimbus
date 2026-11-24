@@ -494,7 +494,10 @@ DOCS_PACK_HEADERS = ("lib/core/include/nimbus/docs_pack_data.h", "lib/core/inclu
 
 
 def git(root: str, *args: str) -> "tuple[int, str]":
-    r = subprocess.run(["git", "-C", root, *args], capture_output=True, text=True)
+    try:
+        r = subprocess.run(["git", "-C", root, *args], capture_output=True, text=True)
+    except OSError as e:  # no git on this machine: every git question has no answer
+        return 127, str(e)
     return r.returncode, (r.stdout if r.returncode == 0 else r.stderr).strip()
 
 
@@ -548,15 +551,16 @@ def allowances_since(root: str, sha: str, budget_dir: str) -> "dict[str, dict]":
     return rows
 
 
-def env_change(build_dir: str, env: str, base: "dict[str, int]", tables: "list[dict]") -> "tuple[int, str]":
-    """(code change in B, shown text): code bytes from the ELF, or the whole image ("~") without it."""
+def env_change(build_dir: str, env: str, base: "dict[str, int]", tables: "list[dict]") -> "tuple[int, str, bool]":
+    """(code change in B, shown text, measured from the ELF): code bytes from the ELF, or the
+    whole image ("~") when the ELF cannot be read (a judged lane fails on that)."""
     try:
         now = measure(os.path.join(build_dir, env), tables)
         delta = now["code_bytes"] - base["code_bytes"]
-        return delta, f"{delta:+d}"
-    except (OSError, ValueError, struct.error):
+        return delta, f"{delta:+d}", True
+    except (OSError, ValueError, KeyError, struct.error):
         delta = os.path.getsize(os.path.join(build_dir, env, "firmware.bin")) - base["image_bytes"]
-        return delta, f"~{delta:+d}"
+        return delta, f"~{delta:+d}", False
 
 
 def lane_context(args, root: str, baseline: dict) -> dict:
@@ -593,10 +597,10 @@ def baseline_view(args, root: str, build_dir: str) -> "tuple[dict | None, list[s
     try:
         with open(args.baseline, encoding="utf-8") as fh:
             baseline = json.load(fh)
-        rows = baseline["envs"]
+        rows, tables = baseline["envs"], baseline["docs_pack_tables"]
         ctx = lane_context(args, root, baseline)
     except (OSError, ValueError, KeyError) as e:
-        return None, [f"no baseline columns: {args.baseline}: {e}"], [], []
+        return baseline_unreadable(args, root, e)
     lane = ctx["lane"]
     notes = [f"baseline {baseline['sha'][:12]}; " + (f"lane {lane}" if lane else "no lane (not a lane/<LANE> branch)")]
     notes += [
@@ -606,15 +610,32 @@ def baseline_view(args, root: str, build_dir: str) -> "tuple[dict | None, list[s
     warns = [f"allowance not judged, the baseline is stale: {p}" for p in ctx["stale"]]
     extras: "dict[str, str]" = {}
     for env in built_envs(build_dir):
-        if env not in rows:
-            extras[env] = f"{'-':>12} {'no baseline row':<34} "
-            continue
-        delta, shown = env_change(build_dir, env, rows[env], baseline["docs_pack_tables"])
-        label, fail, warn = env_view(env, delta, rows[env], ctx)
-        extras[env] = f"{shown:>12} {label:<34} "
+        extras[env], fail, warn = env_columns(build_dir, env, rows, tables, ctx)
         fails += [fail] if fail else []
         warns += [warn] if warn else []
     return extras, notes, fails, warns
+
+
+def baseline_unreadable(args, root: str, e: Exception) -> "tuple[None, list[str], list[str], list[str]]":
+    """No baseline columns: a judged lane (read from the branch) fails, any other run warns."""
+    lane = args.lane or (None if args.no_infer_lane else infer_lane(root))
+    problem = f"cannot read the baseline {args.baseline}: {type(e).__name__}: {e}"
+    if lane and not args.lane:
+        return None, [], [f"{lane}: {problem}"], []
+    return None, [], [], [] if lane else [problem]
+
+
+def env_columns(
+    build_dir: str, env: str, rows: dict, tables: "list[dict]", ctx: dict
+) -> "tuple[str, str | None, str | None]":
+    """(the table's baseline columns, fail, warn) for one built env."""
+    if env not in rows:
+        return f"{'-':>12} {'no baseline row':<34} ", None, None
+    delta, shown, from_elf = env_change(build_dir, env, rows[env], tables)
+    label, fail, warn = env_view(env, delta, rows[env], ctx)
+    if ctx["judge"] and not ctx["stale"] and not from_elf:
+        fail = f"{env}: firmware.elf cannot be read: the code change is measured from the ELF beside firmware.bin"
+    return f"{shown:>12} {label:<34} ", fail, warn
 
 
 def run_allowance(args, root: str, build_dir: str) -> int:

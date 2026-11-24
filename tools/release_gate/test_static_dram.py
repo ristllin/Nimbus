@@ -264,3 +264,31 @@ def test_real_ceilings_say_how_to_declare_and_give_engine2_2048_b_of_room():
     assert len(data["engine2_baseline_sha"]) == 40
     for name, r in data["engine2"].items():
         assert r["ceiling"] == r["baseline"] + 2048, name
+
+
+def test_a_bad_declaration_fails_the_engine2_images_only(tmp_path, capsys):
+    args = e2_case(tmp_path, 690, row("many"))
+    assert dram.main([*args, "--variant", "nimbus-tft"]) == 0  # an engine-1 image: its ceiling alone
+    assert dram.main([*args, "--variant", "freenove-28-e2"]) == 1
+
+
+class _Args:
+    lane = None
+    no_infer_lane = False
+    base_ref = "rb-main"
+
+    def __init__(self, ceilings, budget_dir):
+        self.ceilings, self.budget_dir = ceilings, budget_dir
+
+
+def test_a_lane_read_from_the_branch_is_judged_only_on_a_fresh_baseline(tmp_path, monkeypatch):
+    e2_case(tmp_path, 600, row(0))
+    args = _Args(str(tmp_path / "ceil.json"), str(tmp_path / "budget.d"))
+    monkeypatch.setattr(dram.image, "infer_lane", lambda _root: "E2-X")
+    monkeypatch.setattr(dram.image, "git_baseline_problems", lambda _r, _b: lambda _sha: [])
+    assert dram.lane_view(args) == ("E2-X", 0, [], [])
+    monkeypatch.setattr(dram.image, "git_baseline_problems", lambda _r, _b: lambda _sha: ["stale: x.cpp changed"])
+    lane, _n, fails, warns = dram.lane_view(args)
+    assert lane is None and not fails and "not judged" in warns[0]
+    args.no_infer_lane = True
+    assert dram.lane_view(args) == (None, 0, [], [])

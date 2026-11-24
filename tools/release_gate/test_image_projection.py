@@ -240,3 +240,20 @@ def test_real_maps_when_built(capsys):
     assert proj.main([a, b, "--bin", os.path.join(build, "esp32s3-cyd-e2", "firmware.bin"), "--top", "5"]) == 0
     out = capsys.readouterr().out
     assert "Projected B image" in out
+
+
+def test_bytes_in_an_output_section_the_tool_does_not_know_are_named(maps, tmp_path, capsys):
+    a, b, g = maps
+    text = (
+        open(b, encoding="utf-8")
+        .read()
+        .replace(
+            "\n/DISCARD/",
+            "\n.flash.newthing 0x3c900000 0x40\n .rodata.x      0x3c900000       0x40 .pio/build/e/src/x.cpp.o\n/DISCARD/",
+        )
+    )
+    nb = tmp_path / "new.map"
+    nb.write_text(text, encoding="utf-8")
+    assert proj.uncounted_sections(text) == {".flash.newthing": 0x40}
+    assert proj.main([a, str(nb), "--groups", g, "--top", "1"]) == 0
+    assert "output section .flash.newthing holds 64 B this tool does not count" in capsys.readouterr().out

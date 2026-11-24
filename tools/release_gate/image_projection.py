@@ -82,6 +82,30 @@ CONT_RE = re.compile(r"^\s+0x([0-9a-fA-F]+)\s+0x([0-9a-fA-F]+)\s+(\S.*?)\s*$")
 BUILD_PREFIX_RE = re.compile(r"^(?:.*/)?\.pio/build/[^/]+/")
 HASH_LIB_RE = re.compile(r"^lib[0-9a-f]{3}/")
 MARKER = "Linker script and memory map"
+# Output sections that are not image bytes: debug data, the linker's layout markers, PSRAM and
+# heap placeholders, sections that load nothing.
+SKIPPED = (
+    ".debug",
+    ".line",
+    ".xt.",
+    ".xtensa",
+    ".comment",
+    ".note",
+    ".noload",
+    ".flash_rodata_dummy",
+    ".flash.rodata_noload",
+    ".dram0.dummy",
+    ".dram0.heap_start",
+    ".ext_ram",
+    ".iram0.text_end",
+    ".rtc_reserved",
+    ".stab",
+    ".gnu",
+    ".ARM",
+    ".riscv",
+    ".flash.tdata",
+    ".flash.tbss",
+)
 
 
 def object_name(path: str) -> str:
@@ -133,6 +157,23 @@ def placed_sections(text: str) -> "dict[str, list[tuple[int, int, str, str]]]":
         k = "strings" if kind == "rodata" and STRING_SECTION.search(rec[0]) else kind
         rows[output].append((int(rec[1], 16), int(rec[2], 16), object_name(rec[3]), k))
     return rows
+
+
+def uncounted_sections(text: str) -> "dict[str, int]":
+    """Output section -> bytes placed at a non-zero address in an output section OUTPUT_KIND does
+    not name (a newer toolchain's section): printed, so a total never shrinks without a word."""
+    out: "dict[str, int]" = defaultdict(int)
+    start = text.find(MARKER)
+    output = None
+    for line in text[start + len(MARKER) :].splitlines() if start >= 0 else []:
+        if line and not line[0].isspace():
+            m = OUTPUT_RE.match(line)
+            output = m.group(1) if m and m.group(1) not in OUTPUT_KIND and not m.group(1).startswith(SKIPPED) else None
+            continue
+        m = ONE_LINE_RE.match(line) or CONT_RE.match(line)
+        if output and m and int(m.groups()[-3], 16) and int(m.groups()[-2], 16):
+            out[output] += int(m.groups()[-2], 16)
+    return dict(out)
 
 
 def parse_map(text: str) -> "dict[str, dict[str, int]]":
@@ -410,6 +451,9 @@ def main(argv: "list[str] | None" = None) -> int:
     try:
         groups = load_groups(args.groups)
         a, b = read_map(args.map_a), read_map(args.map_b)
+        uncounted = {
+            p: uncounted_sections(open(p, encoding="utf-8", errors="replace").read()) for p in (args.map_a, args.map_b)
+        }
         image_b = os.path.getsize(args.bin) if args.bin else None
     except (OSError, ValueError, KeyError, re.error) as e:
         print(f"image projection: FAIL: {e}")
@@ -419,6 +463,9 @@ def main(argv: "list[str] | None" = None) -> int:
         return 2
     lines, data = report(args, a, b, groups, image_b)
     print("\n".join(lines))
+    for path, secs in uncounted.items():
+        for name, n in sorted(secs.items()):
+            print(f"NOTE: {path}: output section {name} holds {n} B this tool does not count (add it to OUTPUT_KIND)")
     if args.json:
         with open(args.json, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=1, sort_keys=True)
