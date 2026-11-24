@@ -8,7 +8,7 @@ namespace nimbus {
 namespace orch {
 namespace caps {
 
-inline constexpr size_t kCapsDataBytes = 2361;   // rows and pool, as gen_caps.py counts them
+inline constexpr size_t kCapsDataBytes = 2587;   // rows and pool, as gen_caps.py counts them
 
 // The string pool (offset 0 is the empty string).
 inline constexpr char kCapsPool[] =
@@ -20,6 +20,9 @@ inline constexpr char kCapsPool[] =
     "claude-sonnet-5\0"
     "claude-haiku-5-5\0"
     "claude-haiku-4-5\0"
+    "claude-\0"
+    "claude-fable-5\0"
+    "claude-haiku-5\0"
     "gpt-6-astra\0"
     "gpt-6.1-sol\0"
     "gpt-6-sol\0"
@@ -29,6 +32,7 @@ inline constexpr char kCapsPool[] =
     "gpt-5.6-terra\0"
     "gpt-5.6-luna\0"
     "gpt-4o-mini\0"
+    "gpt-6\0"
     "mistral-large-4-0\0"
     "mistral-large-4\0"
     "mistral-large-latest\0"
@@ -99,83 +103,90 @@ inline constexpr ModelRow kCapsModels[] = {
     {66, Slot::Anthropic, MatchKind::Exact, CapMode::Required, CapParam::MaxTokens, 3, 15, 7324, 600, 31, 3, IdRule::AnthropicPattern, Structured::AnthropicOutputConfig, Structured::AnthropicOutputConfig, Thinking::Adaptive, 124, Replay::SignedBlocks, ReplayScope::OpenTurn, CacheStyle::Explicit4, 1024, UsageMode::InputExcludesCache, 47},  // anthropic/claude-sonnet-5
     {82, Slot::Anthropic, MatchKind::Exact, CapMode::Required, CapParam::MaxTokens, 3, 15, 7324, 600, 31, 3, IdRule::AnthropicPattern, Structured::AnthropicOutputConfig, Structured::AnthropicOutputConfig, Thinking::Adaptive, 124, Replay::SignedBlocks, ReplayScope::OpenTurn, CacheStyle::Explicit4, 512, UsageMode::InputExcludesCache, 47},  // anthropic/claude-haiku-5-5
     {99, Slot::Anthropic, MatchKind::Exact, CapMode::Required, CapParam::MaxTokens, 3, 15, 7324, 100, 31, 3, IdRule::AnthropicPattern, Structured::AnthropicOutputConfig, Structured::AnthropicOutputConfig, Thinking::Off, 0, Replay::SignedBlocks, ReplayScope::OpenTurn, CacheStyle::Explicit4, 4096, UsageMode::InputExcludesCache, 47},  // anthropic/claude-haiku-4-5
+    {116, Slot::Anthropic, MatchKind::Prefix, CapMode::Required, CapParam::MaxTokens, 3, 15, 7324, 600, 31, 3, IdRule::AnthropicPattern, Structured::None, Structured::None, Thinking::Off, 0, Replay::SignedBlocks, ReplayScope::OpenTurn, CacheStyle::Explicit4, 512, UsageMode::InputExcludesCache, 47},  // anthropic/claude-
+    {124, Slot::Anthropic, MatchKind::Prefix, CapMode::Required, CapParam::MaxTokens, 3, 15, 7324, 600, 31, 3, IdRule::AnthropicPattern, Structured::AnthropicOutputConfig, Structured::AnthropicOutputConfig, Thinking::AlwaysOn, 124, Replay::SignedBlocks, ReplayScope::OpenTurn, CacheStyle::Explicit4, 512, UsageMode::InputExcludesCache, 47},  // anthropic/claude-fable-5
+    {34, Slot::Anthropic, MatchKind::Prefix, CapMode::Required, CapParam::MaxTokens, 3, 15, 7324, 600, 31, 3, IdRule::AnthropicPattern, Structured::AnthropicOutputConfig, Structured::AnthropicOutputConfig, Thinking::AlwaysOn, 124, Replay::SignedBlocks, ReplayScope::OpenTurn, CacheStyle::Explicit4, 512, UsageMode::InputExcludesCache, 47},  // anthropic/claude-opus-5
+    {66, Slot::Anthropic, MatchKind::Prefix, CapMode::Required, CapParam::MaxTokens, 3, 15, 7324, 600, 31, 3, IdRule::AnthropicPattern, Structured::AnthropicOutputConfig, Structured::AnthropicOutputConfig, Thinking::BetweenTools, 28, Replay::SignedBlocks, ReplayScope::OpenTurn, CacheStyle::Explicit4, 512, UsageMode::InputExcludesCache, 47},  // anthropic/claude-sonnet-5
+    {139, Slot::Anthropic, MatchKind::Prefix, CapMode::Required, CapParam::MaxTokens, 3, 15, 7324, 600, 31, 3, IdRule::AnthropicPattern, Structured::AnthropicOutputConfig, Structured::AnthropicOutputConfig, Thinking::Adaptive, 124, Replay::SignedBlocks, ReplayScope::OpenTurn, CacheStyle::Explicit4, 512, UsageMode::InputExcludesCache, 47},  // anthropic/claude-haiku-5
     {0, Slot::OpenAI, MatchKind::Any, CapMode::OmitDirectCeilRouted, CapParam::MaxOutputTokens, 1, 3, 3072, 4, 20, 1, IdRule::Passthrough, Structured::None, Structured::None, Thinking::Off, 0, Replay::None, ReplayScope::OpenTurn, CacheStyle::Automatic, 1024, UsageMode::InputIncludesCache, 47},  // openai/*
-    {116, Slot::OpenAI, MatchKind::Exact, CapMode::OmitDirectCeilRouted, CapParam::MaxOutputTokens, 3, 15, 3072, 1500, 4, 27, IdRule::AnthropicPattern, Structured::ResponsesTextFormat, Structured::None, Thinking::Off, 126, Replay::EncryptedItems, ReplayScope::AllTurns, CacheStyle::OpenaiBreakpoints, 1024, UsageMode::InputIncludesCache, 63},  // openai/gpt-6-astra
-    {128, Slot::OpenAI, MatchKind::Exact, CapMode::OmitDirectCeilRouted, CapParam::MaxOutputTokens, 3, 15, 3072, 1500, 4, 27, IdRule::AnthropicPattern, Structured::ResponsesTextFormat, Structured::None, Thinking::Off, 126, Replay::EncryptedItems, ReplayScope::AllTurns, CacheStyle::OpenaiBreakpoints, 1024, UsageMode::InputIncludesCache, 63},  // openai/gpt-6.1-sol
-    {140, Slot::OpenAI, MatchKind::Exact, CapMode::OmitDirectCeilRouted, CapParam::MaxOutputTokens, 3, 15, 3072, 1500, 4, 27, IdRule::AnthropicPattern, Structured::ResponsesTextFormat, Structured::None, Thinking::Off, 127, Replay::EncryptedItems, ReplayScope::AllTurns, CacheStyle::OpenaiBreakpoints, 1024, UsageMode::InputIncludesCache, 63},  // openai/gpt-6-sol
-    {150, Slot::OpenAI, MatchKind::Exact, CapMode::OmitDirectCeilRouted, CapParam::MaxOutputTokens, 3, 15, 3072, 1500, 4, 27, IdRule::AnthropicPattern, Structured::ResponsesTextFormat, Structured::None, Thinking::Off, 127, Replay::EncryptedItems, ReplayScope::AllTurns, CacheStyle::OpenaiBreakpoints, 1024, UsageMode::InputIncludesCache, 63},  // openai/gpt-6-luna
-    {161, Slot::OpenAI, MatchKind::Exact, CapMode::OmitDirectCeilRouted, CapParam::MaxOutputTokens, 3, 15, 3072, 1500, 4, 27, IdRule::AnthropicPattern, Structured::ResponsesTextFormat, Structured::None, Thinking::Off, 127, Replay::EncryptedItems, ReplayScope::AllTurns, CacheStyle::OpenaiBreakpoints, 1024, UsageMode::InputIncludesCache, 63},  // openai/gpt-5.6-sol
-    {173, Slot::OpenAI, MatchKind::Exact, CapMode::OmitDirectCeilRouted, CapParam::MaxOutputTokens, 3, 15, 3072, 1500, 4, 27, IdRule::AnthropicPattern, Structured::ResponsesTextFormat, Structured::None, Thinking::Off, 127, Replay::EncryptedItems, ReplayScope::AllTurns, CacheStyle::OpenaiBreakpoints, 1024, UsageMode::InputIncludesCache, 63},  // openai/gpt-5.6
-    {181, Slot::OpenAI, MatchKind::Exact, CapMode::OmitDirectCeilRouted, CapParam::MaxOutputTokens, 3, 15, 3072, 1500, 4, 27, IdRule::AnthropicPattern, Structured::ResponsesTextFormat, Structured::None, Thinking::Off, 127, Replay::EncryptedItems, ReplayScope::AllTurns, CacheStyle::OpenaiBreakpoints, 1024, UsageMode::InputIncludesCache, 63},  // openai/gpt-5.6-terra
-    {195, Slot::OpenAI, MatchKind::Exact, CapMode::OmitDirectCeilRouted, CapParam::MaxOutputTokens, 3, 15, 3072, 1500, 4, 27, IdRule::AnthropicPattern, Structured::ResponsesTextFormat, Structured::None, Thinking::Off, 127, Replay::EncryptedItems, ReplayScope::AllTurns, CacheStyle::OpenaiBreakpoints, 1024, UsageMode::InputIncludesCache, 63},  // openai/gpt-5.6-luna
-    {208, Slot::OpenAI, MatchKind::Exact, CapMode::OmitDirectCeilRouted, CapParam::MaxOutputTokens, 3, 15, 3072, 1500, 4, 27, IdRule::AnthropicPattern, Structured::ResponsesTextFormat, Structured::None, Thinking::Off, 0, Replay::None, ReplayScope::OpenTurn, CacheStyle::OpenaiImplicit, 1024, UsageMode::InputIncludesCache, 63},  // openai/gpt-4o-mini
+    {154, Slot::OpenAI, MatchKind::Exact, CapMode::OmitDirectCeilRouted, CapParam::MaxOutputTokens, 3, 15, 3072, 1500, 4, 27, IdRule::AnthropicPattern, Structured::ResponsesTextFormat, Structured::None, Thinking::Off, 126, Replay::EncryptedItems, ReplayScope::AllTurns, CacheStyle::OpenaiBreakpoints, 1024, UsageMode::InputIncludesCache, 63},  // openai/gpt-6-astra
+    {166, Slot::OpenAI, MatchKind::Exact, CapMode::OmitDirectCeilRouted, CapParam::MaxOutputTokens, 3, 15, 3072, 1500, 4, 27, IdRule::AnthropicPattern, Structured::ResponsesTextFormat, Structured::None, Thinking::Off, 126, Replay::EncryptedItems, ReplayScope::AllTurns, CacheStyle::OpenaiBreakpoints, 1024, UsageMode::InputIncludesCache, 63},  // openai/gpt-6.1-sol
+    {178, Slot::OpenAI, MatchKind::Exact, CapMode::OmitDirectCeilRouted, CapParam::MaxOutputTokens, 3, 15, 3072, 1500, 4, 27, IdRule::AnthropicPattern, Structured::ResponsesTextFormat, Structured::None, Thinking::Off, 127, Replay::EncryptedItems, ReplayScope::AllTurns, CacheStyle::OpenaiBreakpoints, 1024, UsageMode::InputIncludesCache, 63},  // openai/gpt-6-sol
+    {188, Slot::OpenAI, MatchKind::Exact, CapMode::OmitDirectCeilRouted, CapParam::MaxOutputTokens, 3, 15, 3072, 1500, 4, 27, IdRule::AnthropicPattern, Structured::ResponsesTextFormat, Structured::None, Thinking::Off, 127, Replay::EncryptedItems, ReplayScope::AllTurns, CacheStyle::OpenaiBreakpoints, 1024, UsageMode::InputIncludesCache, 63},  // openai/gpt-6-luna
+    {199, Slot::OpenAI, MatchKind::Exact, CapMode::OmitDirectCeilRouted, CapParam::MaxOutputTokens, 3, 15, 3072, 1500, 4, 27, IdRule::AnthropicPattern, Structured::ResponsesTextFormat, Structured::None, Thinking::Off, 127, Replay::EncryptedItems, ReplayScope::AllTurns, CacheStyle::OpenaiBreakpoints, 1024, UsageMode::InputIncludesCache, 63},  // openai/gpt-5.6-sol
+    {211, Slot::OpenAI, MatchKind::Exact, CapMode::OmitDirectCeilRouted, CapParam::MaxOutputTokens, 3, 15, 3072, 1500, 4, 27, IdRule::AnthropicPattern, Structured::ResponsesTextFormat, Structured::None, Thinking::Off, 127, Replay::EncryptedItems, ReplayScope::AllTurns, CacheStyle::OpenaiBreakpoints, 1024, UsageMode::InputIncludesCache, 63},  // openai/gpt-5.6
+    {219, Slot::OpenAI, MatchKind::Exact, CapMode::OmitDirectCeilRouted, CapParam::MaxOutputTokens, 3, 15, 3072, 1500, 4, 27, IdRule::AnthropicPattern, Structured::ResponsesTextFormat, Structured::None, Thinking::Off, 127, Replay::EncryptedItems, ReplayScope::AllTurns, CacheStyle::OpenaiBreakpoints, 1024, UsageMode::InputIncludesCache, 63},  // openai/gpt-5.6-terra
+    {233, Slot::OpenAI, MatchKind::Exact, CapMode::OmitDirectCeilRouted, CapParam::MaxOutputTokens, 3, 15, 3072, 1500, 4, 27, IdRule::AnthropicPattern, Structured::ResponsesTextFormat, Structured::None, Thinking::Off, 127, Replay::EncryptedItems, ReplayScope::AllTurns, CacheStyle::OpenaiBreakpoints, 1024, UsageMode::InputIncludesCache, 63},  // openai/gpt-5.6-luna
+    {246, Slot::OpenAI, MatchKind::Exact, CapMode::OmitDirectCeilRouted, CapParam::MaxOutputTokens, 3, 15, 3072, 1500, 4, 27, IdRule::AnthropicPattern, Structured::ResponsesTextFormat, Structured::None, Thinking::Off, 0, Replay::None, ReplayScope::OpenTurn, CacheStyle::OpenaiImplicit, 1024, UsageMode::InputIncludesCache, 63},  // openai/gpt-4o-mini
+    {258, Slot::OpenAI, MatchKind::Prefix, CapMode::OmitDirectCeilRouted, CapParam::MaxOutputTokens, 3, 15, 3072, 1500, 4, 27, IdRule::AnthropicPattern, Structured::ResponsesTextFormat, Structured::None, Thinking::Off, 127, Replay::EncryptedItems, ReplayScope::AllTurns, CacheStyle::OpenaiBreakpoints, 1024, UsageMode::InputIncludesCache, 63},  // openai/gpt-6
+    {211, Slot::OpenAI, MatchKind::Prefix, CapMode::OmitDirectCeilRouted, CapParam::MaxOutputTokens, 3, 15, 3072, 1500, 4, 27, IdRule::AnthropicPattern, Structured::ResponsesTextFormat, Structured::None, Thinking::Off, 127, Replay::EncryptedItems, ReplayScope::AllTurns, CacheStyle::OpenaiBreakpoints, 1024, UsageMode::InputIncludesCache, 63},  // openai/gpt-5.6
     {0, Slot::Mistral, MatchKind::Any, CapMode::SendAlways, CapParam::MaxTokens, 1, 3, 3072, 4, 20, 1, IdRule::Mistral9, Structured::None, Structured::None, Thinking::Off, 0, Replay::None, ReplayScope::OpenTurn, CacheStyle::Automatic, 1024, UsageMode::InputIncludesCache, 47},  // mistral/*
-    {220, Slot::Mistral, MatchKind::Exact, CapMode::SendAlways, CapParam::MaxTokens, 3, 15, 20480, 100, 4, 31, IdRule::Mistral9, Structured::ChatJsonSchema, Structured::None, Thinking::Off, 28, Replay::ThinkChunks, ReplayScope::AllTurns, CacheStyle::KeyHint, 64, UsageMode::InputIncludesCache, 63},  // mistral/mistral-large-4-0
-    {238, Slot::Mistral, MatchKind::Exact, CapMode::SendAlways, CapParam::MaxTokens, 3, 15, 20480, 100, 4, 31, IdRule::Mistral9, Structured::ChatJsonSchema, Structured::None, Thinking::Off, 28, Replay::ThinkChunks, ReplayScope::AllTurns, CacheStyle::KeyHint, 64, UsageMode::InputIncludesCache, 63},  // mistral/mistral-large-4
-    {254, Slot::Mistral, MatchKind::Exact, CapMode::SendAlways, CapParam::MaxTokens, 3, 15, 20480, 100, 4, 31, IdRule::Mistral9, Structured::ChatJsonSchema, Structured::None, Thinking::Off, 28, Replay::ThinkChunks, ReplayScope::AllTurns, CacheStyle::KeyHint, 64, UsageMode::InputIncludesCache, 63},  // mistral/mistral-large-latest
-    {275, Slot::Mistral, MatchKind::Exact, CapMode::SendAlways, CapParam::MaxTokens, 3, 15, 20480, 100, 4, 31, IdRule::Mistral9, Structured::ChatJsonSchema, Structured::None, Thinking::Off, 0, Replay::None, ReplayScope::AllTurns, CacheStyle::KeyHint, 64, UsageMode::InputIncludesCache, 63},  // mistral/mistral-large-2512
-    {294, Slot::Mistral, MatchKind::Exact, CapMode::SendAlways, CapParam::MaxTokens, 3, 15, 20480, 8, 4, 31, IdRule::Mistral9, Structured::ChatJsonSchema, Structured::None, Thinking::Off, 1, Replay::ThinkChunks, ReplayScope::AllTurns, CacheStyle::KeyHint, 64, UsageMode::InputIncludesCache, 63},  // mistral/mistral-medium-latest
-    {316, Slot::Mistral, MatchKind::Exact, CapMode::SendAlways, CapParam::MaxTokens, 3, 15, 20480, 8, 4, 31, IdRule::Mistral9, Structured::ChatJsonSchema, Structured::None, Thinking::Off, 1, Replay::ThinkChunks, ReplayScope::AllTurns, CacheStyle::KeyHint, 64, UsageMode::InputIncludesCache, 63},  // mistral/mistral-small-latest
+    {264, Slot::Mistral, MatchKind::Exact, CapMode::SendAlways, CapParam::MaxTokens, 3, 15, 20480, 100, 4, 31, IdRule::Mistral9, Structured::ChatJsonSchema, Structured::None, Thinking::Off, 28, Replay::ThinkChunks, ReplayScope::AllTurns, CacheStyle::KeyHint, 64, UsageMode::InputIncludesCache, 63},  // mistral/mistral-large-4-0
+    {282, Slot::Mistral, MatchKind::Exact, CapMode::SendAlways, CapParam::MaxTokens, 3, 15, 20480, 100, 4, 31, IdRule::Mistral9, Structured::ChatJsonSchema, Structured::None, Thinking::Off, 28, Replay::ThinkChunks, ReplayScope::AllTurns, CacheStyle::KeyHint, 64, UsageMode::InputIncludesCache, 63},  // mistral/mistral-large-4
+    {298, Slot::Mistral, MatchKind::Exact, CapMode::SendAlways, CapParam::MaxTokens, 3, 15, 20480, 100, 4, 31, IdRule::Mistral9, Structured::ChatJsonSchema, Structured::None, Thinking::Off, 28, Replay::ThinkChunks, ReplayScope::AllTurns, CacheStyle::KeyHint, 64, UsageMode::InputIncludesCache, 63},  // mistral/mistral-large-latest
+    {319, Slot::Mistral, MatchKind::Exact, CapMode::SendAlways, CapParam::MaxTokens, 3, 15, 20480, 100, 4, 31, IdRule::Mistral9, Structured::ChatJsonSchema, Structured::None, Thinking::Off, 0, Replay::None, ReplayScope::AllTurns, CacheStyle::KeyHint, 64, UsageMode::InputIncludesCache, 63},  // mistral/mistral-large-2512
+    {338, Slot::Mistral, MatchKind::Exact, CapMode::SendAlways, CapParam::MaxTokens, 3, 15, 20480, 8, 4, 31, IdRule::Mistral9, Structured::ChatJsonSchema, Structured::None, Thinking::Off, 1, Replay::ThinkChunks, ReplayScope::AllTurns, CacheStyle::KeyHint, 64, UsageMode::InputIncludesCache, 63},  // mistral/mistral-medium-latest
+    {360, Slot::Mistral, MatchKind::Exact, CapMode::SendAlways, CapParam::MaxTokens, 3, 15, 20480, 8, 4, 31, IdRule::Mistral9, Structured::ChatJsonSchema, Structured::None, Thinking::Off, 1, Replay::ThinkChunks, ReplayScope::AllTurns, CacheStyle::KeyHint, 64, UsageMode::InputIncludesCache, 63},  // mistral/mistral-small-latest
     {0, Slot::Zai, MatchKind::Any, CapMode::SendAlways, CapParam::MaxTokens, 1, 3, 3072, 4, 20, 1, IdRule::Passthrough, Structured::None, Structured::None, Thinking::Off, 0, Replay::None, ReplayScope::OpenTurn, CacheStyle::Automatic, 1024, UsageMode::InputIncludesCache, 47},  // zai/*
-    {337, Slot::Zai, MatchKind::Exact, CapMode::SendAlways, CapParam::MaxTokens, 1, 3, 4882, 4, 4, 9, IdRule::Passthrough, Structured::None, Structured::None, Thinking::AlwaysOn, 84, Replay::ReasoningContent, ReplayScope::AllTurns, CacheStyle::Automatic, 1024, UsageMode::InputIncludesCache, 47},  // zai/glm-5.3
-    {345, Slot::Zai, MatchKind::Exact, CapMode::SendAlways, CapParam::MaxTokens, 1, 3, 4882, 4, 4, 9, IdRule::Passthrough, Structured::None, Structured::None, Thinking::AlwaysOn, 84, Replay::ReasoningContent, ReplayScope::AllTurns, CacheStyle::Automatic, 1024, UsageMode::InputIncludesCache, 47},  // zai/glm-5.3-flash
-    {359, Slot::Zai, MatchKind::Exact, CapMode::SendAlways, CapParam::MaxTokens, 1, 3, 4882, 4, 4, 9, IdRule::Passthrough, Structured::None, Structured::None, Thinking::Off, 4, Replay::ReasoningContent, ReplayScope::AllTurns, CacheStyle::Automatic, 1024, UsageMode::InputIncludesCache, 47},  // zai/glm-5.2
+    {381, Slot::Zai, MatchKind::Exact, CapMode::SendAlways, CapParam::MaxTokens, 1, 3, 4882, 4, 4, 9, IdRule::Passthrough, Structured::None, Structured::None, Thinking::AlwaysOn, 84, Replay::ReasoningContent, ReplayScope::AllTurns, CacheStyle::Automatic, 1024, UsageMode::InputIncludesCache, 47},  // zai/glm-5.3
+    {389, Slot::Zai, MatchKind::Exact, CapMode::SendAlways, CapParam::MaxTokens, 1, 3, 4882, 4, 4, 9, IdRule::Passthrough, Structured::None, Structured::None, Thinking::AlwaysOn, 84, Replay::ReasoningContent, ReplayScope::AllTurns, CacheStyle::Automatic, 1024, UsageMode::InputIncludesCache, 47},  // zai/glm-5.3-flash
+    {403, Slot::Zai, MatchKind::Exact, CapMode::SendAlways, CapParam::MaxTokens, 1, 3, 4882, 4, 4, 9, IdRule::Passthrough, Structured::None, Structured::None, Thinking::Off, 4, Replay::ReasoningContent, ReplayScope::AllTurns, CacheStyle::Automatic, 1024, UsageMode::InputIncludesCache, 47},  // zai/glm-5.2
     {0, Slot::CustomChat, MatchKind::Any, CapMode::Omit, CapParam::MaxTokens, 1, 3, 3072, 4, 16, 1, IdRule::Passthrough, Structured::None, Structured::None, Thinking::Off, 0, Replay::None, ReplayScope::OpenTurn, CacheStyle::Automatic, 1024, UsageMode::InputIncludesCache, 47},  // custom_chat/*
     {0, Slot::CustomMessages, MatchKind::Any, CapMode::Required, CapParam::MaxTokens, 1, 3, 3072, 4, 16, 1, IdRule::AnthropicPattern, Structured::None, Structured::None, Thinking::Off, 0, Replay::None, ReplayScope::OpenTurn, CacheStyle::Automatic, 1024, UsageMode::InputExcludesCache, 47},  // custom_messages/*
 };
 
 inline constexpr ProviderRow kCapsProviders[] = {
-    {Slot::Anthropic, Dialect::Messages, Auth::XApiKey, CacheKey::None, 367, 0, 385, 389, 0, 0, 100, 0, 0},  // anthropic
-    {Slot::OpenAI, Dialect::Responses, Auth::Bearer, CacheKey::PromptCacheKey, 400, 0, 385, 0, 0, 25, 1500, 1, 0},  // openai
-    {Slot::Mistral, Dialect::Chat, Auth::Bearer, CacheKey::PromptCacheKey, 415, 0, 385, 0, 430, 25, 100, 2, 0},  // mistral
-    {Slot::Zai, Dialect::Chat, Auth::Bearer, CacheKey::None, 438, 447, 464, 0, 0, 25, 100, 3, 0},  // zai
-    {Slot::CustomChat, Dialect::Chat, Auth::Bearer, CacheKey::None, 0, 0, 385, 0, 0, 25, 0, 4, 0},  // custom_chat
-    {Slot::CustomMessages, Dialect::Messages, Auth::XApiKey, CacheKey::None, 0, 0, 385, 389, 0, 0, 0, 5, 0},  // custom_messages
+    {Slot::Anthropic, Dialect::Messages, Auth::XApiKey, CacheKey::None, 411, 0, 429, 433, 0, 0, 100, 0, 0},  // anthropic
+    {Slot::OpenAI, Dialect::Responses, Auth::Bearer, CacheKey::PromptCacheKey, 444, 0, 429, 0, 0, 25, 1500, 1, 0},  // openai
+    {Slot::Mistral, Dialect::Chat, Auth::Bearer, CacheKey::PromptCacheKey, 459, 0, 429, 0, 474, 25, 100, 2, 0},  // mistral
+    {Slot::Zai, Dialect::Chat, Auth::Bearer, CacheKey::None, 482, 491, 508, 0, 0, 25, 100, 3, 0},  // zai
+    {Slot::CustomChat, Dialect::Chat, Auth::Bearer, CacheKey::None, 0, 0, 429, 0, 0, 25, 0, 4, 0},  // custom_chat
+    {Slot::CustomMessages, Dialect::Messages, Auth::XApiKey, CacheKey::None, 0, 0, 429, 433, 0, 0, 0, 5, 0},  // custom_messages
 };
 
 inline constexpr MarkerRow kCapsMarkers[] = {
-    {0, MarkerKind::Type, ErrClass::KeyAuth, 0, 401, 477},  // anthropic type authentication_error
-    {0, MarkerKind::Type, ErrClass::KeyForbidden, 0, 403, 498},  // anthropic type permission_error
-    {0, MarkerKind::Type, ErrClass::Billing, 0, 402, 515},  // anthropic type billing_error
-    {0, MarkerKind::Text, ErrClass::Billing, 0, 0, 529},  // anthropic text credit balance is too low
-    {0, MarkerKind::Type, ErrClass::RateLimited, 0, 429, 555},  // anthropic type rate_limit_error
-    {0, MarkerKind::Type, ErrClass::Server, 0, 529, 572},  // anthropic type overloaded_error
-    {0, MarkerKind::Type, ErrClass::Server, 0, 500, 589},  // anthropic type api_error
-    {0, MarkerKind::Type, ErrClass::Server, 0, 504, 599},  // anthropic type timeout_error
-    {0, MarkerKind::Type, ErrClass::Context, 0, 413, 613},  // anthropic type request_too_large
-    {0, MarkerKind::Text, ErrClass::Context, 0, 400, 631},  // anthropic text prompt is too long
-    {0, MarkerKind::Type, ErrClass::UnknownModel, 0, 404, 650},  // anthropic type not_found_error
-    {0, MarkerKind::Text, ErrClass::BadRequest, 0, 400, 666},  // anthropic text not valid json
-    {1, MarkerKind::Code, ErrClass::Billing, 0, 429, 681},  // openai code insufficient_quota
-    {1, MarkerKind::Code, ErrClass::Billing, 0, 429, 700},  // openai code credit_balance_exhausted
-    {1, MarkerKind::Code, ErrClass::Billing, 0, 429, 725},  // openai code organization_spend_limit_exceeded
-    {1, MarkerKind::Code, ErrClass::Billing, 0, 429, 759},  // openai code project_spend_limit_exceeded
-    {1, MarkerKind::Code, ErrClass::Billing, 0, 429, 788},  // openai code organization_usage_limit_exceeded
-    {1, MarkerKind::Code, ErrClass::Billing, 0, 0, 822},  // openai code billing_hard_limit_reached
-    {1, MarkerKind::Text, ErrClass::Billing, 0, 429, 849},  // openai text exceeded your current quota
-    {1, MarkerKind::Type, ErrClass::RateLimited, 0, 429, 555},  // openai type rate_limit_error
-    {1, MarkerKind::Code, ErrClass::RateLimited, 0, 429, 877},  // openai code slow_down
-    {1, MarkerKind::Code, ErrClass::Server, 0, 503, 887},  // openai code server_is_overloaded
-    {1, MarkerKind::Code, ErrClass::Context, 0, 400, 908},  // openai code context_length_exceeded
-    {1, MarkerKind::Code, ErrClass::UnknownModel, 0, 404, 932},  // openai code model_not_found
-    {1, MarkerKind::Code, ErrClass::BadRequest, 0, 400, 948},  // openai code invalid_json
-    {2, MarkerKind::Type, ErrClass::UnknownModel, 0, 400, 961},  // mistral type invalid_model
-    {2, MarkerKind::Code, ErrClass::RefusedField, 0, 400, 975},  // mistral code 3051
-    {2, MarkerKind::Text, ErrClass::BadRequest, 0, 0, 980},  // mistral text there was an error parsing the body
-    {3, MarkerKind::Code, ErrClass::KeyAuth, 0, 401, 1016},  // zai code 1000
-    {3, MarkerKind::Code, ErrClass::KeyAuth, 0, 401, 1021},  // zai code 1001
-    {3, MarkerKind::Code, ErrClass::KeyAuth, 0, 401, 1026},  // zai code 1003
-    {3, MarkerKind::Code, ErrClass::Billing, 0, 429, 1031},  // zai code 1113
-    {3, MarkerKind::Code, ErrClass::UnknownModel, 0, 400, 1036},  // zai code 1211
-    {3, MarkerKind::Code, ErrClass::KeyForbidden, 0, 403, 1041},  // zai code 1220
-    {3, MarkerKind::Code, ErrClass::Server, 0, 500, 1046},  // zai code 1200
-    {3, MarkerKind::Code, ErrClass::Server, 0, 500, 1051},  // zai code 1230
-    {3, MarkerKind::Code, ErrClass::Server, 0, 500, 1056},  // zai code 1234
-    {3, MarkerKind::Code, ErrClass::Context, 0, 400, 1061},  // zai code 1261
-    {3, MarkerKind::Code, ErrClass::Refusal, 0, 400, 1066},  // zai code 1301
-    {3, MarkerKind::Code, ErrClass::RateLimited, 0, 429, 1071},  // zai code 1302
-    {3, MarkerKind::Code, ErrClass::Server, 0, 429, 1076},  // zai code 1305
-    {3, MarkerKind::Text, ErrClass::BadRequest, 0, 0, 1081},  // zai text json parse error
+    {0, MarkerKind::Type, ErrClass::KeyAuth, 0, 401, 521},  // anthropic type authentication_error
+    {0, MarkerKind::Type, ErrClass::KeyForbidden, 0, 403, 542},  // anthropic type permission_error
+    {0, MarkerKind::Type, ErrClass::Billing, 0, 402, 559},  // anthropic type billing_error
+    {0, MarkerKind::Text, ErrClass::Billing, 0, 0, 573},  // anthropic text credit balance is too low
+    {0, MarkerKind::Type, ErrClass::RateLimited, 0, 429, 599},  // anthropic type rate_limit_error
+    {0, MarkerKind::Type, ErrClass::Server, 0, 529, 616},  // anthropic type overloaded_error
+    {0, MarkerKind::Type, ErrClass::Server, 0, 500, 633},  // anthropic type api_error
+    {0, MarkerKind::Type, ErrClass::Server, 0, 504, 643},  // anthropic type timeout_error
+    {0, MarkerKind::Type, ErrClass::Context, 0, 413, 657},  // anthropic type request_too_large
+    {0, MarkerKind::Text, ErrClass::Context, 0, 400, 675},  // anthropic text prompt is too long
+    {0, MarkerKind::Type, ErrClass::UnknownModel, 0, 404, 694},  // anthropic type not_found_error
+    {0, MarkerKind::Text, ErrClass::BadRequest, 0, 400, 710},  // anthropic text not valid json
+    {1, MarkerKind::Code, ErrClass::Billing, 0, 429, 725},  // openai code insufficient_quota
+    {1, MarkerKind::Code, ErrClass::Billing, 0, 429, 744},  // openai code credit_balance_exhausted
+    {1, MarkerKind::Code, ErrClass::Billing, 0, 429, 769},  // openai code organization_spend_limit_exceeded
+    {1, MarkerKind::Code, ErrClass::Billing, 0, 429, 803},  // openai code project_spend_limit_exceeded
+    {1, MarkerKind::Code, ErrClass::Billing, 0, 429, 832},  // openai code organization_usage_limit_exceeded
+    {1, MarkerKind::Code, ErrClass::Billing, 0, 0, 866},  // openai code billing_hard_limit_reached
+    {1, MarkerKind::Text, ErrClass::Billing, 0, 429, 893},  // openai text exceeded your current quota
+    {1, MarkerKind::Type, ErrClass::RateLimited, 0, 429, 599},  // openai type rate_limit_error
+    {1, MarkerKind::Code, ErrClass::RateLimited, 0, 429, 921},  // openai code slow_down
+    {1, MarkerKind::Code, ErrClass::Server, 0, 503, 931},  // openai code server_is_overloaded
+    {1, MarkerKind::Code, ErrClass::Context, 0, 400, 952},  // openai code context_length_exceeded
+    {1, MarkerKind::Code, ErrClass::UnknownModel, 0, 404, 976},  // openai code model_not_found
+    {1, MarkerKind::Code, ErrClass::BadRequest, 0, 400, 992},  // openai code invalid_json
+    {2, MarkerKind::Type, ErrClass::UnknownModel, 0, 400, 1005},  // mistral type invalid_model
+    {2, MarkerKind::Code, ErrClass::RefusedField, 0, 400, 1019},  // mistral code 3051
+    {2, MarkerKind::Text, ErrClass::BadRequest, 0, 0, 1024},  // mistral text there was an error parsing the body
+    {3, MarkerKind::Code, ErrClass::KeyAuth, 0, 401, 1060},  // zai code 1000
+    {3, MarkerKind::Code, ErrClass::KeyAuth, 0, 401, 1065},  // zai code 1001
+    {3, MarkerKind::Code, ErrClass::KeyAuth, 0, 401, 1070},  // zai code 1003
+    {3, MarkerKind::Code, ErrClass::Billing, 0, 429, 1075},  // zai code 1113
+    {3, MarkerKind::Code, ErrClass::UnknownModel, 0, 400, 1080},  // zai code 1211
+    {3, MarkerKind::Code, ErrClass::KeyForbidden, 0, 403, 1085},  // zai code 1220
+    {3, MarkerKind::Code, ErrClass::Server, 0, 500, 1090},  // zai code 1200
+    {3, MarkerKind::Code, ErrClass::Server, 0, 500, 1095},  // zai code 1230
+    {3, MarkerKind::Code, ErrClass::Server, 0, 500, 1100},  // zai code 1234
+    {3, MarkerKind::Code, ErrClass::Context, 0, 400, 1105},  // zai code 1261
+    {3, MarkerKind::Code, ErrClass::Refusal, 0, 400, 1110},  // zai code 1301
+    {3, MarkerKind::Code, ErrClass::RateLimited, 0, 429, 1115},  // zai code 1302
+    {3, MarkerKind::Code, ErrClass::Server, 0, 429, 1120},  // zai code 1305
+    {3, MarkerKind::Text, ErrClass::BadRequest, 0, 0, 1125},  // zai text json parse error
 };
 
 }  // namespace caps

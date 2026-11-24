@@ -75,7 +75,7 @@ static void test_every_named_row_has_a_real_window_and_price_in_the_shared_funct
   size_t named = 0;
   for (size_t i = 0; i < t.modelCount; i++) {
     const ModelRow& r = t.models[i];
-    if (r.kind == MatchKind::Any) continue;
+    if (r.kind != MatchKind::Exact) continue;   // a family prefix row (E2-REP5) names no one model
     TEST_ASSERT_TRUE_MESSAGE(directSlot(r.slot), "a custom slot has no named rows");
     named++;
     const std::string host = slotName(r.slot), id = idOf(r);
@@ -94,8 +94,8 @@ static void test_every_named_row_has_a_real_window_and_price_in_the_shared_funct
 // Counter-test: the two checks above do fail for a model the shared functions do not know.
 static void test_counter_an_unknown_model_fails_the_shared_function_checks() {
   TEST_ASSERT_EQUAL_UINT32(kCtxDefaultTokens, headWindowTokens("zai", "nope-1"));
-  TEST_ASSERT_NULL(builtinModelPrice("openai", "gpt-5.6-nope"));
-  TEST_ASSERT_FALSE(capsFor(Slot::OpenAI, "gpt-5.6-nope", false).known);
+  TEST_ASSERT_NULL(builtinModelPrice("openai", "o9-nope"));
+  TEST_ASSERT_FALSE(capsFor(Slot::OpenAI, "o9-nope", false).known);
 }
 
 // Every role default (and the router's, read on its upstream) gets a named row, not the '*' one.
@@ -176,9 +176,34 @@ static void test_the_money_safe_rule_keeps_capability_suffixes_apart() {
   TEST_ASSERT_EQUAL_STRING("gpt-5.6-luna", idOf(*luna.matched));
   TEST_ASSERT_EQUAL_STRING("gpt-5.6", idOf(*capsFor(Slot::OpenAI, "gpt-5.6", false).matched));
   TEST_ASSERT_EQUAL_STRING("claude-haiku-5-5", idOf(*capsFor(Slot::Anthropic, "claude-haiku-5-5-20261001", false).matched));
-  TEST_ASSERT_FALSE(capsFor(Slot::OpenAI, "gpt-5.6-mini", false).known);
+  // E2-REP5: an unlisted gpt-5.6 id takes the family prefix row, never the exact gpt-5.6 row.
+  TEST_ASSERT_TRUE(capsFor(Slot::OpenAI, "gpt-5.6-mini", false).matched->kind == MatchKind::Prefix);
   // Another slot's id is not this slot's row.
   TEST_ASSERT_FALSE(capsFor(Slot::Mistral, "claude-haiku-5-5", false).known);
+}
+
+// Lane E2-REP5 (review F5): an id the owner picks that no exact row lists keeps its family's photos, effort and
+// replay (engine 1 showed images to every claude-*); a truly unknown id keeps the fail-safe row (below).
+static void test_an_unlisted_snapshot_keeps_its_familys_facts() {
+  const Caps fable = capsFor(Slot::Anthropic, "claude-fable-5-2", false);
+  TEST_ASSERT_TRUE(fable.known);
+  TEST_ASSERT_TRUE(fable.row.inputKinds & input::kImage);
+  TEST_ASSERT_TRUE(fable.row.effortSet & effort::kMedium);
+  TEST_ASSERT_EQUAL(Replay::SignedBlocks, fable.row.replay);
+  TEST_ASSERT_EQUAL(Thinking::AlwaysOn, fable.row.thinking);
+  const Caps sonnet = capsFor(Slot::Anthropic, "claude-sonnet-5-6", false);
+  TEST_ASSERT_EQUAL_UINT8(effort::kLow | effort::kMedium | effort::kHigh, sonnet.row.effortSet);
+  const Caps old = capsFor(Slot::Anthropic, "claude-3-7-sonnet", false);   // any other claude-*: photos, nothing it may refuse
+  TEST_ASSERT_TRUE(old.row.inputKinds & input::kImage);
+  TEST_ASSERT_EQUAL_UINT8(0, old.row.effortSet);
+  TEST_ASSERT_EQUAL(Thinking::Off, old.row.thinking);
+  TEST_ASSERT_EQUAL(Structured::None, old.row.summarizerStructured);
+  for (const char* id : {"gpt-6.2-sol", "gpt-6.2-astra", "gpt-5.6-nano"}) {
+    const Caps g = capsFor(Slot::OpenAI, id, false);
+    TEST_ASSERT_TRUE_MESSAGE(g.row.inputKinds & input::kImage, id);
+    TEST_ASSERT_TRUE_MESSAGE(g.row.effortSet & effort::kLow, id);
+    TEST_ASSERT_EQUAL_MESSAGE(Replay::EncryptedItems, g.row.replay, id);
+  }
 }
 
 // ---- fail-safe defaults ---------------------------------------------------------------------------
@@ -389,6 +414,7 @@ int main(int, char**) {
   RUN_TEST(test_exact_beats_prefix_and_the_longest_prefix_wins);
   RUN_TEST(test_the_money_safe_rule_keeps_capability_suffixes_apart);
   RUN_TEST(test_an_unknown_model_gets_the_fail_safe_row);
+  RUN_TEST(test_an_unlisted_snapshot_keeps_its_familys_facts);
   RUN_TEST(test_rows_carry_the_facts_the_design_relies_on);
   RUN_TEST(test_a_routed_row_takes_the_routers_limits);
   RUN_TEST(test_every_refusal_only_narrows_every_row);

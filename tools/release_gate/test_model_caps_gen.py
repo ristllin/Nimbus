@@ -151,7 +151,8 @@ def test_row_for_follows_the_firmware_rule(data):
     assert gen.row_for(rows, "openai", "gpt-5.6-luna")["match"] == "gpt-5.6-luna"
     assert gen.row_for(rows, "openai", "GPT-5.6")["match"] == "gpt-5.6"
     assert gen.row_for(rows, "anthropic", "claude-haiku-5-5-20261001")["match"] == "claude-haiku-5-5"
-    assert gen.row_for(rows, "openai", "gpt-5.6-mini")["kind"] == "any"
+    assert gen.row_for(rows, "openai", "gpt-5.6-mini")["kind"] == "prefix"   # the family row (E2-REP5), not gpt-5.6's
+    assert gen.row_for(rows, "openai", "o9-unknown")["kind"] == "any"
     assert gen.row_for(rows, "mistral", "claude-haiku-5-5")["kind"] == "any"
 
 

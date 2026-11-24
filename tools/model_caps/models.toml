@@ -357,6 +357,52 @@ effort = { v = [], src = "lib/harness/src/providers/output_caps.cpp:154-160", re
 cache_min_tok = { v = 4096, src = "ant-cache", read = "2026-11-24", ver = "docs" }
 deprecated_on = "retired by policy (tools/model_id_allowlist.json); kept so a device still set to it gets its facts"
 
+# Family prefix rows (lane E2-REP5, review F5): an id no exact row names (a newer snapshot the owner picks
+# from the provider's list) keeps its family's photos, effort set and replay instead of the fail-safe '*'
+# row. Each family row repeats its newest listed sibling; "claude-" alone keeps engine 1's images for every
+# claude-* id and sends no effort, thinking or structured form (an older model may refuse them).
+[[model]]
+slot = "anthropic"
+kind = "prefix"
+match = "claude-"
+inherit = "claude5"
+input = { v = ["text", "image"], src = "lib/core/src/orch_turn_images.cpp:115", read = "2026-11-24", ver = "code", note = "engine 1 shows images to every claude-* model" }
+structured = { v = "none", src = "design", read = "2026-11-24", ver = "default" }
+summarizer_structured = { v = "none", src = "design", read = "2026-11-24", ver = "default" }
+thinking = { v = "off", src = "design", read = "2026-11-24", ver = "default" }
+effort = { v = [], src = "design", read = "2026-11-24", ver = "default" }
+
+[[model]]
+slot = "anthropic"
+kind = "prefix"
+match = "claude-fable-5"
+inherit = "claude5"
+thinking = { v = "always_on", src = "ant-effort", read = "2026-11-24", ver = "docs", note = "as claude-fable-5-1, its newest listed sibling" }
+refused_choices = { v = ["any", "named"], src = "ant-errors", read = "2026-11-24", ver = "docs" }
+
+[[model]]
+slot = "anthropic"
+kind = "prefix"
+match = "claude-opus-5"
+inherit = "claude5"
+thinking = { v = "always_on", src = "ant-effort", read = "2026-11-24", ver = "docs", note = "as claude-opus-5-5, its newest listed sibling" }
+refused_choices = { v = ["any", "named"], src = "ant-errors", read = "2026-11-24", ver = "docs" }
+
+[[model]]
+slot = "anthropic"
+kind = "prefix"
+match = "claude-sonnet-5"
+inherit = "claude5"
+thinking = { v = "between_tools", src = "ant-effort", read = "2026-11-24", ver = "docs", note = "as claude-sonnet-5-5, its newest listed sibling" }
+effort = { v = ["low", "medium", "high"], src = "ant-effort", read = "2026-11-24", ver = "docs", note = "between_tools at xhigh or max is a 400" }
+refused_choices = { v = ["any", "named"], src = "ant-errors", read = "2026-11-24", ver = "docs" }
+
+[[model]]
+slot = "anthropic"
+kind = "prefix"
+match = "claude-haiku-5"
+inherit = "claude5"
+
 # ---- openai ----
 [[model]]
 slot = "openai"
@@ -434,6 +480,20 @@ replay_scope = { v = "open_turn", src = "design", read = "2026-11-24", ver = "de
 cache_style = { v = "openai_implicit", src = "lib/harness/src/prompt_layout.cpp:360-398", read = "2026-11-24", ver = "code", note = "breakpoints only on gpt-5.6 and later (O11)" }
 cache_min_tok = { v = 1024, src = "oai-cache", read = "2026-11-24", ver = "none", note = "the page states 1,024 for gpt-5.6 and later only" }
 deprecated_on = "deprecated by OpenAI; retired by policy (tools/model_id_allowlist.json)"
+
+# Family prefix rows (lane E2-REP5, review F5): an unlisted gpt-6 or gpt-5.6 snapshot (gpt-6.2-sol, the ids
+# OpenAI's index lists as current) keeps the line's images, effort and encrypted reasoning replay.
+[[model]]
+slot = "openai"
+kind = "prefix"
+match = "gpt-6"
+inherit = "gpt"
+
+[[model]]
+slot = "openai"
+kind = "prefix"
+match = "gpt-5.6"
+inherit = "gpt"
 
 # ---- mistral ----
 [[model]]
