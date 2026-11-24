@@ -1,5 +1,8 @@
 // plain_wire_anthropic.cpp - the Anthropic Messages wire of engine 2 (PRD section 1,
 // "Request on each wire"). Render half: lane RB-W1a. Parse half: lane RB-W1b.
+// Lane E2-R2b: what a request carries (the items, pairing, send order, stubs, photos, the
+// ladder, the cache marks below) is decided by the shared planner (plain_plan.h); this file
+// spells its Plan as Messages JSON and reads Messages answers (plain_json_reader.h).
 //
 // render() is a pure function of RenderInput: the same transcript and facts give the
 // same bytes on every call (the exchange renders two or more times per request). It
@@ -50,21 +53,19 @@
 // Every model-facing text this file sends is stored text or a rules-lane text
 // (orch_tx_rules.cpp): the wire adds no prose of its own.
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
 #include <new>
 #include <string>
 #include <vector>
 
-#include "nimbus/harness/log.h"
-#include "nimbus/harness/plain/history.h"   // viewedPhoto (lane E2-SRCH)
-#include "nimbus/harness/plain/texts.h"
 #include "nimbus/harness/plain/wire.h"
 #include "nimbus/orch/tx/arena.h"
 #include "nimbus/orch/tx/item.h"
-#include "nimbus/orch/tx/rules.h"
 #include "nimbus/utf8.h"
 #include "plain_body.h"
 #include "plain_json_reader.h"
+#include "plain_plan.h"
 
 namespace agent {
 namespace plain {
@@ -88,352 +89,13 @@ struct Point {
   bool stable = false;
 };
 
-// ---- small rules ---------------------------------------------------------------------
-
-// The bytes of a blank character at s[i] (ASCII and Unicode white space), 0 when not blank.
-size_t blankAt(const std::string& s, size_t i) {
-  const unsigned char c = (unsigned char)s[i];
-  if (c == ' ' || (c >= '\t' && c <= '\r')) return 1;
-  static const char* const kBlanks[] = {
-      "\xC2\x85",     "\xC2\xA0",     "\xE1\x9A\x80", "\xE2\x80\x80", "\xE2\x80\x81", "\xE2\x80\x82",
-      "\xE2\x80\x83", "\xE2\x80\x84", "\xE2\x80\x85", "\xE2\x80\x86", "\xE2\x80\x87", "\xE2\x80\x88",
-      "\xE2\x80\x89", "\xE2\x80\x8A", "\xE2\x80\xA8", "\xE2\x80\xA9", "\xE2\x80\xAF", "\xE2\x81\x9F",
-      "\xE3\x80\x80"};
-  for (const char* b : kBlanks) {
-    const size_t n = std::strlen(b);
-    if (s.compare(i, n, b) == 0) return n;
-  }
-  return 0;
-}
-// The API refuses a text block that is empty or white space only.
-bool visible(const std::string& s) {
-  for (size_t i = 0; i < s.size();) {
-    const size_t b = blankAt(s, i);
-    if (!b) return true;
-    i += b;
-  }
-  return false;
-}
-
-// The API's id pattern, ^[a-zA-Z0-9_-]+$.
-bool idChar(char c) {
-  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
-}
-// A stored call id the API cannot take (another dialect's id, an empty one) is sent as
-// 'h' and its bytes in hex: one to one, so two ids never collide, and the result's
-// tool_use_id is mapped the same way.
-std::string wireId(const std::string& id) {
-  bool ok = !id.empty();
-  for (char c : id) ok = ok && idChar(c);
-  if (ok) return id;
-  static const char kHex[] = "0123456789abcdef";
-  std::string out = "h";
-  for (unsigned char c : id) {
-    out += kHex[c >> 4];
-    out += kHex[c & 15];
-  }
-  return out;
-}
-
-bool imageMime(const std::string& m) {
-  return m == "image/jpeg" || m == "image/png" || m == "image/gif" || m == "image/webp";
-}
-
-// A stored tool name the API cannot take (another engine's dotted name, an empty one) is
-// sent with each other byte as '_', at most 64 bytes.
-std::string wireName(const std::string& n) {
-  std::string out = n.substr(0, 64);
-  for (char& c : out)
-    if (!idChar(c)) c = '_';
-  return out.empty() ? std::string("_") : out;
-}
-
-// One JSON object the body writer accepts as it is (call arguments, signed thinking).
-bool oneObject(const std::string& json) {
-  size_t i = 0;
-  while (i < json.size() && (json[i] == ' ' || json[i] == '\n' || json[i] == '\r' || json[i] == '\t')) ++i;
-  if (i >= json.size() || json[i] != '{') return false;
-  std::string scratch;
-  BodyWriter probe(scratch);
-  probe.raw(json);
-  return probe.status().ok();
-}
-
-// ---- pass 1: the facts of the transcript ---------------------------------------------
-
-struct Row {
-  uint64_t q = 0;
-  uint64_t t = 0;
-  uint32_t turn = 0;
-  tx::ItemKind kind = tx::ItemKind::User;
-  bool keep = false;       // rendered
-  bool emits = true;       // writes a block (a blank text or a broken meta item does not)
-  std::string id;          // c and r: the stored call id
-  std::string wid;         // c: the id as sent
-};
-
-struct Facts {
-  std::vector<Row> rows;
-  uint64_t thru = 0;                  // the newest s item's thru
-  uint64_t pointer = 0;               // max(input pointer, newest x item's)
-  std::vector<uint64_t> superseded;   // the stub lists (tx::stubList x items' sup), sorted, unique
-  std::vector<std::string> photos;    // the open turn's visible photo refs (its t item)
-  size_t estimate = 0;                // body bytes to reserve once
-  std::vector<uint32_t> omitted;      // turns the omission line stands for, oldest first
-};
-
-// Whether a stored item writes a block at all (a blank text or a broken meta item does not).
-bool emitsBlock(const tx::Item& it, uint16_t dayStartMin) {
-  switch (it.kind) {
-    case tx::ItemKind::User: {
-      char stamp[tx::kStampMaxBytes];
-      for (const tx::Part& p : it.parts)
-        if (p.kind == tx::PartKind::Image) return true;
-      return visible(it.x) || tx::messageStamp(it.t, it.tzMinutes, dayStartMin, stamp, sizeof stamp).ok();
-    }
-    case tx::ItemKind::Assistant:
-    case tx::ItemKind::DeviceNote:
-      return visible(it.x);
-    case tx::ItemKind::RoundMeta:
-      return oneObject(it.x);
-    default:
-      return true;
-  }
-}
-
-// What one item tells the request beyond its own blocks.
-void noteFacts(const RenderInput& in, const tx::Item& it, Facts& f) {
-  switch (it.kind) {
-    case tx::ItemKind::PointerMove:
-      f.pointer = std::max(f.pointer, it.stub);
-      if (tx::stubList(it)) f.superseded.insert(f.superseded.end(), it.sup.begin(), it.sup.end());
-      break;
-    case tx::ItemKind::Digest:
-      f.thru = std::max(f.thru, it.thru);
-      break;
-    case tx::ItemKind::TurnOpen:
-      if (it.turn == in.turn->turn) f.photos = it.photos;
-      break;
-    default:
-      break;
-  }
-  f.estimate += it.x.size() + it.args.size() + it.st.size() + 96;
-  if (it.kind == tx::ItemKind::Result && !it.handle.empty()) f.estimate += it.bytes;
-}
-
-Status readFacts(const RenderInput& in, const tx::TxArena& arena, Facts& f) {
-  const size_t n = arena.count();
-  f.rows.reserve(n);
-  f.pointer = std::max(in.stubPointer, in.ladder ? in.ladder->closedThrough : 0);
-  tx::Item it;
-  for (size_t i = 0; i < n; ++i) {
-    Row row;
-    if (!arena.get(i, it).ok()) {   // a line kept by the restart fill that cannot be read
-      row.kind = tx::ItemKind::Delivery;
-      f.rows.push_back(row);
-      continue;
-    }
-    row.q = it.q;
-    row.t = it.t;
-    row.turn = it.turn;
-    row.kind = it.kind;
-    if (it.kind == tx::ItemKind::Call || it.kind == tx::ItemKind::Result) row.id = it.id;
-    row.emits = emitsBlock(it, in.turn->dayStartMin);
-    noteFacts(in, it, f);
-    f.rows.push_back(std::move(row));
-  }
-  std::sort(f.superseded.begin(), f.superseded.end());
-  f.superseded.erase(std::unique(f.superseded.begin(), f.superseded.end()), f.superseded.end());
-  return Status::success();
-}
-
-// Rung 3: every whole turn after thru whose items are all at or below omitThrough, never the
-// open turn; only when the engine wrote the line that stands in their place.
-void chooseOmitted(const RenderInput& in, Facts& f) {
-  if (!in.ladder || !in.ladder->omitThrough || in.ladder->omissionLine.empty()) return;
-  std::vector<std::pair<uint32_t, uint64_t>> last;   // turn -> its newest q, in first-seen order
-  for (const Row& r : f.rows) {
-    if (r.q <= f.thru || r.q == 0 || r.turn == 0) continue;   // turn 0 is never a whole turn to omit
-    auto it = std::find_if(last.begin(), last.end(), [&r](const std::pair<uint32_t, uint64_t>& t) { return t.first == r.turn; });
-    if (it == last.end()) last.push_back({r.turn, r.q});
-    else it->second = std::max(it->second, r.q);
-  }
-  for (const auto& t : last)
-    if (t.first != in.turn->turn && t.second <= in.ladder->omitThrough) f.omitted.push_back(t.first);
-}
-
-// The engine's omission line stands at the head of the request whenever its ladder names one,
-// even when no resident turn is left out by it (turns a full arena already dropped from RAM).
-bool omissionNamed(const RenderInput& in) {
-  return in.ladder && in.ladder->omitThrough && !in.ladder->omissionLine.empty();
-}
-
-bool omittedTurn(const Facts& f, uint32_t turn) {
-  return std::find(f.omitted.begin(), f.omitted.end(), turn) != f.omitted.end();
-}
-
-// The calls of the transcript, in q order: which row, answered yet.
-struct Pairs {
-  struct Open {
-    std::string id;
-    uint32_t turn;
-    size_t row;
-    bool answered;
-  };
-  std::vector<Open> calls;
-  std::vector<std::string> sent;   // wire ids already used
-
-  bool used(const std::string& wid) const { return std::find(sent.begin(), sent.end(), wid) != sent.end(); }
-  // Every call gets a wire id of its own: a stored id used again (a dialect that numbers its
-  // calls per answer, an empty id) is told apart by the call's q.
-  void call(Row& r, size_t row) {
-    r.wid = wireId(r.id);
-    while (used(r.wid)) r.wid += "-" + std::to_string(r.q);
-    sent.push_back(r.wid);
-    calls.push_back(Open{r.id, r.turn, row, false});
-  }
-  // A result answers the earliest unanswered call of its id in its own turn (two calls of one
-  // round sharing an id get their results in order); any other is left out (an orphan, a
-  // second result).
-  void result(Row& r, std::vector<Row>& rows) {
-    for (size_t i = 0; i < calls.size(); ++i) {
-      Open& c = calls[i];
-      if (c.answered || c.id != r.id || c.turn != r.turn) continue;
-      c.answered = true;
-      r.keep = true;
-      r.wid = rows[c.row].wid;
-      return;
-    }
-  }
-};
-
-bool userKind(tx::ItemKind k) { return k == tx::ItemKind::User || k == tx::ItemKind::DeviceNote; }
-bool assistantKind(tx::ItemKind k) {
-  return k == tx::ItemKind::Assistant || k == tx::ItemKind::RoundMeta || k == tx::ItemKind::Call;
-}
-
-// Whether the open turn's signed thinking is sent: not once a ladder rung is applied. Settled live
-// by RB-W1b (evidence/LIVE-CONFORMANCE.md, claude-haiku-5-5, 19 Nov 2026): a signature binds the
-// block to every byte before it, a rung changes bytes before it (rungs 1 and 2 stub earlier
-// results, rung 3 replaces earlier turns), and where the API enforces that check (accounts made on
-// or after 31 Aug 2026, or a request that sets prefix_mismatch_behavior) the request is a 400
-// ("bound to a different conversation"); the same request with the open turn's thinking left out
-// is accepted, enforced or not, with no block reported dropped. The engine's ladder only climbs
-// inside a turn, so from the first rung on every request of the turn goes without it (leaving out
-// all of them keeps nothing that a later rung could invalidate).
-bool sendOpenTurnThinking(const RenderInput& in) {
-  const LadderState* l = in.ladder;
-  return !l || (!l->closedThrough && !l->stubThrough && !omissionNamed(in));
-}
-
-// What is rendered, and the pairing: a call with its one result. Assistant items before the
-// first user item after thru (a turn cut by compaction) are not sent: the request opens with
-// the user's turn.
-void chooseRows(const RenderInput& in, Facts& f) {
-  Pairs pairs;
-  bool userSeen = omissionNamed(in);   // the omission line opens the request
-  for (size_t i = 0; i < f.rows.size(); ++i) {
-    Row& r = f.rows[i];
-    if (r.q == 0 || r.q <= f.thru || omittedTurn(f, r.turn) || !r.emits) continue;
-    if (assistantKind(r.kind) && !userSeen) continue;
-    if (userKind(r.kind)) r.keep = userSeen = true;
-    else if (r.kind == tx::ItemKind::Assistant) r.keep = true;
-    else if (r.kind == tx::ItemKind::RoundMeta) r.keep = r.turn == in.turn->turn && sendOpenTurnThinking(in);
-    else if (r.kind == tx::ItemKind::Call) pairs.call(r, i);
-    else if (r.kind == tx::ItemKind::Result) pairs.result(r, f.rows);
-  }
-  for (const Pairs::Open& c : pairs.calls) f.rows[c.row].keep = c.answered;
-}
-
-bool waitingFor(const std::vector<std::string>& waiting, const std::string& id) {
-  return std::find(waiting.begin(), waiting.end(), id) != waiting.end();
-}
-
-// While calls wait: the round's next assistant item stored before its results (until the
-// first result is sent), else the first waiting result.
-size_t nextWhileWaiting(const Facts& f, const std::vector<size_t>& queue, const std::vector<bool>& done, size_t first,
-                        const std::vector<std::string>& waiting, bool answering) {
-  size_t join = queue.size();
-  for (size_t k = first; k < queue.size(); ++k) {
-    if (done[k]) continue;
-    const Row& r = f.rows[queue[k]];
-    if (r.kind == tx::ItemKind::Result && waitingFor(waiting, r.id)) return join < k ? join : k;
-    if (r.kind == tx::ItemKind::Result) answering = true;   // a later round's result: the round is over
-    else if (!answering && join == queue.size() && assistantKind(r.kind)) join = k;
-  }
-  return first;   // unreachable: every kept call has its result later
-}
-
-// Signed thinking goes back exactly where it was stored (before the text, between calls, after
-// the last call: wire.h MetaPart), in q order; only a run of one turn's assistant items made of
-// thinking alone (its round's calls all left out) is not sent.
-void dropThinkingAlone(const Facts& f, std::vector<size_t>& order) {
-  std::vector<size_t> out;
-  out.reserve(order.size());
-  for (size_t i = 0; i < order.size();) {
-    const Row& r = f.rows[order[i]];
-    size_t j = i;
-    while (j < order.size() && assistantKind(f.rows[order[j]].kind) && f.rows[order[j]].turn == r.turn) ++j;
-    if (j == i) {
-      out.push_back(order[i++]);
-      continue;
-    }
-    bool said = false;
-    for (size_t k = i; k < j; ++k) said = said || f.rows[order[k]].kind != tx::ItemKind::RoundMeta;
-    if (said) out.insert(out.end(), order.begin() + (long)i, order.begin() + (long)j);
-    i = j;
-  }
-  order.swap(out);
-}
-
-// The send order: q order, except while a round's calls wait for their results. Until the
-// first of those results is sent, the round's further assistant items (more calls, text,
-// meta) stored before it join the round; then only the waiting results are sent. Anything
-// else stored between a call and its result (a device note, a late owner message) waits.
-std::vector<size_t> sendOrder(const Facts& f) {
-  std::vector<size_t> queue;
-  for (size_t i = 0; i < f.rows.size(); ++i)
-    if (f.rows[i].keep) queue.push_back(i);
-  std::vector<size_t> order;
-  order.reserve(queue.size());
-  std::vector<bool> done(queue.size(), false);
-  std::vector<std::string> waiting;   // stored ids of calls sent, results not yet
-  bool answering = false;             // a result of the waiting round was sent
-  size_t first = 0;
-  while (order.size() < queue.size()) {
-    while (first < queue.size() && done[first]) ++first;
-    size_t pick = first;
-    if (!waiting.empty()) pick = nextWhileWaiting(f, queue, done, first, waiting, answering);
-    const Row& r = f.rows[queue[pick]];
-    if (r.kind == tx::ItemKind::Call) waiting.push_back(r.id);
-    if (r.kind == tx::ItemKind::Result) {
-      auto w = std::find(waiting.begin(), waiting.end(), r.id);
-      if (w != waiting.end()) waiting.erase(w);
-      answering = !waiting.empty();
-    }
-    done[pick] = true;
-    order.push_back(queue[pick]);
-  }
-  dropThinkingAlone(f, order);
-  // The request ends with the user's turn (the API takes no assistant prefill): assistant
-  // text or meta left last by a round whose calls were all left out is not sent.
-  while (!order.empty() && assistantKind(f.rows[order.back()].kind)) order.pop_back();
-  return order;
-}
-
-// ---- pass 2: the body -------------------------------------------------------------------
-
-struct Mark {
-  size_t closeAt = 0;   // the offset of the block's closing brace
-  uint32_t turn = 0;
-  bool system = false;
-};
+// ---- the body: a Plan in Messages JSON ------------------------------------------------------
 
 enum class Role : uint8_t { None, User, Assistant };
 
 class Messages {
  public:
-  Messages(BodyWriter& w, const std::string& body) : w_(w), body_(body) {}
+  explicit Messages(BodyWriter& w) : w_(w) {}
 
   // Open the next block's message: a new one unless `join` and the last message has this
   // role and turn.
@@ -449,274 +111,140 @@ class Messages {
     open(role, turn, join);
     return w_.beginObject();
   }
-  // Close the block; `cacheable` blocks can carry a point.
-  void close(uint32_t turn, bool cacheable) {
-    if (cacheable) marks_.push_back(Mark{body_.size(), turn, false});
-    w_.endObject();
-  }
   void finish() {
     if (role_ != Role::None) w_.endArray().endObject();
   }
-  bool any() const { return !marks_.empty(); }   // a request with no message block is refused
   bool resultsOpen() const { return results_ && role_ == Role::User; }
   void setResults(bool on) { results_ = on; }
-  const std::vector<Mark>& marks() const { return marks_; }
 
  private:
   BodyWriter& w_;
-  const std::string& body_;
   Role role_ = Role::None;
   uint32_t turn_ = 0;
   bool results_ = false;
-  std::vector<Mark> marks_;
 };
 
 struct Render {
   const RenderInput& in;
-  const Facts& f;
+  const plan::Plan& p;
   BodyWriter& w;
   std::string& body;
-  BodySplices& splices;
   Messages& m;
+  std::vector<Point>& points;
   bool fileRef = false;   // a block names a provider file (the Files beta header)
-  // Photos attached to this request so far and their stored bytes (E2-FIX4's caps also bound the
-  // photos a view result brings back, lane E2-SRCH).
-  size_t photosAttached = 0;
-  size_t photoBytesAttached = 0;
 };
 
+// The text a piece names (its item's field or the plan's line).
+const std::string& textOf(const Render& r, const plan::Piece& pc, const tx::Item& it) {
+  switch (pc.src) {
+    case plan::Src::X: return it.x;
+    case plan::Src::St: return it.st;
+    case plan::Src::Args: return it.args;
+    default: return r.p.lines[pc.line];
+  }
+}
+
+// Close the block; the plan's marks become cache points before its closing brace.
+void close(Render& r, const plan::Piece& pc) {
+  if (pc.flags & plan::kMarkStable) r.points.push_back(Point{r.body.size(), true});
+  if (pc.flags & plan::kMarkMoving) r.points.push_back(Point{r.body.size(), false});
+  r.w.endObject();
+}
 
 // A text block; `join`: it may join the message before it.
-void textBlock(Render& r, Role role, uint32_t turn, bool join, const std::string& text, Over over) {
-  r.m.block(role, turn, join).key("type").str("text").key("text").str(text, over);
-  r.m.close(turn, true);
+void textBlock(Render& r, const plan::Piece& pc, Role role, bool join, const std::string& text, Over over) {
+  r.m.block(role, pc.turn, join).key("type").str("text").key("text").str(text, over);
+  close(r, pc);
   r.m.setResults(false);
 }
 
-// A photo of an owner message: pixels when the open turn shows it (by file id, else inline
-// base64 spliced at send time), else its stub line. False when nothing was written (a
-// part whose ref is not a photo ref has nothing to name).
-// Lane E2-P-PHOTO: why this request may not carry `ref` as pixels at all (a head without image
-// input, a photo the provider refused in this chat); false when it may.
-bool photoAbsent(const Render& r, const std::string& ref, tx::PhotoAbsent& why) {
-  const std::vector<std::string>* refused = r.in.refusedPhotos;
-  if (refused && std::find(refused->begin(), refused->end(), ref) != refused->end()) {
-    why = tx::PhotoAbsent::Refused;
-    return true;
-  }
-  why = tx::PhotoAbsent::Blind;
-  return r.in.turn && r.in.turn->photosBlind;
-}
-
-bool photoBlock(Render& r, const tx::Item& u, const tx::Part& p, bool join) {
-  tx::PhotoAbsent why = tx::PhotoAbsent::Blind;
-  const bool absent = photoAbsent(r, p.ref, why);
-  const bool shown = !absent && std::find(r.f.photos.begin(), r.f.photos.end(), p.ref) != r.f.photos.end();
-  PhotoBytes px;
-  if (shown && r.in.photo && r.in.photo(p.ref, px).ok()) {
-    if (!px.fileId.empty()) {
-      r.m.block(Role::User, u.turn, join).key("type").str("image").key("source").beginObject();
-      r.w.key("type").str("file").key("file_id").str(px.fileId).endObject();
-      r.m.close(u.turn, true);
-      r.fileRef = true;
-      ++r.photosAttached;
-      return true;
-    }
-    if (px.bytes && px.len && imageMime(px.mime)) {
-      r.m.block(Role::User, u.turn, join).key("type").str("image").key("source").beginObject();
-      r.w.key("type").str("base64").key("media_type").str(px.mime).key("data");
-      r.w.beginStr().splice(px.bytes, px.len).endStr().endObject();
-      r.m.close(u.turn, true);
-      ++r.photosAttached;
-      r.photoBytesAttached += px.len;
-      return true;
-    }
-  }
-  if (p.ref.size() < 2 || p.ref[0] != 'p') return false;
-  std::string when, stub;
-  if (!tx::photoWhen(u.t, u.tzMinutes, when).ok()) when.clear();
-  // Its note kept (RB-H81). E2-FIX5: names view only when the turn's registry binds it.
-  if (absent ? !tx::photoAbsentLine(p.ref.substr(1), when, p.note, why, stub).ok()
-             : !tx::photoStub(p.ref.substr(1), when, p.note, stub, r.in.bound.view).ok())
-    return false;
-  textBlock(r, Role::User, u.turn, join, stub, Over::Refuse);
-  return true;
-}
-
-// An owner message opens a user message of its own: the stamped text, then its photos.
-void ownerMessage(Render& r, const tx::Item& u) {
-  char stamp[tx::kStampMaxBytes];
-  const bool stamped = tx::messageStamp(u.t, u.tzMinutes, r.in.turn->dayStartMin, stamp, sizeof stamp).ok();
-  bool first = true;
-  if (stamped || visible(u.x)) {
-    r.m.block(Role::User, u.turn, false).key("type").str("text").key("text").beginStr();
-    if (stamped) r.w.part(stamp, std::strlen(stamp)).part(" ", 1);
-    r.w.part(u.x).endStr();
-    r.m.close(u.turn, true);
-    r.m.setResults(false);
-    first = false;
-  }
-  for (const tx::Part& p : u.parts)
-    if (p.kind == tx::PartKind::Image && photoBlock(r, u, p, !first)) first = false;
-}
-
-// A bulk file that could not be read, in the device log once per turn (the request is rendered
-// again each round and on each ladder rung).
-void logUnread(const Render& r, const tx::Item& it) {
-  static std::string s_logged;
-  const std::string key = r.in.turn->chatKey + "#" + std::to_string(r.in.turn->turn);
-  if (key == s_logged) return;
-  s_logged = key;
-  hlog::logf("wire(%s): the bulk result %s could not be read; its place says so", r.in.turn->chatKey.c_str(),
-             it.handle.c_str());
-}
-
-// The whole text of a result: inline, or its bulk payload. A bulk file that is missing or short is
-// never sent as less without a word (finding P11): the marker stands in its place, then the stub.
-std::string wholeText(const Render& r, const tx::Item& it) {
-  if (it.handle.empty()) return it.x;
-  std::string out;
-  if (!r.in.bulk) return it.st;   // a render with no bulk reader (stubs by design)
-  if (r.in.bulk(it.handle, out).ok()) return out;
-  logUnread(r, it);
-  std::string text = texts::stubs::kResultUnread;
-  if (!it.st.empty()) text += "\n" + it.st;
-  return text;
-}
-
-// The stub rule's facts for this request: the pointer (with ladder rung 1), the stub lists, rung 2.
-tx::ShowFacts showFacts(const Render& r) {
-  tx::ShowFacts sf;
-  sf.pointer = r.f.pointer;
-  sf.openTurn = r.in.turn->turn;
-  sf.superseded = &r.f.superseded;
-  sf.ladderStubThrough = r.in.ladder ? r.in.ladder->stubThrough : 0;
-  return sf;
-}
-
-// Lane E2-SRCH: a view result that names a photo of this conversation. While its turn is open it carries
-// the photo's pixels after its line (by file id, else inline base64), as an owner message's photo does,
-// inside E2-FIX4's caps (kInlinePhotosInViewMax photos and kInlinePhotoBytesInViewMax stored bytes for
-// the whole request, the photos already attached counted). Otherwise (a closed turn, the caps, a photo
-// the hook cannot give) its content is the photo's line (tx::photoStub), so it never says "shown" when
-// nothing is attached. False when the result is not a viewed photo.
-bool attachViewed(Render& r, const std::string& ref, const std::string& text) {
-  PhotoBytes px;
-  tx::PhotoAbsent why = tx::PhotoAbsent::Blind;
-  if (photoAbsent(r, ref, why) || !r.in.photo || !r.in.photo(ref, px).ok()) return false;   // E2-P-PHOTO
-  const bool file = !px.fileId.empty(), inline64 = px.bytes && px.len && imageMime(px.mime);
-  const size_t bytes = file ? 0 : px.len;
-  if ((!file && !inline64) || r.photosAttached + 1 > tx::kInlinePhotosInViewMax ||
-      r.photoBytesAttached + bytes > tx::kInlinePhotoBytesInViewMax)
-    return false;
-  r.w.key("content").beginArray().beginObject().key("type").str("text").key("text").str(text, Over::Clip).endObject();
-  r.w.beginObject().key("type").str("image").key("source").beginObject();
-  if (file) {
+// An image source: by file id, else inline base64 spliced at send time.
+void imageSource(Render& r, const PhotoBytes& px) {
+  r.w.key("type").str("image").key("source").beginObject();
+  if (!px.fileId.empty()) {
     r.w.key("type").str("file").key("file_id").str(px.fileId).endObject();
     r.fileRef = true;
-  } else {
-    r.w.key("type").str("base64").key("media_type").str(px.mime).key("data");
-    r.w.beginStr().splice(px.bytes, px.len).endStr().endObject();
+    return;
   }
-  r.w.endObject().endArray();
-  ++r.photosAttached;
-  r.photoBytesAttached += bytes;
-  return true;
+  r.w.key("type").str("base64").key("media_type").str(px.mime).key("data");
+  r.w.beginStr().splice(px.bytes, px.len).endStr().endObject();
 }
 
-bool viewedPhotoContent(Render& r, const tx::Item& it, const std::string& text) {
-  const std::string ref = it.ok ? viewedPhoto(it.n, text) : std::string();
-  if (ref.empty()) return false;
-  if (it.turn == r.in.turn->turn && attachViewed(r, ref, text)) return true;
-  // "photo p<ref> <when>: shown here": the line with the same time, the photo not attached.
-  const size_t from = std::min(text.size(), sizeof(texts::tool_results::kViewPhoto) - 1 + ref.size() + 1);
-  const size_t to = text.size() - (sizeof(texts::tool_results::kViewPhotoShown) - 1);
-  std::string line;
-  const std::string when = from < to ? text.substr(from, to - from) : std::string();
-  tx::PhotoAbsent why = tx::PhotoAbsent::Blind;
-  if (photoAbsent(r, ref, why) ? !tx::photoAbsentLine(ref.substr(1), when, std::string(), why, line).ok()
-                               : !tx::photoStub(ref.substr(1), when, line, r.in.bound.view).ok())
-    return false;
-  r.w.key("content").str(line, Over::Clip);
-  return true;
+void ownerText(Render& r, const plan::Piece& pc, const tx::Item& u) {
+  r.m.block(Role::User, pc.turn, false).key("type").str("text").key("text").beginStr();
+  if (pc.flags & plan::kStamp) r.w.part(r.p.lines[pc.line]).part(" ", 1);
+  r.w.part(u.x).endStr();
+  close(r, pc);
+  r.m.setResults(false);
 }
 
-void resultBlock(Render& r, const tx::Item& it, const Row& row) {
-  const tx::ShowFacts sf = showFacts(r);
-  tx::ShowAs as = tx::ShowAs::Stub;
-  if (!tx::showResult(it, sf, as).ok()) as = tx::ShowAs::Stub;
-  std::string text;
-  if (as == tx::ShowAs::Whole) text = wholeText(r, it);
-  else if (!it.st.empty()) text = it.st;
-  else if (it.cls != tx::ResultClass::Outside) text = wholeText(r, it);   // no stub stored: never outside content
-  r.m.block(Role::User, it.turn, r.m.resultsOpen()).key("type").str("tool_result").key("tool_use_id").str(row.wid);
-  if (!text.empty() && !viewedPhotoContent(r, it, text)) r.w.key("content").str(text, Over::Clip);
-  if (!it.ok && !text.empty()) r.w.key("is_error").boolean(true);   // the API refuses an empty error
-  r.m.close(it.turn, true);
+void photoBlock(Render& r, const plan::Piece& pc) {
+  r.m.block(Role::User, pc.turn, !(pc.flags & plan::kOpens));
+  imageSource(r, r.p.photos[pc.photo]);
+  close(r, pc);
+}
+
+void resultBlock(Render& r, const plan::Piece& pc, const tx::Item& it) {
+  r.m.block(Role::User, pc.turn, r.m.resultsOpen()).key("type").str("tool_result").key("tool_use_id").str(r.p.ids[pc.id]);
+  if (pc.flags & plan::kViewed) {   // its line, then the photo it views
+    r.w.key("content").beginArray().beginObject().key("type").str("text").key("text").str(textOf(r, pc, it), Over::Clip);
+    r.w.endObject().beginObject();
+    imageSource(r, r.p.photos[pc.photo]);
+    r.w.endObject().endArray();
+  } else if (pc.src != plan::Src::None) {
+    r.w.key("content").str(textOf(r, pc, it), Over::Clip);
+  }
+  if (pc.flags & plan::kError) r.w.key("is_error").boolean(true);
+  close(r, pc);
   r.m.setResults(true);
 }
 
-void callBlock(Render& r, const tx::Item& it, const Row& row) {
-  r.m.block(Role::Assistant, it.turn, true).key("type").str("tool_use").key("id").str(row.wid);
-  r.w.key("name").str(wireName(it.n)).key("input");
-  const std::string& args = tx::shownArgs(it, showFacts(r));   // whole until the overflow path (E2-VERB)
-  if (oneObject(args)) r.w.raw(args);
-  else r.w.beginObject().endObject();   // a cut or broken call, a long-argument stub
-  r.m.close(it.turn, true);
+void callBlock(Render& r, const plan::Piece& pc, const tx::Item& it) {
+  r.m.block(Role::Assistant, pc.turn, true).key("type").str("tool_use").key("id").str(r.p.ids[pc.id]);
+  r.w.key("name").str(plan::wireName(it.n)).key("input");
+  if (pc.src != plan::Src::None) r.w.raw(textOf(r, pc, it));
+  else r.w.beginObject().endObject();
+  close(r, pc);
   r.m.setResults(false);
 }
 
-void itemBlocks(Render& r, const tx::Item& it, const Row& row) {
-  switch (it.kind) {
-    case tx::ItemKind::User:
-      ownerMessage(r, it);
-      return;
-    case tx::ItemKind::Assistant:
-      textBlock(r, Role::Assistant, it.turn, true, it.x, Over::Clip);   // blank text is not kept (emitsBlock)
-      return;
-    case tx::ItemKind::DeviceNote:
-      textBlock(r, Role::User, it.turn, true, it.x, Over::Clip);
-      return;
-    case tx::ItemKind::RoundMeta:   // the open turn's signed thinking, as stored; never a point
-      if (!oneObject(it.x)) return;
-      r.m.open(Role::Assistant, it.turn, true);
+void pieceBlocks(Render& r, const plan::Piece& pc, const tx::Item& it) {
+  switch (pc.kind) {
+    case plan::PieceKind::OwnerText:
+      return ownerText(r, pc, it);
+    case plan::PieceKind::Photo:
+      return photoBlock(r, pc);
+    case plan::PieceKind::Line:
+      return textBlock(r, pc, Role::User, !(pc.flags & plan::kOpens), r.p.lines[pc.line], Over::Refuse);
+    case plan::PieceKind::AssistantText:
+      return textBlock(r, pc, Role::Assistant, true, it.x, Over::Clip);
+    case plan::PieceKind::DeviceNote:
+      return textBlock(r, pc, Role::User, true, it.x, Over::Clip);
+    case plan::PieceKind::Meta:
+      r.m.open(Role::Assistant, pc.turn, true);
       r.w.raw(it.x);
       r.m.setResults(false);
       return;
-    case tx::ItemKind::Call:
-      callBlock(r, it, row);
-      return;
-    case tx::ItemKind::Result:
-      resultBlock(r, it, row);
-      return;
-    default:
-      return;
+    case plan::PieceKind::Call:
+      return callBlock(r, pc, it);
+    case plan::PieceKind::Result:
+      return resultBlock(r, pc, it);
   }
 }
 
-void omissionBlock(Render& r) {
-  if (omissionNamed(r.in)) textBlock(r, Role::User, 0, false, r.in.ladder->omissionLine, Over::Refuse);
-}
-
-// The system blocks; the offsets of their two points.
-void systemBlocks(BodyWriter& w, const std::string& body, const SystemBlocks& s, std::vector<Point>& points) {
+// The system blocks the plan sends; their marks as cache points.
+void systemBlocks(BodyWriter& w, const std::string& body, const SystemBlocks& s, const plan::SystemPlan& sp,
+                  std::vector<Point>& points) {
+  if (!sp.shown[0] && !sp.shown[1] && !sp.shown[2]) return;
   const std::string* blocks[] = {&s.core, &s.notes, &s.digests};
-  size_t closeAt[3] = {0, 0, 0};
-  bool any = false;
-  bool shown[3];
-  for (int i = 0; i < 3; ++i) any = (shown[i] = visible(*blocks[i])) || any;
-  if (!any) return;
   w.key("system").beginArray();
   for (int i = 0; i < 3; ++i) {
-    if (!shown[i]) continue;
+    if (!sp.shown[i]) continue;
     w.beginObject().key("type").str("text").key("text").str(*blocks[i]);
-    closeAt[i] = body.size();
+    if (i == sp.stableAfter || (i == 2 && sp.digestsMark)) points.push_back(Point{body.size(), true});
     w.endObject();
   }
   w.endArray();
-  const size_t stable = shown[1] ? closeAt[1] : closeAt[0];
-  if (stable) points.push_back(Point{stable, true});
-  if (shown[2]) points.push_back(Point{closeAt[2], true});
 }
 
 // The effort and the answer's schema, each when set (lane E2-CMP: the summarizer's changes).
@@ -733,7 +261,7 @@ Status toolsArray(BodyWriter& w, const RenderInput& in) {
   if (in.tools->empty()) return Status::success();
   w.key("tools").beginArray();
   for (const ToolSpec& t : *in.tools) {
-    if (!oneObject(t.schemaJson)) return Status::fail(Err::InvalidArgument, "plain::anthropic.render.toolSchema");
+    if (!plan::oneObject(t.schemaJson)) return Status::fail(Err::InvalidArgument, "plain::anthropic.render.toolSchema");
     w.beginObject().key("name").str(t.name);
     if (!t.description.empty()) w.key("description").str(t.description);
     w.key("input_schema").raw(t.schemaJson).endObject();
@@ -741,17 +269,6 @@ Status toolsArray(BodyWriter& w, const RenderInput& in) {
   w.endArray();
   w.key("tool_choice").beginObject().key("type").str(in.toolChoiceNone ? "none" : "auto").endObject();
   return Status::success();
-}
-
-// The two message points: the last block of the previous turn and the moving last block.
-void messagePoints(const std::vector<Mark>& marks, uint32_t openTurn, std::vector<Point>& points) {
-  if (marks.empty()) return;
-  for (size_t i = marks.size(); i-- > 0;)
-    if (marks[i].turn < openTurn) {
-      if (i + 1 != marks.size()) points.push_back(Point{marks[i].closeAt, true});
-      break;
-    }
-  points.push_back(Point{marks.back().closeAt, false});
 }
 
 // Each point is the marker written before its block's closing brace; the photo splices
@@ -787,47 +304,54 @@ void coordinates(const RenderInput& in, bool fileRef, HttpRequest& out) {
   else out.headers.emplace_back("x-api-key", key);
 }
 
-size_t reserveFor(const RenderInput& in, const Facts& f) {
-  size_t n = f.estimate + in.system->core.size() + in.system->notes.size() + in.system->digests.size() + 1024;
+size_t reserveFor(const RenderInput& in, const plan::Plan& p) {
+  size_t n = p.estimate + in.system->core.size() + in.system->notes.size() + in.system->digests.size() + 1024;
   for (const ToolSpec& t : *in.tools) n += t.name.size() + t.description.size() + t.schemaJson.size() + 64;
   return n;
 }
 
-Status renderBody(const RenderInput& in, HttpRequest& out) {
-  Facts f;
-  Status st = readFacts(in, *in.items, f);
-  if (!st.ok()) return st;
-  chooseOmitted(in, f);
-  chooseRows(in, f);
-  const std::vector<size_t> order = sendOrder(f);
-  if (in.tools->empty())   // the API refuses tool blocks in a request without tools
-    for (size_t idx : order)
-      if (f.rows[idx].kind == tx::ItemKind::Call) return Status::fail(Err::InvalidArgument, "plain::anthropic.render.noTools");
+// The messages, piece by piece in the plan's order (a piece's item fetched once).
+void messagesArray(Render& r) {
+  r.w.key("messages").beginArray();
+  tx::Item it;
+  size_t fetched = SIZE_MAX;
+  for (const plan::Piece& pc : r.p.pieces) {
+    const bool ownText = pc.kind == plan::PieceKind::Line || pc.kind == plan::PieceKind::Photo;
+    if (!ownText && pc.item != fetched) {
+      if (!r.in.items->get(pc.item, it).ok()) continue;
+      fetched = pc.item;
+    }
+    pieceBlocks(r, pc, it);
+  }
+  r.m.finish();
+  r.w.endArray();
+}
 
-  out.body.reserve(reserveFor(in, f));
+Status renderBody(const RenderInput& in, HttpRequest& out) {
+  plan::Plan p;
+  Status st = plan::plan(in, p);
+  if (!st.ok()) return st;
+  if (in.tools->empty())   // the API refuses tool blocks in a request without tools
+    for (const plan::Piece& pc : p.pieces)
+      if (pc.kind == plan::PieceKind::Call) return Status::fail(Err::InvalidArgument, "plain::anthropic.render.noTools");
+
+  out.body.reserve(reserveFor(in, p));
 
   BodyWriter w(out.body, &out.splices);
   std::vector<Point> points;
   w.beginObject().key("model").str(in.turn->model).key("max_tokens").unum(in.maxTokens);
   outputConfig(w, in);
-  systemBlocks(w, out.body, *in.system, points);
+  systemBlocks(w, out.body, *in.system, p.system, points);
   if (!(st = toolsArray(w, in)).ok()) return st;
 
-  w.key("messages").beginArray();
-  Messages m(w, out.body);
-  Render r{in, f, w, out.body, out.splices, m};
-  omissionBlock(r);
-  tx::Item it;
-  for (size_t idx : order)
-    if (in.items->get(idx, it).ok()) itemBlocks(r, it, f.rows[idx]);
-  m.finish();
-  w.endArray().endObject();
+  Messages m(w);
+  Render r{in, p, w, out.body, m, points};
+  messagesArray(r);
+  w.endObject();
   if (!(st = w.status()).ok()) return st;
-  if (!m.any()) return Status::fail(Err::InvalidArgument, "plain::anthropic.render.noMessages");
+  if (!p.anyBlock) return Status::fail(Err::InvalidArgument, "plain::anthropic.render.noMessages");
 
-  messagePoints(m.marks(), in.turn->turn, points);
   placePoints(points, in.longCache, out);
-
   coordinates(in, r.fileRef, out);
   return Status::success();
 }

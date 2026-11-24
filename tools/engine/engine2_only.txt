@@ -48,6 +48,7 @@ lib/harness/src/schedule_fire.cpp
 lib/harness/src/providers/plain_wire_anthropic.cpp
 # E2-R2b: the shared planner and the strict JSON reader of the wires.
 lib/harness/src/providers/plain_json_reader.cpp
+lib/harness/src/providers/plain_plan.cpp
 
 # RB-C2: the device binding of the engine-2 compaction driver.
 src/agent/plain_fold_device.cpp

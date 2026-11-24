@@ -1,0 +1,654 @@
+// plain_plan.cpp - the shared planner of engine 2's wires (plain_plan.h). Moved out of
+// plain_wire_anthropic.cpp by lane E2-R2b; the rules are the ones that file's header names
+// (messages after thru, pairing, send order, the stub rule, photos, the ladder, the cache marks).
+#include "plain_plan.h"
+
+#include <algorithm>
+#include <cstring>
+#include <string>
+#include <vector>
+
+#include "nimbus/harness/log.h"
+#include "nimbus/harness/plain/history.h"   // viewedPhoto (lane E2-SRCH)
+#include "nimbus/harness/plain/texts.h"
+#include "nimbus/orch/tx/arena.h"
+#include "nimbus/orch/tx/item.h"
+#include "nimbus/orch/tx/rules.h"
+#include "plain_body.h"   // oneObject: the body writer's own check of a stored fragment
+
+namespace agent {
+namespace plain {
+namespace plan {
+
+namespace {
+
+namespace tx = nimbus::orch::tx;
+
+// ---- small rules ---------------------------------------------------------------------
+
+// The bytes of a blank character at s[i] (ASCII and Unicode white space), 0 when not blank.
+size_t blankAt(const std::string& s, size_t i) {
+  const unsigned char c = (unsigned char)s[i];
+  if (c == ' ' || (c >= '\t' && c <= '\r')) return 1;
+  static const char* const kBlanks[] = {
+      "\xC2\x85",     "\xC2\xA0",     "\xE1\x9A\x80", "\xE2\x80\x80", "\xE2\x80\x81", "\xE2\x80\x82",
+      "\xE2\x80\x83", "\xE2\x80\x84", "\xE2\x80\x85", "\xE2\x80\x86", "\xE2\x80\x87", "\xE2\x80\x88",
+      "\xE2\x80\x89", "\xE2\x80\x8A", "\xE2\x80\xA8", "\xE2\x80\xA9", "\xE2\x80\xAF", "\xE2\x81\x9F",
+      "\xE3\x80\x80"};
+  for (const char* b : kBlanks) {
+    const size_t n = std::strlen(b);
+    if (s.compare(i, n, b) == 0) return n;
+  }
+  return 0;
+}
+// The API refuses a text block that is empty or white space only.
+bool visible(const std::string& s) {
+  for (size_t i = 0; i < s.size();) {
+    const size_t b = blankAt(s, i);
+    if (!b) return true;
+    i += b;
+  }
+  return false;
+}
+
+// The API's id pattern, ^[a-zA-Z0-9_-]+$.
+bool idChar(char c) {
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
+}
+// A stored call id the API cannot take (another dialect's id, an empty one) is sent as
+// 'h' and its bytes in hex: one to one, so two ids never collide, and the result's
+// tool_use_id is mapped the same way.
+std::string wireId(const std::string& id) {
+  bool ok = !id.empty();
+  for (char c : id) ok = ok && idChar(c);
+  if (ok) return id;
+  static const char kHex[] = "0123456789abcdef";
+  std::string out = "h";
+  for (unsigned char c : id) {
+    out += kHex[c >> 4];
+    out += kHex[c & 15];
+  }
+  return out;
+}
+
+bool imageMime(const std::string& m) {
+  return m == "image/jpeg" || m == "image/png" || m == "image/gif" || m == "image/webp";
+}
+
+// ---- pass 1: the facts of the transcript ---------------------------------------------
+
+struct Row {
+  uint64_t q = 0;
+  uint64_t t = 0;
+  uint32_t turn = 0;
+  tx::ItemKind kind = tx::ItemKind::User;
+  bool keep = false;       // rendered
+  bool emits = true;       // writes a block (a blank text or a broken meta item does not)
+  std::string id;          // c and r: the stored call id
+  std::string wid;         // c: the id as sent
+  size_t est = 0;          // the body bytes it may take
+};
+
+struct Facts {
+  std::vector<Row> rows;
+  uint64_t thru = 0;                  // the newest s item's thru
+  uint64_t pointer = 0;               // max(input pointer, newest x item's)
+  std::vector<uint64_t> superseded;   // the stub lists (tx::stubList x items' sup), sorted, unique
+  std::vector<std::string> photos;    // the open turn's visible photo refs (its t item)
+  std::vector<uint32_t> omitted;      // turns the omission line stands for, oldest first
+};
+
+// Whether a stored item writes a block at all (a blank text or a broken meta item does not).
+bool emitsBlock(const tx::Item& it, uint16_t dayStartMin) {
+  switch (it.kind) {
+    case tx::ItemKind::User: {
+      char stamp[tx::kStampMaxBytes];
+      for (const tx::Part& p : it.parts)
+        if (p.kind == tx::PartKind::Image) return true;
+      return visible(it.x) || tx::messageStamp(it.t, it.tzMinutes, dayStartMin, stamp, sizeof stamp).ok();
+    }
+    case tx::ItemKind::Assistant:
+    case tx::ItemKind::DeviceNote:
+      return visible(it.x);
+    case tx::ItemKind::RoundMeta:
+      return oneObject(it.x);
+    default:
+      return true;
+  }
+}
+
+// What one item tells the request beyond its own blocks.
+// Returns the body bytes it may take.
+size_t noteFacts(const RenderInput& in, const tx::Item& it, Facts& f) {
+  switch (it.kind) {
+    case tx::ItemKind::PointerMove:
+      f.pointer = std::max(f.pointer, it.stub);
+      if (tx::stubList(it)) f.superseded.insert(f.superseded.end(), it.sup.begin(), it.sup.end());
+      break;
+    case tx::ItemKind::Digest:
+      f.thru = std::max(f.thru, it.thru);
+      break;
+    case tx::ItemKind::TurnOpen:
+      if (it.turn == in.turn->turn) f.photos = it.photos;
+      break;
+    default:
+      break;
+  }
+  size_t est = it.x.size() + it.args.size() + it.st.size() + 96;
+  if (it.kind == tx::ItemKind::Result && !it.handle.empty()) est += it.bytes;
+  return est;
+}
+
+Status readFacts(const RenderInput& in, const tx::TxArena& arena, Facts& f) {
+  const size_t n = arena.count();
+  f.rows.reserve(n);
+  f.pointer = std::max(in.stubPointer, in.ladder ? in.ladder->closedThrough : 0);
+  tx::Item it;
+  for (size_t i = 0; i < n; ++i) {
+    Row row;
+    if (!arena.get(i, it).ok()) {   // a line kept by the restart fill that cannot be read
+      row.kind = tx::ItemKind::Delivery;
+      f.rows.push_back(row);
+      continue;
+    }
+    row.q = it.q;
+    row.t = it.t;
+    row.turn = it.turn;
+    row.kind = it.kind;
+    if (it.kind == tx::ItemKind::Call || it.kind == tx::ItemKind::Result) row.id = it.id;
+    row.emits = emitsBlock(it, in.turn->dayStartMin);
+    row.est = noteFacts(in, it, f);
+    f.rows.push_back(std::move(row));
+  }
+  std::sort(f.superseded.begin(), f.superseded.end());
+  f.superseded.erase(std::unique(f.superseded.begin(), f.superseded.end()), f.superseded.end());
+  return Status::success();
+}
+
+// Rung 3: every whole turn after thru whose items are all at or below omitThrough, never the
+// open turn; only when the engine wrote the line that stands in their place.
+void chooseOmitted(const RenderInput& in, Facts& f) {
+  if (!in.ladder || !in.ladder->omitThrough || in.ladder->omissionLine.empty()) return;
+  std::vector<std::pair<uint32_t, uint64_t>> last;   // turn -> its newest q, in first-seen order
+  for (const Row& r : f.rows) {
+    if (r.q <= f.thru || r.q == 0 || r.turn == 0) continue;   // turn 0 is never a whole turn to omit
+    auto it = std::find_if(last.begin(), last.end(), [&r](const std::pair<uint32_t, uint64_t>& t) { return t.first == r.turn; });
+    if (it == last.end()) last.push_back({r.turn, r.q});
+    else it->second = std::max(it->second, r.q);
+  }
+  for (const auto& t : last)
+    if (t.first != in.turn->turn && t.second <= in.ladder->omitThrough) f.omitted.push_back(t.first);
+}
+
+// The engine's omission line stands at the head of the request whenever its ladder names one,
+// even when no resident turn is left out by it (turns a full arena already dropped from RAM).
+bool omissionNamed(const RenderInput& in) {
+  return in.ladder && in.ladder->omitThrough && !in.ladder->omissionLine.empty();
+}
+
+bool omittedTurn(const Facts& f, uint32_t turn) {
+  return std::find(f.omitted.begin(), f.omitted.end(), turn) != f.omitted.end();
+}
+
+// The calls of the transcript, in q order: which row, answered yet.
+struct Pairs {
+  struct Open {
+    std::string id;
+    uint32_t turn;
+    size_t row;
+    bool answered;
+  };
+  std::vector<Open> calls;
+  std::vector<std::string> sent;   // wire ids already used
+
+  bool used(const std::string& wid) const { return std::find(sent.begin(), sent.end(), wid) != sent.end(); }
+  // Every call gets a wire id of its own: a stored id used again (a dialect that numbers its
+  // calls per answer, an empty id) is told apart by the call's q.
+  void call(Row& r, size_t row) {
+    r.wid = wireId(r.id);
+    while (used(r.wid)) r.wid += "-" + std::to_string(r.q);
+    sent.push_back(r.wid);
+    calls.push_back(Open{r.id, r.turn, row, false});
+  }
+  // A result answers the earliest unanswered call of its id in its own turn (two calls of one
+  // round sharing an id get their results in order); any other is left out (an orphan, a
+  // second result).
+  void result(Row& r, std::vector<Row>& rows) {
+    for (size_t i = 0; i < calls.size(); ++i) {
+      Open& c = calls[i];
+      if (c.answered || c.id != r.id || c.turn != r.turn) continue;
+      c.answered = true;
+      r.keep = true;
+      r.wid = rows[c.row].wid;
+      return;
+    }
+  }
+};
+
+bool userKind(tx::ItemKind k) { return k == tx::ItemKind::User || k == tx::ItemKind::DeviceNote; }
+bool assistantKind(tx::ItemKind k) {
+  return k == tx::ItemKind::Assistant || k == tx::ItemKind::RoundMeta || k == tx::ItemKind::Call;
+}
+
+// Whether the open turn's signed thinking is sent: not once a ladder rung is applied. Settled live
+// by RB-W1b (evidence/LIVE-CONFORMANCE.md, claude-haiku-5-5, 19 Nov 2026): a signature binds the
+// block to every byte before it, a rung changes bytes before it (rungs 1 and 2 stub earlier
+// results, rung 3 replaces earlier turns), and where the API enforces that check (accounts made on
+// or after 31 Aug 2026, or a request that sets prefix_mismatch_behavior) the request is a 400
+// ("bound to a different conversation"); the same request with the open turn's thinking left out
+// is accepted, enforced or not, with no block reported dropped. The engine's ladder only climbs
+// inside a turn, so from the first rung on every request of the turn goes without it (leaving out
+// all of them keeps nothing that a later rung could invalidate).
+bool sendOpenTurnThinking(const RenderInput& in) {
+  const LadderState* l = in.ladder;
+  return !l || (!l->closedThrough && !l->stubThrough && !omissionNamed(in));
+}
+
+// What is rendered, and the pairing: a call with its one result. Assistant items before the
+// first user item after thru (a turn cut by compaction) are not sent: the request opens with
+// the user's turn.
+void chooseRows(const RenderInput& in, Facts& f) {
+  Pairs pairs;
+  bool userSeen = omissionNamed(in);   // the omission line opens the request
+  for (size_t i = 0; i < f.rows.size(); ++i) {
+    Row& r = f.rows[i];
+    if (r.q == 0 || r.q <= f.thru || omittedTurn(f, r.turn) || !r.emits) continue;
+    if (assistantKind(r.kind) && !userSeen) continue;
+    if (userKind(r.kind)) r.keep = userSeen = true;
+    else if (r.kind == tx::ItemKind::Assistant) r.keep = true;
+    else if (r.kind == tx::ItemKind::RoundMeta) r.keep = r.turn == in.turn->turn && sendOpenTurnThinking(in);
+    else if (r.kind == tx::ItemKind::Call) pairs.call(r, i);
+    else if (r.kind == tx::ItemKind::Result) pairs.result(r, f.rows);
+  }
+  for (const Pairs::Open& c : pairs.calls) f.rows[c.row].keep = c.answered;
+}
+
+bool waitingFor(const std::vector<std::string>& waiting, const std::string& id) {
+  return std::find(waiting.begin(), waiting.end(), id) != waiting.end();
+}
+
+// While calls wait: the round's next assistant item stored before its results (until the
+// first result is sent), else the first waiting result.
+size_t nextWhileWaiting(const Facts& f, const std::vector<size_t>& queue, const std::vector<bool>& done, size_t first,
+                        const std::vector<std::string>& waiting, bool answering) {
+  size_t join = queue.size();
+  for (size_t k = first; k < queue.size(); ++k) {
+    if (done[k]) continue;
+    const Row& r = f.rows[queue[k]];
+    if (r.kind == tx::ItemKind::Result && waitingFor(waiting, r.id)) return join < k ? join : k;
+    if (r.kind == tx::ItemKind::Result) answering = true;   // a later round's result: the round is over
+    else if (!answering && join == queue.size() && assistantKind(r.kind)) join = k;
+  }
+  return first;   // unreachable: every kept call has its result later
+}
+
+// Signed thinking goes back exactly where it was stored (before the text, between calls, after
+// the last call: wire.h MetaPart), in q order; only a run of one turn's assistant items made of
+// thinking alone (its round's calls all left out) is not sent.
+void dropThinkingAlone(const Facts& f, std::vector<size_t>& order) {
+  std::vector<size_t> out;
+  out.reserve(order.size());
+  for (size_t i = 0; i < order.size();) {
+    const Row& r = f.rows[order[i]];
+    size_t j = i;
+    while (j < order.size() && assistantKind(f.rows[order[j]].kind) && f.rows[order[j]].turn == r.turn) ++j;
+    if (j == i) {
+      out.push_back(order[i++]);
+      continue;
+    }
+    bool said = false;
+    for (size_t k = i; k < j; ++k) said = said || f.rows[order[k]].kind != tx::ItemKind::RoundMeta;
+    if (said) out.insert(out.end(), order.begin() + (long)i, order.begin() + (long)j);
+    i = j;
+  }
+  order.swap(out);
+}
+
+// The send order: q order, except while a round's calls wait for their results. Until the
+// first of those results is sent, the round's further assistant items (more calls, text,
+// meta) stored before it join the round; then only the waiting results are sent. Anything
+// else stored between a call and its result (a device note, a late owner message) waits.
+std::vector<size_t> sendOrder(const Facts& f) {
+  std::vector<size_t> queue;
+  for (size_t i = 0; i < f.rows.size(); ++i)
+    if (f.rows[i].keep) queue.push_back(i);
+  std::vector<size_t> order;
+  order.reserve(queue.size());
+  std::vector<bool> done(queue.size(), false);
+  std::vector<std::string> waiting;   // stored ids of calls sent, results not yet
+  bool answering = false;             // a result of the waiting round was sent
+  size_t first = 0;
+  while (order.size() < queue.size()) {
+    while (first < queue.size() && done[first]) ++first;
+    size_t pick = first;
+    if (!waiting.empty()) pick = nextWhileWaiting(f, queue, done, first, waiting, answering);
+    const Row& r = f.rows[queue[pick]];
+    if (r.kind == tx::ItemKind::Call) waiting.push_back(r.id);
+    if (r.kind == tx::ItemKind::Result) {
+      auto w = std::find(waiting.begin(), waiting.end(), r.id);
+      if (w != waiting.end()) waiting.erase(w);
+      answering = !waiting.empty();
+    }
+    done[pick] = true;
+    order.push_back(queue[pick]);
+  }
+  dropThinkingAlone(f, order);
+  // The request ends with the user's turn (the API takes no assistant prefill): assistant
+  // text or meta left last by a round whose calls were all left out is not sent.
+  while (!order.empty() && assistantKind(f.rows[order.back()].kind)) order.pop_back();
+  return order;
+}
+
+// ---- pass 2: the pieces -------------------------------------------------------------------
+
+struct Builder {
+  const RenderInput& in;
+  const Facts& f;
+  Plan& out;
+  // Photos attached to this request so far and their stored bytes (E2-FIX4's caps also bound the
+  // photos a view result brings back, lane E2-SRCH).
+  size_t photosAttached = 0;
+  size_t photoBytesAttached = 0;
+
+  Piece& add(PieceKind kind, uint32_t item, uint32_t turn) {
+    Piece p;
+    p.kind = kind;
+    p.item = item;
+    p.turn = turn;
+    out.pieces.push_back(p);
+    return out.pieces.back();
+  }
+  uint32_t line(std::string s) {
+    out.lines.push_back(std::move(s));
+    return (uint32_t)(out.lines.size() - 1);
+  }
+  uint32_t id(const std::string& wid) {
+    out.ids.push_back(wid);
+    return (uint32_t)(out.ids.size() - 1);
+  }
+  uint16_t photo(const PhotoBytes& px) {
+    ++photosAttached;
+    if (px.fileId.empty()) photoBytesAttached += px.len;
+    out.photos.push_back(px);
+    return (uint16_t)(out.photos.size() - 1);
+  }
+};
+
+// A user text line of the planner's own (a photo's line, the omission line).
+void linePiece(Builder& b, uint32_t item, uint32_t turn, bool opens, std::string text) {
+  const uint32_t at = b.line(std::move(text));
+  Piece& p = b.add(PieceKind::Line, item, turn);
+  p.src = Src::Line;
+  p.line = at;
+  if (opens) p.flags |= kOpens;
+}
+
+// Lane E2-P-PHOTO: why this request may not carry `ref` as pixels at all (a head without image
+// input, a photo the provider refused in this chat); false when it may.
+bool photoAbsent(const RenderInput& in, const std::string& ref, tx::PhotoAbsent& why) {
+  const std::vector<std::string>* refused = in.refusedPhotos;
+  if (refused && std::find(refused->begin(), refused->end(), ref) != refused->end()) {
+    why = tx::PhotoAbsent::Refused;
+    return true;
+  }
+  why = tx::PhotoAbsent::Blind;
+  return in.turn && in.turn->photosBlind;
+}
+
+// A photo of an owner message: pixels when the open turn shows it (by file id, else inline bytes
+// spliced at send time), else its stub line. False when nothing is sent (a part whose ref is not a
+// photo ref has nothing to name).
+bool photoPiece(Builder& b, const tx::Item& u, uint32_t idx, const tx::Part& p, bool opens) {
+  tx::PhotoAbsent why = tx::PhotoAbsent::Blind;
+  const bool absent = photoAbsent(b.in, p.ref, why);
+  const bool shown = !absent && std::find(b.f.photos.begin(), b.f.photos.end(), p.ref) != b.f.photos.end();
+  PhotoBytes px;
+  if (shown && b.in.photo && b.in.photo(p.ref, px).ok() &&
+      (!px.fileId.empty() || (px.bytes && px.len && imageMime(px.mime)))) {
+    const uint16_t at = b.photo(px);
+    Piece& pc = b.add(PieceKind::Photo, idx, u.turn);
+    pc.photo = at;
+    if (opens) pc.flags |= kOpens;
+    return true;
+  }
+  if (p.ref.size() < 2 || p.ref[0] != 'p') return false;
+  std::string when, stub;
+  if (!tx::photoWhen(u.t, u.tzMinutes, when).ok()) when.clear();
+  // Its note kept (RB-H81). E2-FIX5: names view only when the turn's registry binds it.
+  if (absent ? !tx::photoAbsentLine(p.ref.substr(1), when, p.note, why, stub).ok()
+             : !tx::photoStub(p.ref.substr(1), when, p.note, stub, b.in.bound.view).ok())
+    return false;
+  linePiece(b, idx, u.turn, opens, std::move(stub));
+  return true;
+}
+
+// An owner message opens a user message of its own: the stamped text, then its photos.
+void ownerPieces(Builder& b, const tx::Item& u, uint32_t idx) {
+  char stamp[tx::kStampMaxBytes];
+  const bool stamped = tx::messageStamp(u.t, u.tzMinutes, b.in.turn->dayStartMin, stamp, sizeof stamp).ok();
+  bool first = true;
+  if (stamped || visible(u.x)) {
+    const uint32_t at = stamped ? b.line(stamp) : 0;
+    Piece& p = b.add(PieceKind::OwnerText, idx, u.turn);
+    p.flags = kOpens | (stamped ? kStamp : 0);
+    p.line = at;
+    first = false;
+  }
+  for (const tx::Part& p : u.parts)
+    if (p.kind == tx::PartKind::Image && photoPiece(b, u, idx, p, first)) first = false;
+}
+
+// A bulk file that could not be read, in the device log once per turn (the request is rendered
+// again each round and on each ladder rung).
+void logUnread(const RenderInput& in, const tx::Item& it) {
+  static std::string s_logged;
+  const std::string key = in.turn->chatKey + "#" + std::to_string(in.turn->turn);
+  if (key == s_logged) return;
+  s_logged = key;
+  hlog::logf("wire(%s): the bulk result %s could not be read; its place says so", in.turn->chatKey.c_str(),
+             it.handle.c_str());
+}
+
+// The whole text of a result: inline (its x), or its bulk payload (into `own`). A bulk file that is
+// missing or short is never sent as less without a word (finding P11): the marker stands in its
+// place, then the stub.
+Src wholeText(const RenderInput& in, const tx::Item& it, std::string& own) {
+  if (it.handle.empty()) return Src::X;
+  if (!in.bulk) return Src::St;   // a render with no bulk reader (stubs by design)
+  if (in.bulk(it.handle, own).ok()) return Src::Line;
+  logUnread(in, it);
+  own = texts::stubs::kResultUnread;
+  if (!it.st.empty()) own += "\n" + it.st;
+  return Src::Line;
+}
+
+// The stub rule's facts for this request: the pointer (with ladder rung 1), the stub lists, rung 2.
+tx::ShowFacts showFacts(const RenderInput& in, const Facts& f) {
+  tx::ShowFacts sf;
+  sf.pointer = f.pointer;
+  sf.openTurn = in.turn->turn;
+  sf.superseded = &f.superseded;
+  sf.ladderStubThrough = in.ladder ? in.ladder->stubThrough : 0;
+  return sf;
+}
+
+// Lane E2-SRCH: a view result that names a photo of this conversation, while its turn is open,
+// carries the photo's pixels after its line (by file id, else inline bytes), as an owner message's
+// photo does, inside E2-FIX4's caps (kInlinePhotosInViewMax photos and kInlinePhotoBytesInViewMax
+// stored bytes for the whole request, the photos already attached counted).
+bool attachViewed(Builder& b, const std::string& ref, Piece& p) {
+  PhotoBytes px;
+  tx::PhotoAbsent why = tx::PhotoAbsent::Blind;
+  if (photoAbsent(b.in, ref, why) || !b.in.photo || !b.in.photo(ref, px).ok()) return false;   // E2-P-PHOTO
+  const bool file = !px.fileId.empty(), inline64 = px.bytes && px.len && imageMime(px.mime);
+  const size_t bytes = file ? 0 : px.len;
+  if ((!file && !inline64) || b.photosAttached + 1 > tx::kInlinePhotosInViewMax ||
+      b.photoBytesAttached + bytes > tx::kInlinePhotoBytesInViewMax)
+    return false;
+  p.photo = b.photo(px);
+  p.flags |= kViewed;
+  return true;
+}
+
+// Otherwise (a closed turn, the caps, a photo the hook cannot give) its content is the photo's
+// line (tx::photoStub), so it never says "shown" when nothing is attached. True when that line
+// replaces the content; false when the result is not a viewed photo or keeps its text.
+bool viewedPhotoContent(Builder& b, const tx::Item& it, const std::string& text, Piece& p) {
+  const std::string ref = it.ok ? viewedPhoto(it.n, text) : std::string();
+  if (ref.empty()) return false;
+  if (it.turn == b.in.turn->turn && attachViewed(b, ref, p)) return false;
+  // "photo p<ref> <when>: shown here": the line with the same time, the photo not attached.
+  const size_t from = std::min(text.size(), sizeof(texts::tool_results::kViewPhoto) - 1 + ref.size() + 1);
+  const size_t to = text.size() - (sizeof(texts::tool_results::kViewPhotoShown) - 1);
+  std::string line;
+  const std::string when = from < to ? text.substr(from, to - from) : std::string();
+  tx::PhotoAbsent why = tx::PhotoAbsent::Blind;
+  if (photoAbsent(b.in, ref, why) ? !tx::photoAbsentLine(ref.substr(1), when, std::string(), why, line).ok()
+                                  : !tx::photoStub(ref.substr(1), when, line, b.in.bound.view).ok())
+    return false;
+  p.src = Src::Line;
+  p.line = b.line(std::move(line));
+  return true;
+}
+
+// A result: whole or its stored stub (tx::showResult decides; the stub text is the one computed at
+// capture, never rewritten here); not ok is an error only with content (an empty one is refused).
+void resultPiece(Builder& b, const tx::Item& it, uint32_t idx, const Row& row) {
+  tx::ShowAs as = tx::ShowAs::Stub;
+  if (!tx::showResult(it, showFacts(b.in, b.f), as).ok()) as = tx::ShowAs::Stub;
+  std::string own;
+  Src src = Src::None;
+  if (as == tx::ShowAs::Whole) src = wholeText(b.in, it, own);
+  else if (!it.st.empty()) src = Src::St;
+  else if (it.cls != tx::ResultClass::Outside) src = wholeText(b.in, it, own);   // no stub stored: never outside content
+  const std::string& text = src == Src::X ? it.x : src == Src::St ? it.st : own;
+  const uint32_t wid = b.id(row.wid);
+  Piece p;
+  p.kind = PieceKind::Result;
+  p.item = idx;
+  p.turn = it.turn;
+  p.id = wid;
+  if (!text.empty()) {
+    p.src = src;
+    if (!it.ok) p.flags |= kError;
+    if (!viewedPhotoContent(b, it, text, p) && src == Src::Line) p.line = b.line(std::move(own));
+  }
+  b.out.pieces.push_back(p);
+}
+
+// A call: its arguments whole until the overflow path (E2-VERB); arguments that are not one JSON
+// object (a cut or broken call, a long-argument stub) are sent as an empty object.
+void callPiece(Builder& b, const tx::Item& it, uint32_t idx, const Row& row) {
+  const std::string& args = tx::shownArgs(it, showFacts(b.in, b.f));
+  const uint32_t wid = b.id(row.wid);
+  Piece& p = b.add(PieceKind::Call, idx, it.turn);
+  p.id = wid;
+  if (oneObject(args)) p.src = &args == &it.st ? Src::St : Src::Args;
+}
+
+void itemPieces(Builder& b, const tx::Item& it, uint32_t idx, const Row& row) {
+  switch (it.kind) {
+    case tx::ItemKind::User:
+      ownerPieces(b, it, idx);
+      return;
+    case tx::ItemKind::Assistant:   // blank text is not kept (emitsBlock)
+      b.add(PieceKind::AssistantText, idx, it.turn).src = Src::X;
+      return;
+    case tx::ItemKind::DeviceNote:
+      b.add(PieceKind::DeviceNote, idx, it.turn).src = Src::X;
+      return;
+    case tx::ItemKind::RoundMeta:   // the open turn's signed thinking, as stored; never a mark
+      if (oneObject(it.x)) b.add(PieceKind::Meta, idx, it.turn).src = Src::X;
+      return;
+    case tx::ItemKind::Call:
+      callPiece(b, it, idx, row);
+      return;
+    case tx::ItemKind::Result:
+      resultPiece(b, it, idx, row);
+      return;
+    default:
+      return;
+  }
+}
+
+// The system blocks sent (a blank one is not) and their two marks: the end of the notes block (the
+// core when there are no notes) and the end of the digests block.
+void systemPlan(const SystemBlocks& s, SystemPlan& sp) {
+  sp.shown[0] = visible(s.core);
+  sp.shown[1] = visible(s.notes);
+  sp.shown[2] = visible(s.digests);
+  sp.stableAfter = sp.shown[1] ? 1 : sp.shown[0] ? 0 : -1;
+  sp.digestsMark = sp.shown[2];
+}
+
+// The two message marks: the last block of the previous turn (when it is not the last block) and the
+// moving last block. Reasoning is never a mark.
+void messageMarks(Plan& out, uint32_t openTurn) {
+  size_t last = out.pieces.size();
+  for (size_t i = out.pieces.size(); i-- > 0;)
+    if (out.pieces[i].kind != PieceKind::Meta) {
+      last = i;
+      break;
+    }
+  if (last == out.pieces.size()) return;
+  out.anyBlock = true;
+  for (size_t i = last + 1; i-- > 0;) {
+    const Piece& p = out.pieces[i];
+    if (p.kind == PieceKind::Meta || p.turn >= openTurn) continue;
+    if (i != last) out.pieces[i].flags |= kMarkStable;
+    break;
+  }
+  out.pieces[last].flags |= kMarkMoving;
+}
+
+// The body bytes the rendered items may take: the rows after thru that rung 3 does not leave out.
+size_t estimateOf(const Facts& f) {
+  size_t n = 0;
+  for (const Row& r : f.rows)
+    if (r.q && r.q > f.thru && !omittedTurn(f, r.turn)) n += r.est;
+  return n;
+}
+
+}  // namespace
+
+std::string wireName(const std::string& n) {
+  std::string out = n.substr(0, 64);
+  for (char& c : out)
+    if (!idChar(c)) c = '_';
+  return out.empty() ? std::string("_") : out;
+}
+
+bool oneObject(const std::string& json) {
+  size_t i = 0;
+  while (i < json.size() && (json[i] == ' ' || json[i] == '\n' || json[i] == '\r' || json[i] == '\t')) ++i;
+  if (i >= json.size() || json[i] != '{') return false;
+  std::string scratch;
+  body::BodyWriter probe(scratch);
+  probe.raw(json);
+  return probe.status().ok();
+}
+
+Status plan(const RenderInput& in, Plan& out) {
+  out = Plan{};
+  if (!in.turn || !in.system || !in.items) return Status::fail(Err::InvalidArgument, "plain::plan");
+  Facts f;
+  Status st = readFacts(in, *in.items, f);
+  if (!st.ok()) return st;
+  chooseOmitted(in, f);
+  chooseRows(in, f);
+  const std::vector<size_t> order = sendOrder(f);
+  out.estimate = estimateOf(f);
+  systemPlan(*in.system, out.system);
+  out.pieces.reserve(order.size() + 1);
+  Builder b{in, f, out};
+  if (omissionNamed(in)) linePiece(b, 0, 0, true, in.ladder->omissionLine);   // it opens the request
+  tx::Item it;
+  for (size_t idx : order)
+    if (in.items->get(idx, it).ok()) itemPieces(b, it, (uint32_t)idx, f.rows[idx]);
+  messageMarks(out, in.turn->turn);
+  return Status::success();
+}
+
+}  // namespace plan
+}  // namespace plain
+}  // namespace agent
