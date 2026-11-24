@@ -535,12 +535,28 @@ class ArmA(Arm):
             self._engine2_new_conversation()
 
     def _engine2_new_conversation(self):
-        """Engine 2 on nimbusd has no clear: clearConv clears engine 1's conversation only, and /clear is
-        answered as not available (nimbusd/src/main.cpp). Left alone, engine 2 would keep the earlier chat in
-        view across a new_conversation step while engine 1 and the loop start empty (lane E2-H2H). So the rig
-        gives it the same start: the daemon stops, its transcript store (<data>/mem/tx) and compaction record
-        move aside into this arm's folder (kept as evidence), and it starts again. Notes (long-term memory),
-        files and routines stay, as they do for the other arms."""
+        """clearConv clears engine 1's conversation only. Since E2-P-HOST1/E2-REP3 engine 2 on nimbusd has the
+        owner's own /clear (engine2_route.h, Engine2Host::clearCommand): the rig sends "/clear yes" on the web
+        chat, the device's two steps in one, and requires the done line. Notes, files and routines stay, as
+        they do for the other arms. (Lane E2-H2H2: the earlier move-aside of <data>/mem/tx now reads as a first
+        start, and engine 2 then tells the head the earlier engine kept a conversation, which is not so.)"""
+        seq0 = self._replies_seq()
+        self.proxy.mark(turn=self.turn, phase="new_conversation")
+        status, body = self.d.call("POST", "/api/chat", form={"text": "/clear yes"})
+        if status != 200:
+            raise RuntimeError(f"/clear yes answered {status}: {body[:200]}")
+        turn = json.loads(body).get("turn")
+        if turn is not None:
+            self._wait_turns([turn], time.time() + 30)
+        self._settle()
+        rows = self._chat_rows(seq0)
+        if not any(r.startswith("Started a new conversation.") for r in rows):
+            raise RuntimeError(f"/clear yes did not start a new conversation: {rows[-3:]}")
+
+    def _engine2_new_conversation_move_aside(self):
+        """Lane E2-H2H's emulation, kept for a build without /clear on engine 2: the daemon stops, its
+        transcript store (<data>/mem/tx) and compaction record move aside into this arm's folder (kept as
+        evidence), and it starts again."""
         mem = Path(self.d.data_dir) / "mem"
         aside = self.dir / f"engine2-cleared-c{self.conversations}"
 
