@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "nimbus/harness/device_apply.h"   // DeviceApplyDeps, applyDeviceAction (lane E2-P-TOOLS)
 #include "nimbus/orch/device_actions.h"
 #include "nimbus/orch/head_switch.h"     // OwnerMessage - who may confirm a head switch
 #include "nimbus/orch/memory_tools.h"   // kMemOutcome* codes
@@ -53,48 +54,9 @@ void recordFreshResults(nimbus::orch::TurnEffects& fx, int sourced, int unsource
 // What an inline scratchpad update did (ApplyDeps::applyScratch).
 enum class ScratchOutcome : uint8_t { Applied = 0, AppliedRamOnly, Skipped };
 
-struct ApplyDeps {
-  // Device-action execution (no policy inside):
-  //   execConfig: apply the inline NVS knobs still flagged on the (already
-  //   policy-stripped) action + live sfx refresh. Returns whether a stored
-  //   value CHANGED (before != after): false is a no-op action (23 Oct: a
-  //   model invented a config field, nothing switched, the reply said it had)
-  //   and the device action then reports "no change", so the claim ledger backs
-  //   no "switched" reply. stageDevice: hand a validated action to the main
-  //   loop via the DeviceSink (led/lights/reboot + the posture/profile/theme/
-  //   attnHold config knobs).
-  std::function<bool(const nimbus::orch::ValidatedAction&)> execConfig;
-  std::function<void(const nimbus::orch::ValidatedAction&)> stageDevice;  // null => (noop) paths
-  // Voice `text` (whole characters, at most kTtsActionMaxBytes bytes) for the turn in
-  // `chatId` and say how it ended: played on the device speaker, delivered as a Telegram
-  // voice message (with its message id) to that chat when it is a Telegram chat, else to the
-  // owner chat (telegram::ownerChat: the first allowlisted owner), or not voiced (with why). The
-  // turn records and reports exactly that, never the request. null => tts(no-sink).
-  std::function<nimbus::orch::SpeakOutcome(const std::string& chatId, const std::string& text)> speak;
-  // The speaker volume now (0..100), read when a tts action runs: at 0 the speaker plays
-  // silence, so the action is refused as not spoken. null => unknown, never refuses.
-  std::function<int()> speakerVolume;
-  bool ttsEnabled = false;
-
-  // orch_model validation + write (validation data lives device-side).
-  std::function<bool(const std::string& prov, const std::string& model)> modelIsValid;
-  std::function<bool(const std::string& prov)> providerHasKey;
-  std::function<void(const std::string& prov, const std::string& model)> setOrchHostModel;
-  // An orch_model the provider's cached list does not hold: the device asks for
-  // one list refresh (at most one per provider per hour, never a connection here)
-  // and returns the head's answer, "not in <provider> list cached <date>; refresh
-  // queued" (models_tool.h modelMissText). Null => "not in <provider> list".
-  std::function<std::string(const std::string& prov, const std::string& model)> modelMiss;
-  // A pause never moves the head (nimbus/orch/head_switch.h). headHost: the head the
-  // owner chose (before any failover). headPause: what holds paid requests to `prov` off
-  // now (nothing set = open). ownerMessage: the owner's message this turn and
-  // its number (empty for a turn the owner did not write: a member, a guest, a routine).
-  // nowMs: the device clock. Null headPause => no guard.
-  std::function<std::string()> headHost;
-  std::function<nimbus::orch::HeadPause(const std::string& prov)> headPause;
-  std::function<nimbus::orch::OwnerMessage()> ownerMessage;
-  std::function<uint32_t()> nowMs;
-
+// The device-action half (execConfig ... nowMs, captureAssistant) is DeviceApplyDeps
+// (device_apply.h, lane E2-P-TOOLS), shared with engine 2's device_control.
+struct ApplyDeps : DeviceApplyDeps {
   // Model working memory (OrchMemory): returns true when truncated to cap.
   std::function<bool(const std::string& chatId, const std::string& v)> setModelMemory;
   std::function<void()> syncMemEcho;
@@ -156,7 +118,6 @@ struct ApplyDeps {
   // Delivery + attention + capture + sound cues.
   std::function<void(const std::string& chatId, const std::string& text)> deliver;
   std::function<void()> emitAsk;
-  std::function<void(const std::string& chatId, const std::string& text)> captureAssistant;
   std::function<void(const char* cue)> fire;  // "reply" | "memsaved"
 };
 
@@ -234,25 +195,6 @@ bool replyAlreadyAsks(const std::string& reply, const std::string& ask);
 // (the caller suppresses the bare "Done." only when true).
 void applyTurn(const nimbus::orch::Turn& t, const std::string& chatId,
                const ApplyDeps& d, ApplyState& st, bool& spawnedOut);
-
-// What one device element did.
-struct DeviceOutcome {
-  std::string summary;      // the token(s): "cfg ", "reboot-refused(scheduled) ", ...
-  bool refusedWhole = false;   // the caller rule refused the element as a whole
-  std::string refusals;     // every part the caller rule refused, in plain words ("" = none)
-  std::string replyNote;    // a note that only rides a message the owner already gets (speech cut short)
-};
-
-// Validate + check who asked + policy-strip + execute ONE device[] element (raw
-// JSON). The shared engine behind applyTurn's device[] loop AND the mid-turn
-// `device.control` registry tool - one security envelope for both. `who` is the
-// caller's Principal (the turn's chat, or the tool dispatch's), `unattended` the
-// turn's flag (routine, wakeup, dream, results synthesis, system turn); the rule
-// table (nimbus/orch/action_rules.h) decides each action and config knob. Appends
-// any owner-visible note to *riskNote when non-null.
-DeviceOutcome applyDeviceAction(const std::string& json, const nimbus::orch::Principal& who,
-                                bool unattended, const std::string& chatId, const ApplyDeps& d,
-                                std::string* riskNote);
 
 // The same for the turn's own chat (the caller is d.whoFor(chatId)), returning the
 // summary token(s): a convenience for host rigs and tests (the firmware calls

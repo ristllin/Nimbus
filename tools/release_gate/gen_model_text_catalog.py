@@ -76,6 +76,8 @@ E1_SOURCES = {
         "lib/harness/include/nimbus/harness/jobs.h",
         "lib/harness/include/nimbus/harness/router_refusal.h",
         "lib/harness/src/apply.cpp",
+        "lib/harness/include/nimbus/harness/device_apply.h",  # E2-P-TOOLS: lifted out of apply.cpp
+        "lib/harness/src/device_apply.cpp",  # E2-P-TOOLS: lifted out of apply.cpp, byte-identical
         "lib/harness/src/conversation.cpp",
         "lib/harness/src/engine.cpp",
         "lib/harness/src/engine_fold.cpp",
