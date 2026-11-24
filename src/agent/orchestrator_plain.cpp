@@ -1000,6 +1000,16 @@ void loadWaitingLists() {
     }
 }
 
+// A kept message's photos (E2-REP4: with what a head that takes no images reads: the description and
+// the true text), for its answer after the read-in.
+void keepPhotos(const String& host, plain::WaitingMessage& w) {
+  const std::string model(store::orchModel(host).c_str());
+  w.parts = plain::photoParts(s_photos.get(), host.c_str(), model);
+  w.photosBlind = !w.parts.empty() && !nimbus::orch::headTakesImages(host.c_str(), model);
+  const std::string blindText = plain::photoTextBlind(s_photos.get(), w.text);
+  if (blindText != w.text) w.blindText = blindText;
+}
+
 // The message, kept until the read-in ends (or joined to the chat's earlier kept messages, so they
 // are answered in the order they came). The person is told once: with the first message kept.
 bool keepMessage(const String& text, const String& fromName, const String& chatId) {
@@ -1024,12 +1034,7 @@ bool keepMessage(const String& text, const String& fromName, const String& chatI
   const String host = store::resolvedOrchHost();
   w.text = std::string(text.c_str(), text.length());
   w.from = std::string(fromName.c_str(), fromName.length());
-  const std::string model(store::orchModel(host).c_str());
-  w.parts = plain::photoParts(s_photos.get(), host.c_str(), model);
-  // E2-REP4: kept for an answer on a head that takes no images (the description and the true text).
-  w.photosBlind = !w.parts.empty() && !nimbus::orch::headTakesImages(host.c_str(), model);
-  const std::string blindText = plain::photoTextBlind(s_photos.get(), w.text);
-  if (blindText != w.text) w.blindText = blindText;
+  keepPhotos(host, w);
   w.tzMinutes = (int16_t)(utcOffsetAt((uint32_t)time(nullptr)));
   w.m = rowNumber(captureOwnerRow(text, fromName, chatId, true));
   const plain::HoldVerdict v = in->hold(w);
