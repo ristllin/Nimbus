@@ -706,6 +706,8 @@ bool readPart(Cursor& c, Part& p) {
 
 // The request by reference, by position after the three figures (RB-E3).
 bool readExchangeRef(Cursor& cc, int n, ExchangeFacts& x) {
+  uint64_t* const ladder[] = {&x.closedThrough, &x.stubThrough, &x.omitThrough};   // positions 10 to 12
+  if (n >= 10 && n <= 12) return readUnsigned(cc, *ladder[n - 10]);
   switch (n) {
     case 3: return readUnsigned(cc, x.fromQ);
     case 4: return readUnsigned(cc, x.thruQ);
@@ -719,9 +721,6 @@ bool readExchangeRef(Cursor& cc, int n, ExchangeFacts& x) {
       x.toolChoiceNone = none == 1;
       return true;
     }
-    case 10: return readUnsigned(cc, x.closedThrough);
-    case 11: return readUnsigned(cc, x.stubThrough);
-    case 12: return readUnsigned(cc, x.omitThrough);
     case 13: return readStr(cc, x.effort);
     case 14: return readStr(cc, x.omission);
     case 15: return readUnsigned(cc, x.dropped);

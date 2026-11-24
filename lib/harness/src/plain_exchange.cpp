@@ -161,9 +161,13 @@ class Exchange {
     base_.head = &head_;
     refused_ = deps_.refused ? deps_.refused : &ownRefused_;
     slug_ = headSlugOf(*in->turn, *in->head);
-    // The route (plain/route.h): the upstream and bare model of a routed head, the cap table's host,
-    // the rows; a head no slug names keeps an empty route and needs the caller's body cap.
-    const bool routeOk = resolveRoute(head_, *in->turn, route_, refused_).ok();
+    return routeOf(*in->turn);
+  }
+
+  // The route (plain/route.h): the upstream and bare model of a routed head, the cap table's host,
+  // the rows; a head no slug names keeps an empty route and needs the caller's body cap.
+  Status routeOf(const TurnCtx& turn) {
+    const bool routeOk = resolveRoute(head_, turn, route_, refused_).ok();
     capHost_ = route_.provider;
     tableHost_ = route_.capHost;
     model_ = route_.model;

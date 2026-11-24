@@ -59,11 +59,22 @@ void tableFacts(const HeadEndpoint& head, const std::string& routerBase, Route& 
   if (!*r.version && messages) r.version = "2023-06-01";   // the Messages API requires one
 }
 
+// The cap mode of a route: its row's; with no row, the Messages API requires the field.
+caps::CapMode capModeOf(const Route& route) {
+  if (route.caps.provider) return route.caps.row.capMode;
+  return route.dialect == Dialect::AnthropicMessages ? caps::CapMode::Required : caps::CapMode::SendAlways;
+}
+
+// A required cap the shared function left at 0 (a custom Messages model): Anthropic's table cap.
+uint32_t requiredCap(const Route& route, const RenderInput& in) {
+  const providers::RoundKind kind = in.toolChoiceNone ? providers::RoundKind::FinalRound : providers::RoundKind::ToolRound;
+  const uint32_t table = providers::tableCap("anthropic", route.model, kind).maxTokens;
+  return table ? table : kRequiredCapFloor;
+}
+
 // The output cap by the row's cap mode, then the caller's ceiling.
 uint16_t capRule(const Route& route, uint32_t capCeiling, RenderInput& in) {
-  const caps::CapMode mode = route.caps.provider ? route.caps.row.capMode : route.dialect == Dialect::AnthropicMessages
-                                                                                   ? caps::CapMode::Required
-                                                                                   : caps::CapMode::SendAlways;
+  const caps::CapMode mode = capModeOf(route);
   if (mode == caps::CapMode::Omit || (mode == caps::CapMode::OmitDirectCeilRouted && !route.routed)) {
     in.maxTokens = 0;
     return 0;
@@ -71,9 +82,7 @@ uint16_t capRule(const Route& route, uint32_t capCeiling, RenderInput& in) {
   if (mode == caps::CapMode::OmitDirectCeilRouted) {   // routed: the billing ceiling (a router clamp lowers it)
     in.maxTokens = in.maxTokens && in.maxTokens < kRoutedCeilingTokens ? in.maxTokens : kRoutedCeilingTokens;
   } else if (in.maxTokens == 0 && mode == caps::CapMode::Required) {
-    const providers::RoundKind kind = in.toolChoiceNone ? providers::RoundKind::FinalRound : providers::RoundKind::ToolRound;
-    in.maxTokens = providers::tableCap("anthropic", route.model, kind).maxTokens;
-    if (in.maxTokens == 0) in.maxTokens = kRequiredCapFloor;
+    in.maxTokens = requiredCap(route, in);
   }
   if (!capCeiling || !in.maxTokens || in.maxTokens <= capCeiling) return 0;
   in.maxTokens = capCeiling;
