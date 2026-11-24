@@ -37,6 +37,8 @@ namespace cloud {
 // Usage pane's Prices table, By model list and chart, 2026-10) took the page to ~366 KB
 // and page + headroom over 376 KB: 383 KB, the LAST step the frame allows (base64 ~511 KB,
 // ~1.3 KB under 512 KB). The next growth needs a smaller page (compression), not a cap.
+// The script then grew to 376,473 B (app.js + headroom 665 B over); CUM-997 moved its
+// ~90 KB of comments out of the served bytes (include/web/ui_js.h), so app.js is ~287 KB.
 constexpr unsigned kLoopbackMaxRespBody = 383u * 1024u;
 
 // The relay frames each response body as base64 inside a res-frame bounded by this

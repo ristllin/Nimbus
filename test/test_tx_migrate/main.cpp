@@ -15,9 +15,11 @@
 
 #include "../../lib/harness/src/providers/plain_body.h"
 #include "../support/scripted_provider/scripted_provider.h"
+#include "nimbus/harness/output_caps.h"
 #include "nimbus/harness/plain/compact.h"
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/harness/platform.h"
+#include "nimbus/orch/request_budget.h"
 #include "world.h"
 
 namespace sp = harness_test::scripted;
@@ -544,7 +546,16 @@ void test_digest0_is_asked_through_the_drivers_slice_and_prompt() {
   TEST_ASSERT_EQUAL_STRING("claude-haiku-5-5", rec.view.model.c_str());
   JsonDocument doc;
   TEST_ASSERT_FALSE(deserializeJson(doc, rec.body));
-  TEST_ASSERT_EQUAL(plain::kSummarizerMaxTokens, doc["max_tokens"] | 0);
+  // The rung's 4,096 is a ceiling the time fit may lower (lane E2-R4b, router design section 6 item 8): the
+  // request carries min(ceiling, the load-aware cap for this body inside the driver's 45 s window).
+  agent::providers::RoundLoad load;
+  load.bodyBytes = rec.body.size();
+  const uint32_t window = std::min(plain::kCompactRequestMs, nimbus::orch::readWindowMsFor("anthropic", "claude-haiku-5-5", false));
+  const uint32_t fit = agent::providers::outputCapFor("anthropic", "claude-haiku-5-5", agent::providers::RoundKind::ToolRound,
+                                                      window, load).maxTokens;
+  const uint32_t sent = doc["max_tokens"] | 0u;
+  TEST_ASSERT_TRUE(sent > 0 && sent <= plain::kSummarizerMaxTokens);
+  TEST_ASSERT_EQUAL_UINT32(std::min<uint32_t>(fit, plain::kSummarizerMaxTokens), sent);
   // the input is planSlice's rendering of the old summary as one closed turn of its day
   tx::TxArena a;
   TEST_ASSERT_TRUE(a.init(64 * 1024, [](size_t n) { return std::malloc(n); }, [](void* p) { std::free(p); }).ok());

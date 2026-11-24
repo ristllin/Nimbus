@@ -9,6 +9,8 @@
 // kLoopbackMaxRespBody (cloud/loopback_target.h), so the biggest body is what must
 // fit, and splitting the ~290 KB script from the ~85 KB HTML leaves room to grow
 // where one ~375 KB page had about 400 bytes left.
+// The script later reached 376 KB on its own; its comments now stay out of the
+// served bytes (CUM-997, include/web/ui_js.h), so app.js is ~287 KB.
 //
 // The tag's URL is RELATIVE ("app.js", not "/app.js"): the cloud serves the device
 // page under /d/<id>/, so an absolute path would leave the tunnel. A script that

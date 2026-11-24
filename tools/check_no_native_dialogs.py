@@ -23,7 +23,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / "include" / "web"
 
-RAWSTR = re.compile(r'R"=====\((.*)\)====="', re.S)
+# A fragment may be several adjacent raw-string literals (the compiler joins them): ui_js.h
+# keeps its comments as C++ comments between literals so app.js does not carry them.
+RAWSTR = re.compile(r'R"=====\((.*?)\)====="', re.S)
 
 # A native dialog call: confirm/alert/prompt as a bare call, not a method
 # (.confirm) and not a longer identifier (uiConfirm). Matches "confirm(" and
@@ -36,8 +38,7 @@ ALLOWLIST: set[str] = set()
 
 
 def fragment_payload(path: Path) -> str:
-    m = RAWSTR.search(path.read_text())
-    return m.group(1) if m else ""
+    return "".join(RAWSTR.findall(path.read_text()))
 
 
 def find_native_dialogs(text: str) -> list[tuple[int, str]]:

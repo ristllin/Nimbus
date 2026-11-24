@@ -33,7 +33,9 @@ SNAPSHOT = ROOT / "tools" / "webui_page.snapshot"
 LOGO = ROOT / "include" / "web" / "ui_logo.h"
 OUT = ROOT / "nimbusd" / "src" / "webui_page.h"
 
-RAWSTR = re.compile(r'R"=====\((.*)\)====="', re.S)
+# A fragment may be several adjacent raw-string literals (the compiler joins them): ui_js.h
+# keeps its comments as C++ comments between literals so app.js does not carry them.
+RAWSTR = re.compile(r'R"=====\((.*?)\)====="', re.S)
 DELIM = "NIMBUSWEBUI"  # raw-string delimiter for the emitted parts
 
 
@@ -46,10 +48,10 @@ def fragment_order() -> list[str]:
 
 
 def payload(path: Path) -> str:
-    m = RAWSTR.search(path.read_text())
+    m = RAWSTR.findall(path.read_text())
     if not m:
         sys.exit(f"FAIL: no raw-string payload in {path}")
-    return m.group(1)
+    return "".join(m)
 
 
 def logo_literal() -> str:

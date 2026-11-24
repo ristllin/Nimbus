@@ -15,13 +15,15 @@ export const ROOT = join(HERE, '..', '..');            // repo root (nimbus/)
 const WEB = join(ROOT, 'include', 'web');
 const MANIFEST = join(ROOT, 'include', 'web_pages.h');
 
-const RAWSTR = /R"=====\(([\s\S]*)\)====="/;
+// A fragment may be several adjacent raw-string literals (the compiler joins them): ui_js.h
+// keeps its comments as C++ comments between literals so app.js does not carry them.
+const RAWSTR = /R"=====\(([\s\S]*?)\)====="/g;
 
 function fragmentPayload(name) {
   const txt = readFileSync(join(WEB, `${name}.h`), 'utf8');
-  const m = RAWSTR.exec(txt);
-  if (!m) throw new Error(`no raw-string payload in ${name}.h`);
-  return m[1];
+  const m = [...txt.matchAll(RAWSTR)];
+  if (!m.length) throw new Error(`no raw-string payload in ${name}.h`);
+  return m.map((x) => x[1]).join('');
 }
 
 // Fragment include order, taken from web_pages.h (single source of truth).
