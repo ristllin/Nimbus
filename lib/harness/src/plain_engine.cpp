@@ -18,6 +18,7 @@
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/harness/platform.h"
 #include "nimbus/orch/path_rules.h"   // storePathFor: an own path as the store lists it (E2-FIX8)
+#include "nimbus/orch/psram_alloc.h"   // WorkingVector: the argument walks keep their list off the stack
 #include "nimbus/orch/tool_groups.h"
 #include "nimbus/orch/tool_registry.h"
 #include "nimbus/orch/tx/arena.h"
@@ -1551,26 +1552,39 @@ class TurnRun {
   }
   static constexpr size_t kLineRoom = 1024;   // a line's keys and crc beside its text
 
-  static bool hasLongString(ArduinoJson::JsonVariantConst v) {
-    if (v.is<ArduinoJson::JsonObjectConst>()) {
-      for (ArduinoJson::JsonPairConst kv : v.as<ArduinoJson::JsonObjectConst>())
-        if (hasLongString(kv.value())) return true;
-    } else if (v.is<ArduinoJson::JsonArrayConst>()) {
-      for (ArduinoJson::JsonVariantConst e : v.as<ArduinoJson::JsonArrayConst>())
-        if (hasLongString(e)) return true;
-    } else if (v.is<const char*>()) {
-      return std::strlen(v.as<const char*>()) > tx::kTier1CallArgs;
+  // Both walks keep their own work list in the working set instead of recursing: the arguments nest
+  // as deep as the parse allows (64), and a frame per level landed on the Telegram task's deepest
+  // chain (lane E2-STACK2). stubLongStrings visits the strings in the order the recursion did.
+  static bool hasLongString(ArduinoJson::JsonVariantConst root) {
+    orch::WorkingVector<ArduinoJson::JsonVariantConst> todo{root};
+    while (!todo.empty()) {
+      const ArduinoJson::JsonVariantConst v = todo.back();
+      todo.pop_back();
+      if (v.is<ArduinoJson::JsonObjectConst>()) {
+        for (ArduinoJson::JsonPairConst kv : v.as<ArduinoJson::JsonObjectConst>()) todo.push_back(kv.value());
+      } else if (v.is<ArduinoJson::JsonArrayConst>()) {
+        for (ArduinoJson::JsonVariantConst e : v.as<ArduinoJson::JsonArrayConst>()) todo.push_back(e);
+      } else if (v.is<const char*>() && std::strlen(v.as<const char*>()) > tx::kTier1CallArgs) {
+        return true;
+      }
     }
     return false;
   }
-  void stubLongStrings(const std::string& name, ArduinoJson::JsonVariant v, bool kept) {
-    if (v.is<ArduinoJson::JsonObject>()) {
-      for (ArduinoJson::JsonPair kv : v.as<ArduinoJson::JsonObject>()) stubLongStrings(name, kv.value(), kept);
-    } else if (v.is<ArduinoJson::JsonArray>()) {
-      for (ArduinoJson::JsonVariant e : v.as<ArduinoJson::JsonArray>()) stubLongStrings(name, e, kept);
-    } else if (v.is<const char*>() && std::strlen(v.as<const char*>()) > tx::kTier1CallArgs) {
-      std::string stub;
-      if (longStub(name, v.as<const char*>(), kept, stub).ok()) v.set(stub);
+  void stubLongStrings(const std::string& name, ArduinoJson::JsonVariant root, bool kept) {
+    orch::WorkingVector<ArduinoJson::JsonVariant> todo{root};
+    while (!todo.empty()) {
+      ArduinoJson::JsonVariant v = todo.back();
+      todo.pop_back();
+      const size_t at = todo.size();
+      if (v.is<ArduinoJson::JsonObject>()) {
+        for (ArduinoJson::JsonPair kv : v.as<ArduinoJson::JsonObject>()) todo.push_back(kv.value());
+      } else if (v.is<ArduinoJson::JsonArray>()) {
+        for (ArduinoJson::JsonVariant e : v.as<ArduinoJson::JsonArray>()) todo.push_back(e);
+      } else if (v.is<const char*>() && std::strlen(v.as<const char*>()) > tx::kTier1CallArgs) {
+        std::string stub;
+        if (longStub(name, v.as<const char*>(), kept, stub).ok()) v.set(stub);
+      }
+      std::reverse(todo.begin() + (std::ptrdiff_t)at, todo.end());   // first child on top
     }
   }
   // A long text's stub: with the bulk file kept, the long-argument stub (view); without it,

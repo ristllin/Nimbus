@@ -5,11 +5,6 @@
       "function": "^agent::plain::body::BodyWriter::raw(Value|Object|Array)\\(",
       "depth": 32,
       "why": "plain_body.h: the raw copy of a JSON value stops at kMaxDepth (32) levels"
-    },
-    {
-      "function": "^agent::plain::\\(anonymous namespace\\)::TurnRun::(hasLongString|stubLongStrings)\\(",
-      "depth": 64,
-      "why": "plain_engine.cpp tierArgs: the arguments are parsed with NestingLimit(64), so the walk is at most 64 levels"
     }
   ],
   "impossible_cycles": [
