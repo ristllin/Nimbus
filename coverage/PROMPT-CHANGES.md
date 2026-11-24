@@ -1377,3 +1377,32 @@ PC-0175, PC-0176: not used.
 - lane: E2-FIX15
 - prd: section 3 (compaction: one cumulative summary that keeps facts, quantities, decisions and open items), rulings 105 and 106
 - why: lib/harness/include/nimbus/harness/plain/texts.h summarizer::kPrompt. On the closing bench (lanes/E2-BENCH2/RESULT.md, "Final build 902391f7f") three facts told "conversation only, do not save a note or a file" passed under the summary and Haiku answered 0 of 3, then called its right answers made up. On the daemon (lanes/E2-FIX15/evidence: runs/d4-red1) the stored summary held "F1 The shed padlock code is something the person asked not to be saved anywhere." with no code, and Lena's train only by luck: the summarizer read "not in a note or a file" as "do not keep". Replays of the captured summarizer request (claude-haiku-5-5, lanes/E2-FIX15/evidence/probe-summarizer.jsonl): the old prompt kept 2 of 5 facts with their values in 3 of 3 answers; three wordings that only stressed exact values kept 2 of 5 in 8 of 9; "What the person keeps out of notes and files is kept only here, value and all." kept 5 of 5 in 3 of 3. Room inside the class ceiling (1,024 B) by shorter words elsewhere in the prompt: "a conversation's running summary" (the input names person and assistant), "+Q a quantity or date, with its date" (exact values are now asked of every line), "when it changed", "when done". PC-0223 and PC-0224: not used.
+### PC-0228: the agents group's declarations, agent_list and agent_stop (engine 2)
+- catalog: e2
+- class: tool_descriptions
+- kind: build
+- bytes: 4535 -> 4761
+- sha8: bab37350 -> 341e293c
+- lane: E2-P-SUB
+- prd: section 4 (groups behind more: agents, agent_list and agent_stop; agent_start is always on), section 6 (sub-agents), AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h kBehindMore: agent_list ("List this chat's sub-agent jobs, newest first, with id and state.", no arguments) and agent_stop ("Stop a running sub-agent job by id.", id) join delete_file behind more, in the agents group lib/core/src/orch_tool_groups.cpp already names. agent_start's declaration is unchanged; it reaches the tools array now that lane E2-P-SUB registers it (plain_agents.cpp registerAgentTools over the kept JobEngine). Planned work, not a fix.
+
+### PC-0229: the agent tools' results and errors (engine 2)
+- catalog: e2
+- class: tool_results
+- kind: build
+- bytes: 7071 -> 7162
+- sha8: ed391636 -> 1699fe39
+- lane: E2-P-SUB
+- prd: section 6 (agent_start returns 'started id=a7 job=<provider id>' or the provider's error), section 4 (rules for every tool), AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h tool_results, the words plain_agents.cpp writes: agent_start "started id=<tag> job=<provider job id>" when the job started inside the turn, "queued" when it waits for a free slot, "not started: " then the JobEngine's own refusal line (the spawn notes engine 1 already writes); agent_list "no jobs" or the chat's ledger lines (jobs.cpp, without the old engine's framing line) and ": open" after a job a restart left open; agent_stop "stopping id=<tag>" or "no such job: <id>"; "invalid arguments" for an argument outside the schema, a missing name or task, or more than four files. Facts only, 91 B inside the class ceiling (no ceiling raised). Planned work, not a fix.
+
+### PC-0230: a sub-agent report's line in its report turn (engine 2)
+- catalog: e2
+- class: stubs
+- kind: build
+- bytes: 290 -> 332
+- sha8: 3e277c2a -> d7107f0a
+- lane: E2-P-SUB
+- prd: section 6 (arrival: the report saved whole as agents/<id>-<name>.md, one item carrying it as an outside bulk result, then one head turn), AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h stubs: the line that opens a report turn's agent item (plain_agents.cpp agentReportNote): "[agent report] <name> id=<tag>", " failed" when the job ended without a result, " saved whole as agents/<tag>-<name>.md" for the file the JobEngine stored the whole reply in; then the report inside the outside-content fence jobs.h already uses for routines. Kept in the stubs class because, like a stub, it names where the whole bytes are kept (the report text itself is cut at 3,500 characters by the JobEngine); the device-notes class had 2 B left. Planned work, not a fix.

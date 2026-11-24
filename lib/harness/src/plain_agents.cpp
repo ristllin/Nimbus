@@ -20,7 +20,7 @@ namespace {
 
 namespace orch = nimbus::orch;
 namespace tr = texts::tool_results;
-namespace dn = texts::device_notes;
+namespace dn = texts::stubs;
 using Err = orch::tx::Err;
 
 constexpr size_t kNameMax = 24;
@@ -77,19 +77,19 @@ struct Tools {
 
   orch::ToolResult start(ArduinoJson::JsonObjectConst a) {
     const std::string chatId = chat();
-    if (chatId.empty()) return orch::ToolResult::fail(tr::kAgentNoChat);
-    if (!onlyKeys(a, {"name", "task", "files", "model"})) return orch::ToolResult::fail(tr::kAgentStartArgs);
+    if (chatId.empty()) return orch::ToolResult::fail(tr::kAgentNotStarted);
+    if (!onlyKeys(a, {"name", "task", "files", "model"})) return orch::ToolResult::fail(tr::kAgentArgs);
     orch::Spawn s;
     s.name = str(a, "name");
     s.task = str(a, "task");
     s.model = str(a, "model");
-    if (s.name.empty() || s.task.empty()) return orch::ToolResult::fail(tr::kAgentStartArgs);
+    if (s.name.empty() || s.task.empty()) return orch::ToolResult::fail(tr::kAgentArgs);
     if (!a["files"].isNull()) {
       ArduinoJson::JsonArrayConst files = a["files"].as<ArduinoJson::JsonArrayConst>();
-      if (files.isNull() || files.size() > kAgentMaxFiles) return orch::ToolResult::fail(tr::kAgentFiles);
+      if (files.isNull() || files.size() > kAgentMaxFiles) return orch::ToolResult::fail(tr::kAgentArgs);
       for (ArduinoJson::JsonVariantConst f : files) {
         const char* p = f.is<const char*>() ? f.as<const char*>() : nullptr;
-        if (!p || !std::strchr(p, '/')) return orch::ToolResult::fail(tr::kAgentFiles);
+        if (!p || !std::strchr(p, '/')) return orch::ToolResult::fail(tr::kAgentArgs);
         s.attach.push_back(p);
       }
     }
@@ -120,7 +120,7 @@ struct Tools {
 
   orch::ToolResult list() {
     const std::string chatId = chat();
-    if (chatId.empty()) return orch::ToolResult::fail(tr::kAgentNoChat);
+    if (chatId.empty()) return orch::ToolResult::ok(tr::kAgentNone);
     std::string ledger = d.jobs->spawnLedgerText(chatId);
     const size_t nl = ledger.find('\n');   // the ledger's head line is the old engine's framing
     std::string out = nl == std::string::npos ? std::string() : ledger.substr(nl + 1);
@@ -136,9 +136,9 @@ struct Tools {
 
   orch::ToolResult stop(ArduinoJson::JsonObjectConst a, const orch::Principal& who) {
     const std::string chatId = chat();
-    if (chatId.empty()) return orch::ToolResult::fail(tr::kAgentNoChat);
+    if (chatId.empty()) return orch::ToolResult::fail(tr::kAgentNoJob);
     const std::string id = str(a, "id");
-    if (id.empty() || !onlyKeys(a, {"id"})) return orch::ToolResult::fail(tr::kAgentStopArgs);
+    if (id.empty() || !onlyKeys(a, {"id"})) return orch::ToolResult::fail(tr::kAgentArgs);
     orch::JobRecord r;
     const bool open = findRecord(journal(), id, r);
     const bool mine = open && (chatId == r.chatId || who.owner);

@@ -234,13 +234,6 @@ inline constexpr char kProgressMinutes[] = " min";
 // (lane RB-U1a, plain_unattended.cpp routineNoteText): this open, the routine's name, the message
 // stamp (tx::messageStamp, with the year), then the text: "[routine Morning brief Tue 17 Nov 2026 06:00] ...".
 inline constexpr char kRoutineNote[] = "[routine ";
-// A sub-agent's report as the device note of its report turn (lane E2-P-SUB, plain_agents.cpp
-// agentReportNote; PC-0230): "[agent report] trip-prices id=job0003 saved whole as agents/job0003-trip-prices.md",
-// " failed" after the id when the job ended without a result, then the report in the outside-content fence.
-inline constexpr char kAgentReport[] = "[agent report] ";
-inline constexpr char kAgentId[] = " id=";
-inline constexpr char kAgentFailed[] = " failed";
-inline constexpr char kAgentSaved[] = " saved whole as ";
 }  // namespace device_notes
 
 // The classes other lanes fill (each starts empty; PRD section 4 ceilings).
@@ -248,6 +241,13 @@ namespace stubs {
 // A result shown whole whose bulk file is missing or short (lane E2-FIX2A, finding P11): this line
 // stands in its place, then its stored stub when it has one; never less sent without a word.
 inline constexpr char kResultUnread[] = "[the stored result could not be read]";
+// A sub-agent's report as its report turn's agent item (lane E2-P-SUB, plain_agents.cpp agentReportNote;
+// PC-0230): the line that names the job and the file its whole report is stored in, then the report in the
+// outside-content fence: "[agent report] trip-prices id=job0003 saved whole as agents/job0003-trip-prices.md".
+inline constexpr char kAgentReport[] = "[agent report] ";
+inline constexpr char kAgentId[] = " id=";
+inline constexpr char kAgentFailed[] = " failed";
+inline constexpr char kAgentSaved[] = " saved whole as ";
 }  // namespace stubs
 namespace tool_results {
 // The results the loop itself gives a call that did not run (lane RB-E1a, plain_engine.cpp).
@@ -314,19 +314,17 @@ inline constexpr char kBytes[] = " B";
 inline constexpr char kViewPhoto[] = "photo ";
 inline constexpr char kViewPhotoShown[] = ": shown here";
 inline constexpr char kViewPhotoUnread[] = ": stored copy unreadable";
-// agent_start, agent_list, agent_stop (lane E2-P-SUB, plain_agents.cpp; PC-0229). Facts only.
+// agent_start, agent_list, agent_stop (lane E2-P-SUB, plain_agents.cpp; PC-0229). Facts only; the
+// arguments are named in each tool's schema.
 inline constexpr char kAgentStarted[] = "started id=";
 inline constexpr char kAgentJob[] = " job=";
-inline constexpr char kAgentQueued[] = "queued: starts after this reply; agent_list shows its id";
+inline constexpr char kAgentQueued[] = "queued";
 inline constexpr char kAgentNotStarted[] = "not started: ";
-inline constexpr char kAgentStartArgs[] = "arguments: name and task (required), files, model";
-inline constexpr char kAgentFiles[] = "files: up to 4 paths, each project/name";
-inline constexpr char kAgentNoChat[] = "no chat: sub-agent jobs belong to a chat's turn";
-inline constexpr char kAgentNone[] = "no sub-agent jobs in this chat";
-inline constexpr char kAgentOpen[] = ": open, its result not yet in\n";
-inline constexpr char kAgentStopArgs[] = "arguments: id (required)";
+inline constexpr char kAgentArgs[] = "invalid arguments";
+inline constexpr char kAgentNone[] = "no jobs";
+inline constexpr char kAgentOpen[] = ": open\n";
 inline constexpr char kAgentStopping[] = "stopping id=";
-inline constexpr char kAgentNoJob[] = "no open job in this chat with id ";
+inline constexpr char kAgentNoJob[] = "no such job: ";
 }  // namespace tool_results
 namespace probe {}
 // The summarizer (lane RB-C2, plain_compact.cpp; PRD section 3; lane RB-C3: one cumulative summary,

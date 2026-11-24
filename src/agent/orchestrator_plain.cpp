@@ -18,7 +18,12 @@
 //     copied into pinned notes once per boot (migrate_device.h, lane E2-MIG).
 // One resident chat (one arena, sized for the head): a message for another chat, another model
 // or another role boots the binding again over the same card (the transcript is refilled).
-// Claude heads only: any other head gets one plain line. Agents are not bound yet.
+// Claude heads only: any other head gets one plain line.
+// Lane E2-P-SUB binds sub-agents (plain/agents.h) over engine 1's job fabric: the shared journal on
+// flash (orch_persist.h FlashJournalStore, g_journal) and the portable JobEngine with this engine's
+// closures; agent_start, agent_list and agent_stop on the shared registry; pollJobs pumps the jobs
+// between turns; a finished job's report is saved whole as agents/<id>-<name>.md and runs as one
+// report turn in the chat that started it (never inside another turn).
 // Lane E2-CHAT adds the owner's daily chat:
 //   - the owner's slash commands never reach the model (commands_plain.cpp): engine 1's handlers
 //     where the command does not depend on the engine; /clear, /compact and /budget act on engine 2;
@@ -58,6 +63,14 @@
 #include "../sys/heap_watch.h"     // heapwatch::psramFirst - the turn's PSRAM-first switch
 #include "../sys/psram_static.h"   // the notice slot in PSRAM, as on engine 1
 #include "files_subsystem.h"    // files::recentFiles - the file tools' recent-files list (E2-TOOLS)
+#include <LittleFS.h>           // the jobs' stop list on flash (lane E2-P-SUB)
+#include "agent_config.h"       // AGENT_MAX_ACTIVE_INFLIGHT, ORCH_DISPATCH_MIN_HEAP, AGENT_POLL_INTERVAL_MS
+#include "../hw/selftest.h"     // localTimeStr - a job's finished record
+#include "fs_atomic.h"          // writeFileAtomic - the jobs' stop list (lane E2-P-SUB)
+#include "orch_persist.h"       // FlashJournalStore - the sub-agent journal (lane E2-P-SUB)
+#include "nimbus/harness/plain/agents.h"   // the agent tools and the report turn (lane E2-P-SUB)
+#include "nimbus/orch/model_choices.h"     // effectiveModelChoices - a job's model (lane E2-P-SUB)
+#include "nimbus/orch/model_selectable.h"  // PickRole
 #include "adapters/image_vision.h"   // the photo set the Telegram intake keeps (R1)
 #include "budget_command.h"     // noteTurnEnd - /model's last reply
 #include "commands_plain.h"     // the owner's slash commands
@@ -1285,6 +1298,144 @@ void loadOutboxes() {
   }
 }
 
+// ---- sub-agents (lane E2-P-SUB) ----------------------------------------------------------
+constexpr const char* kStopListPath = "/data/jobs_stopping.txt";   // the stop list, as on engine 1
+
+// One report turn in `chat` (plain::deliverReports, from the job pump between turns). Busy, with
+// nothing stored, when no turn can run for that chat now: the report waits in the JobEngine.
+plain::Status reportTurnIn(const std::string& chatId, const std::string& note) {
+  const plain::Status busy = plain::Status::fail(nimbus::orch::tx::Err::Busy, "e2.reportTurn");
+  const String chat(chatId.c_str());
+  const String host = store::resolvedOrchHost();
+  if (s_inTurn.load(std::memory_order_relaxed) || chat.length() == 0 || refusalFor(host) || waitsForHistory(chat))
+    return busy;
+  plain::ChatBinding* b = chatFor(chat, std::string(store::orchModel(host).c_str()), roleOfChat(chat));
+  if (!b) return busy;
+  s_inTurn.store(true, std::memory_order_relaxed);
+  s_turnChat = chat;
+  txdev::cardTxFiles().resetHolds();
+  s_transport.reset();
+  plain::TurnOutcome out;
+  plain::Status st;
+  const uint32_t t0 = millis();
+  {
+    PsramFirstScope psramFirst;
+    st = b->reportTurn(note, out);
+  }
+  logTurn(*b, out, st, millis() - t0);
+  if (out.delivered && !out.text.empty())
+    memory::captureMessage(chatId.c_str(), "assistant", nimbus::orch::MsgKind::Message, String(out.text.c_str()), "", "e2");
+  else if (!out.statusStored.empty())
+    memory::captureMessage(chatId.c_str(), "system", nimbus::orch::MsgKind::Message, String(out.statusStored.c_str()), "", "e2");
+  runDeferred(out.deferred);
+  s_turns.fetch_add(1, std::memory_order_relaxed);
+  s_turnChat = String();
+  s_inTurn.store(false, std::memory_order_relaxed);
+  return st;
+}
+
+nimbus::orch::Principal chatPrincipal(const std::string& chatId) {
+  nimbus::orch::Quota q;
+  tenantQuotaOf(chatId, q);
+  return nimbus::orch::principalForRole(chatId, roleOfChat(String(chatId.c_str())), q);
+}
+
+// The job engine's model and key reads (engine 1's buildJobDeps, the same store calls).
+void jobModelDeps(JobEngine::Deps& d) {
+  d.subPriority = [] { return std::string("anthropic"); };   // engine 2 runs its jobs on Anthropic only
+  d.providerHasKey = [](const std::string& p) { return store::providerHasKey(String(p.c_str())); };
+  d.overBudget = [](const std::string& p) { return store::providerOverBudget(String(p.c_str())); };
+  d.subModel = [](const std::string& p) { return std::string(store::subModel(String(p.c_str())).c_str()); };
+  d.modelIsValid = [](const std::string& p, const std::string& m) {
+    return store::modelSelectable(String(p.c_str()), String(m.c_str()), nimbus::orch::PickRole::Any);
+  };
+  d.modelChoices = [](const std::string& p) {
+    return nimbus::orch::effectiveModelChoices(p.c_str(), std::string(store::modelChoices(String(p.c_str())).c_str()));
+  };
+  d.recordSpawnUsage = [](const std::string& backend, const std::string& model, const nimbus::orch::TokenUsage& u) {
+    const String be(backend.c_str());
+    const String resolved = (model.empty() || model == "default") ? store::subModel(be) : String(model.c_str());
+    nimbus::orch::meterSeamUsage(nimbus::orch::SpendSeam::Sub, backend.c_str(), resolved.c_str(), u);
+  };
+}
+
+// The job engine's file reads and writes: a brief's files, the whole report, the stop list.
+void jobFileDeps(JobEngine::Deps& d) {
+  d.readDoc = [](const std::string& chatId, const std::string& project, const std::string& name) {
+    return files::readDocText(project, name, nimbus::orch::principalForRole(chatId, roleOfChat(String(chatId.c_str()))));
+  };
+  d.persistResult = [](const std::string& project, const std::string& name, const std::string& tag,
+                       const std::string& text, const std::string& chatId) -> std::string {
+    std::string path, err;
+    if (project != plain::kAgentsProject || !plain::agentReportPath(tag, name, path).ok()) return std::string();
+    const std::string file = path.substr(project.size() + 1);
+    if (!files::saveText(project, file, text, err, nimbus::orch::nsForChat(chatId, /*admin=*/false)))
+      return "[persist FAILED: " + files::refusalForHead(err) + "]";
+    return "[saved: " + path + "]";
+  };
+  d.loadStopping = [] {
+    std::string out;
+    File f = LittleFS.open(kStopListPath, "r");
+    if (!f) return out;
+    while (f.available() && out.size() < 8192) out += (char)f.read();
+    f.close();
+    return out;
+  };
+  d.saveStopping = [](const std::string& text) {
+    LittleFS.mkdir("/data");
+    return agent::writeFileAtomic(kStopListPath, text, "jobs_stopping", false);
+  };
+}
+
+JobEngine::Deps buildJobDeps() {
+  JobEngine::Deps d;
+  d.principalFor = chatPrincipal;
+  d.platform.nowMs = [] { return (uint32_t)millis(); };
+  d.platform.freeHeap = [] { return (uint32_t)ESP.getFreeHeap(); };
+  d.fabric = g_fabric;
+  d.journal = &g_journal;
+  // The job engine's own lines (a failure with nothing else running, a stop) to the person, and into
+  // the chat's history tagged as job deliveries (never read back by a model), as engine 1's
+  // capturingDelivery does; one lambda, no std::function of the same signature inside it (the tg_poll
+  // stack gate resolves such a call to every handler of that signature, itself included).
+  d.deliver = [](const std::string& chatId, const std::string& text) {
+    const String body(text.c_str());
+    if (!deliver(String(chatId.c_str()), body, /*system=*/true)) return;   // screened out: never captured
+    memory::captureMessage(chatId.c_str(), "tool", nimbus::orch::MsgKind::Message, body, "", agent::kJobDeliveryTag);
+  };
+  jobModelDeps(d);
+  jobFileDeps(d);
+  d.nowString = [] { return std::string(nimbus::hw::localTimeStr().c_str()); };
+  d.nowEpoch = [] {
+    const time_t t = time(nullptr);
+    return t > 1600000000 ? (uint32_t)t : 0u;
+  };
+  d.turnInFlight = [] { return s_inTurn.load(std::memory_order_relaxed); };
+  d.synthesize = [](const std::string& chatId) {
+    if (s_inTurn.load(std::memory_order_relaxed)) return;   // never a chat boot inside a turn
+    int ran = 0;
+    const plain::Status st = plain::deliverReports(*g_jobs, chatId, reportTurnIn, ran);
+    if (ran || !st.ok()) alogf("e2: agent reports for %s: %d ran, %s", chatId.c_str(), ran, nimbus::orch::tx::errSlug(st.err));
+  };
+  return d;
+}
+
+// The journal from flash, the job engine over it and the agent tools on the shared registry.
+void beginAgents() {
+  static FlashJournalStore& journalStore = ::nimbus::psramObject<FlashJournalStore>();
+  journalStore.begin();
+  g_journal.begin(&journalStore);
+  static JobEngine& engine = ::nimbus::psramObject<JobEngine>(
+      buildJobDeps(), JobEngine::Tuning{AGENT_MAX_ACTIVE_INFLIGHT, ORCH_DISPATCH_MIN_HEAP, AGENT_POLL_INTERVAL_MS});
+  g_jobs = &engine;
+  plain::AgentsDeps a;
+  a.jobs = g_jobs;
+  a.chat = [] { return turnInFlight() ? std::string(s_turnChat.c_str()) : std::string(); };
+  a.dispatchNow = [] { (void)g_jobs->pump(); };   // one request on this task, between the turn's rounds
+  const plain::Status st = plain::registerAgentTools(memory::registry(), a);
+  alogf("e2: agents %s (%d open job%s)", nimbus::orch::tx::errSlug(st.err), g_journal.count(), g_journal.count() == 1 ? "" : "s");
+}
+
 }  // namespace
 
 // ---- lifecycle --------------------------------------------------------------
@@ -1293,7 +1444,8 @@ void begin(HeavyFabric* fabric, const Sinks& sinks) {
   g_fabric = fabric;
   g_sinks = sinks;
   if (!g_sessMux) g_sessMux = xSemaphoreCreateMutex();   // guards the session snapshot
-  refreshSessionSnapshot();                               // no jobs: an empty snapshot
+  if (g_fabric) beginAgents();                            // lane E2-P-SUB
+  refreshSessionSnapshot();                               // from the restored journal
   // L24 (turn_memory.h): a turn keeps its small blocks in PSRAM, as on engine 1.
   setPsramFirstSwitch([](bool on) { nimbus::heapwatch::psramFirst(on); });
   // The harness library's log seam (compaction, the wire, the summarizer) into the device log, as engine 1
@@ -1348,15 +1500,17 @@ int pollJobs() {
   bootOwnerChat();        // once: the owner chat's transcript and seen index before its next message
   loadWaitingLists();     // E2-FIX13: the messages a restart left kept for the read-in
   answerKeptMessages();   // and those kept, answered in order once their chat's read-in ended
-  drainTerminates();     // the journal's staged terminates (none can exist without jobs)
+  drainTerminates();      // the journal's staged terminates (web stops), on the journal's writer task
   drainUpdateNotice();    // the fixed post-update notice - tg_poll only
   // Lane E2-SCHED: the loops tick (at most one due entry; 20 s-gated, heap and Wi-Fi guarded inside)
   // and the outboxes of routine notes. tg_poll, between turns.
   loadOutboxes();
   loops::checkDue((uint64_t)time(nullptr), s_inTurn.load(std::memory_order_relaxed), ESP.getFreeHeap());
   drainOutboxes();
+  // Lane E2-P-SUB: the jobs (dispatch, poll, the stop list) and a finished one's report turn.
+  const int n = g_jobs ? g_jobs->pump() : 0;
   refreshSessionSnapshot();
-  return 0;               // no jobs: the Telegram loop keeps its long poll
+  return n + (g_jobs ? g_jobs->stoppingCount() : 0);   // active jobs: the Telegram loop keeps the pump coming
 }
 
 void setOtaInstallHook(String (*fn)()) { s_otaInstallHook = fn; }
