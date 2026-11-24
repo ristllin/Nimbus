@@ -30,6 +30,7 @@
 #include "memory_restore.h"               // CUM-406: portable restore parse/apply core
 #include "../sys/ps_json.h"               // CUM-406: PSRAM JsonDocument for a large restore body
 #include "health.h"                       // system.health tool (P5)
+#include "tools_plain_device.h"           // E2-P-TOOLS: the bound handlers (memory::bound)
 #include "engine_tools.h"                 // the engine's tool families (tools_e1.cpp)
 #if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: the old skill store, the dream turn, session.* (tools/engine/guard_files.txt)
 #include "skills.h"                        // skill.list/get/save/delete tools (P7 + v4)
@@ -1512,76 +1513,19 @@ void begin() {
             "Browse your own device documentation - search it before saying what you can "
             "or cannot do. No arguments: the doc files (slug, title, section count). With "
             "file: one file's sections (id + title) for docs.read.",
-            [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) -> nimbus::orch::ToolResult {
-              std::string want = a["file"].is<const char*>() ? std::string(a["file"].as<const char*>()) : std::string();
-              JsonDocument d;
-              JsonArray arr = d.to<JsonArray>();
-              if (want.empty()) {
-                for (size_t i = 0; i < nimbus::docs::fileCount(); i++) {
-                  const nimbus::docs::DocFile& f = nimbus::docs::file(i);
-                  JsonObject o = arr.add<JsonObject>();
-                  o["file"] = f.slug; o["title"] = f.title; o["sections"] = f.count;
-                }
-              } else {
-                const nimbus::docs::DocFile* f = nimbus::docs::findFile(want);
-                if (!f)
-                  return nimbus::orch::ToolResult::fail(
-                      "unknown doc file '" + want + "' (call docs.list with no arguments for the file index)");
-                for (size_t i = f->first; i < (size_t)(f->first + f->count); i++) {
-                  const nimbus::docs::DocSection& s = nimbus::docs::section(i);
-                  JsonObject o = arr.add<JsonObject>();
-                  o["id"] = s.id; o["title"] = s.title;
-                }
-              }
-              std::string s; serializeJson(d, s);
-              return nimbus::orch::ToolResult::ok(s);
-            },
+            bound::docsList,
             R"({"type":"object","properties":{"file":{"type":"string"}}})");
   g_reg.add("docs.search",
             "Search your own device documentation (ranked keyword match over titles + "
             "bodies: any of the words, sections holding more of them first) - use it "
             "BEFORE saying what you can or cannot do, or how a feature of yours works. "
             "Returns section ids + a snippet; read the full section with docs.read.",
-            [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) -> nimbus::orch::ToolResult {
-              std::string q = a["query"].is<const char*>() ? std::string(a["query"].as<const char*>()) : std::string();
-              if (q.empty()) return nimbus::orch::ToolResult::fail("missing 'query'");
-              const nimbus::docs::DocSection* hits[8];
-              size_t n = nimbus::docs::search(q, hits, 8);
-              if (n == 0)
-                return nimbus::orch::ToolResult::ok(
-                    "no sections match - try different keywords, or browse docs.list");
-              JsonDocument d;
-              JsonArray arr = d.to<JsonArray>();
-              for (size_t i = 0; i < n; i++) {
-                JsonObject o = arr.add<JsonObject>();
-                o["id"] = hits[i]->id; o["title"] = hits[i]->title;
-                o["snippet"] = nimbus::docs::snippet(*hits[i], q);
-              }
-              std::string s; serializeJson(d, s);
-              return nimbus::orch::ToolResult::ok(s);
-            },
+            bound::docsSearch,
             R"({"type":"object","properties":{"query":{"type":"string"}},"required":["query"]})");
   g_reg.add("docs.read",
             "Read ONE section of your own device documentation by id (from docs.list or "
             "docs.search) - the authoritative answer to what you can do and how it works.",
-            [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) -> nimbus::orch::ToolResult {
-              std::string id = a["id"].is<const char*>() ? std::string(a["id"].as<const char*>()) : std::string();
-              if (id.empty()) return nimbus::orch::ToolResult::fail("missing 'id'");
-              const nimbus::docs::DocSection* s = nimbus::docs::find(id);
-              if (!s) {
-                std::string near = nimbus::docs::nearMisses(id, 5);
-                if (near.empty())
-                  return nimbus::orch::ToolResult::fail(
-                      "unknown doc id '" + id + "' (call docs.list or docs.search)");
-                return nimbus::orch::ToolResult::fail(
-                    "unknown doc id '" + id + "' - did you mean: " + near + "?");
-              }
-              std::string out = "## ";
-              out += s->title;
-              out += "\n\n";
-              out += s->body;   // rodata appended straight into the result string
-              return nimbus::orch::ToolResult::ok(out);
-            },
+            bound::docsRead,
             R"({"type":"object","properties":{"id":{"type":"string"}},"required":["id"]})");
 #if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
   // Lane I: the model edits skills through the portable SkillStore - staged
@@ -1661,11 +1605,7 @@ void begin() {
             "Report the device's live hardware + subsystem health (LED ring or status LED, display, mic, "
             "speaker, SD card, memory, PSRAM, Wi-Fi, Telegram). Use it to answer questions "
             "about what hardware you have or whether a component is working.",
-            [](ArduinoJson::JsonObjectConst, const nimbus::orch::Principal&) -> nimbus::orch::ToolResult {
-              agent::health::Env env;
-              env.wifiKnown = true; env.wifiUp = true;   // a turn only runs with WiFi up
-              return nimbus::orch::ToolResult::ok(agent::health::reportJson(env));
-            },
+            bound::systemHealth,
             R"({"type":"object","properties":{}})");
 
   // ToolPolicy resolver - dispatch-level enforcement (defuses the fork-bomb the
@@ -1718,6 +1658,133 @@ void begin() {
         agent::tavily::available() ? "on" : "off", (int)g_pending.size());
 }
 
+// The handlers of docs.*, system.health and tenant.*, named so engine 2's docs, device and people
+// groups bind the same code (lane E2-P-TOOLS, tools_plain_device.cpp); engine 1 registers them in
+// begin() and registerTenantTools(). Each tenant handler re-checks the caller is an admin.
+namespace bound {
+
+nimbus::orch::ToolResult docsList(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
+  std::string want = a["file"].is<const char*>() ? std::string(a["file"].as<const char*>()) : std::string();
+  JsonDocument d;
+  JsonArray arr = d.to<JsonArray>();
+  if (want.empty()) {
+    for (size_t i = 0; i < nimbus::docs::fileCount(); i++) {
+      const nimbus::docs::DocFile& f = nimbus::docs::file(i);
+      JsonObject o = arr.add<JsonObject>();
+      o["file"] = f.slug; o["title"] = f.title; o["sections"] = f.count;
+    }
+  } else {
+    const nimbus::docs::DocFile* f = nimbus::docs::findFile(want);
+    if (!f)
+      return nimbus::orch::ToolResult::fail(
+          "unknown doc file '" + want + "' (call docs.list with no arguments for the file index)");
+    for (size_t i = f->first; i < (size_t)(f->first + f->count); i++) {
+      const nimbus::docs::DocSection& s = nimbus::docs::section(i);
+      JsonObject o = arr.add<JsonObject>();
+      o["id"] = s.id; o["title"] = s.title;
+    }
+  }
+  std::string s; serializeJson(d, s);
+  return nimbus::orch::ToolResult::ok(s);
+}
+
+nimbus::orch::ToolResult docsSearch(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
+  std::string q = a["query"].is<const char*>() ? std::string(a["query"].as<const char*>()) : std::string();
+  if (q.empty()) return nimbus::orch::ToolResult::fail("missing 'query'");
+  const nimbus::docs::DocSection* hits[8];
+  size_t n = nimbus::docs::search(q, hits, 8);
+  if (n == 0)
+    return nimbus::orch::ToolResult::ok(
+        "no sections match - try different keywords, or browse docs.list");
+  JsonDocument d;
+  JsonArray arr = d.to<JsonArray>();
+  for (size_t i = 0; i < n; i++) {
+    JsonObject o = arr.add<JsonObject>();
+    o["id"] = hits[i]->id; o["title"] = hits[i]->title;
+    o["snippet"] = nimbus::docs::snippet(*hits[i], q);
+  }
+  std::string s; serializeJson(d, s);
+  return nimbus::orch::ToolResult::ok(s);
+}
+
+nimbus::orch::ToolResult docsRead(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
+  std::string id = a["id"].is<const char*>() ? std::string(a["id"].as<const char*>()) : std::string();
+  if (id.empty()) return nimbus::orch::ToolResult::fail("missing 'id'");
+  const nimbus::docs::DocSection* s = nimbus::docs::find(id);
+  if (!s) {
+    std::string near = nimbus::docs::nearMisses(id, 5);
+    if (near.empty())
+      return nimbus::orch::ToolResult::fail(
+          "unknown doc id '" + id + "' (call docs.list or docs.search)");
+    return nimbus::orch::ToolResult::fail(
+        "unknown doc id '" + id + "' - did you mean: " + near + "?");
+  }
+  std::string out = "## ";
+  out += s->title;
+  out += "\n\n";
+  out += s->body;   // rodata appended straight into the result string
+  return nimbus::orch::ToolResult::ok(out);
+}
+
+nimbus::orch::ToolResult systemHealth(ArduinoJson::JsonObjectConst, const nimbus::orch::Principal&) {
+  agent::health::Env env;
+  env.wifiKnown = true; env.wifiUp = true;   // a turn only runs with WiFi up
+  return nimbus::orch::ToolResult::ok(agent::health::reportJson(env));
+}
+
+nimbus::orch::ToolResult tenantList(ArduinoJson::JsonObjectConst, const nimbus::orch::Principal& who) {
+  if (!who.perms().manageTenants) return ToolResult::fail("only an admin can see the people list");
+  std::string out;
+  Lock g;   // countIn/pinsIn read the shared VDB
+  for (const auto& t : orchestrator::tenantSnapshot()) {
+    const auto q = nimbus::orch::effectiveQuota(t.role, t.quota);
+    // W11: usage BESIDE the ceiling - the list used to show only the
+    // quota, so "is anyone near their limit?" was unanswerable.
+    const std::string ns =
+        nimbus::orch::nsForChat(t.chatId, t.role == nimbus::orch::Role::Admin);
+    out += t.chatId + " - " + nimbus::orch::roleName(t.role) +
+           " (memories " + std::to_string(g_vec.countIn(ns)) + "/" +
+           std::to_string(q.maxVectors) +
+           ", pins " + std::to_string(g_vec.pinsIn(ns)) + "/" +
+           std::to_string(q.maxPins) +
+           ", files " + std::to_string(q.maxBytes / 1024) + "KB" +
+           ", ttl " + std::to_string(q.maxTtlHours) + "h)\n";
+  }
+  return ToolResult::ok(out.empty() ? "No one is registered yet." : out);
+}
+
+nimbus::orch::ToolResult tenantSetRole(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) {
+  if (!who.perms().manageTenants) return ToolResult::fail("only an admin can change roles");
+  const char* chat = a["chat"] | "";
+  const char* role = a["role"] | "";
+  if (!chat[0] || !role[0]) return ToolResult::fail("need 'chat' and 'role'");
+  Role r;
+  if (!nimbus::orch::roleFromName(role, r))
+    return ToolResult::fail("role must be admin, user, guest or unknown");
+  std::string err;
+  if (!orchestrator::tenantSetRole(chat, r, err))
+    return ToolResult::fail(err);
+  return ToolResult::ok(std::string(chat) + " is now " + nimbus::orch::roleName(r));
+}
+
+nimbus::orch::ToolResult tenantSetQuota(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) {
+  if (!who.perms().manageTenants) return ToolResult::fail("only an admin can change quotas");
+  const char* chat = a["chat"] | "";
+  if (!chat[0]) return ToolResult::fail("need 'chat'");
+  nimbus::orch::Quota q;
+  if (!orchestrator::tenantQuotaOf(chat, q))
+    return ToolResult::fail("no such person - approve them first");
+  if (a["vectors"].is<unsigned>())  q.maxVectors  = a["vectors"];
+  if (a["bytes"].is<unsigned>())    q.maxBytes    = a["bytes"];
+  if (a["ttl_hours"].is<unsigned>())q.maxTtlHours = a["ttl_hours"];
+  if (a["pins"].is<unsigned>())     q.maxPins     = (uint16_t)(unsigned)a["pins"];
+  std::string err;
+  if (!orchestrator::tenantSetQuota(chat, q, err)) return ToolResult::fail(err);
+  return ToolResult::ok(std::string("updated quotas for ") + chat);
+}
+
+}  // namespace bound
+
 // ---- v3.7.0 admin-by-conversation -------------------------------------------
 // The owner asked to manage people by talking to the device ("approve X",
 // "make Y a guest"). These are ADMIN-only at DISPATCH: hiding a tool from the
@@ -1726,76 +1793,25 @@ void begin() {
 #if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: no old-engine tool registers on engine 2 (RB-I0)
 static void registerTenantTools() {
   using nimbus::orch::Role;
-  auto adminOnly = [](const nimbus::orch::Principal& who) -> bool {
-    return who.perms().manageTenants;
-  };
 
   g_reg.add("tenant.list",
             "List the people who can talk to this device: chat id, role "
             "(admin/user/guest/unknown), and their USAGE vs quota (memories "
             "stored/allowed, pins used/allowed, file limits).",
-            [adminOnly](ArduinoJson::JsonObjectConst, const nimbus::orch::Principal& who)
-                -> ToolResult {
-              if (!adminOnly(who)) return ToolResult::fail("only an admin can see the people list");
-              std::string out;
-              Lock g;   // countIn/pinsIn read the shared VDB
-              for (const auto& t : orchestrator::tenantSnapshot()) {
-                const auto q = nimbus::orch::effectiveQuota(t.role, t.quota);
-                // W11: usage BESIDE the ceiling - the list used to show only the
-                // quota, so "is anyone near their limit?" was unanswerable.
-                const std::string ns =
-                    nimbus::orch::nsForChat(t.chatId, t.role == nimbus::orch::Role::Admin);
-                out += t.chatId + " - " + nimbus::orch::roleName(t.role) +
-                       " (memories " + std::to_string(g_vec.countIn(ns)) + "/" +
-                       std::to_string(q.maxVectors) +
-                       ", pins " + std::to_string(g_vec.pinsIn(ns)) + "/" +
-                       std::to_string(q.maxPins) +
-                       ", files " + std::to_string(q.maxBytes / 1024) + "KB" +
-                       ", ttl " + std::to_string(q.maxTtlHours) + "h)\n";
-              }
-              return ToolResult::ok(out.empty() ? "No one is registered yet." : out);
-            },
+            bound::tenantList,
             R"({"type":"object","properties":{}})");
 
   g_reg.add("tenant.set_role",
             "Approve someone or change what they may do: role is admin, user, "
             "guest, or unknown (revokes access). The last admin cannot be demoted.",
-            [adminOnly](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who)
-                -> ToolResult {
-              if (!adminOnly(who)) return ToolResult::fail("only an admin can change roles");
-              const char* chat = a["chat"] | "";
-              const char* role = a["role"] | "";
-              if (!chat[0] || !role[0]) return ToolResult::fail("need 'chat' and 'role'");
-              Role r;
-              if (!nimbus::orch::roleFromName(role, r))
-                return ToolResult::fail("role must be admin, user, guest or unknown");
-              std::string err;
-              if (!orchestrator::tenantSetRole(chat, r, err))
-                return ToolResult::fail(err);
-              return ToolResult::ok(std::string(chat) + " is now " + nimbus::orch::roleName(r));
-            },
+            bound::tenantSetRole,
             R"({"type":"object","properties":{"chat":{"type":"string"},"role":{"type":"string","enum":["admin","user","guest","unknown"]}},"required":["chat","role"]})");
 
   g_reg.add("tenant.set_quota",
             "Set how much one person may store: vectors (memories), bytes "
             "(files), ttl_hours (how long their memories live), pins. 0 restores "
             "the default for their role.",
-            [adminOnly](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who)
-                -> ToolResult {
-              if (!adminOnly(who)) return ToolResult::fail("only an admin can change quotas");
-              const char* chat = a["chat"] | "";
-              if (!chat[0]) return ToolResult::fail("need 'chat'");
-              nimbus::orch::Quota q;
-              if (!orchestrator::tenantQuotaOf(chat, q))
-                return ToolResult::fail("no such person - approve them first");
-              if (a["vectors"].is<unsigned>())  q.maxVectors  = a["vectors"];
-              if (a["bytes"].is<unsigned>())    q.maxBytes    = a["bytes"];
-              if (a["ttl_hours"].is<unsigned>())q.maxTtlHours = a["ttl_hours"];
-              if (a["pins"].is<unsigned>())     q.maxPins     = (uint16_t)(unsigned)a["pins"];
-              std::string err;
-              if (!orchestrator::tenantSetQuota(chat, q, err)) return ToolResult::fail(err);
-              return ToolResult::ok(std::string("updated quotas for ") + chat);
-            },
+            bound::tenantSetQuota,
             R"({"type":"object","properties":{"chat":{"type":"string"},"vectors":{"type":"integer"},"bytes":{"type":"integer"},"ttl_hours":{"type":"integer"},"pins":{"type":"integer"}},"required":["chat"]})");
 
   // W14 - ADVERTISEMENT scope, not the boundary. Each handler above already

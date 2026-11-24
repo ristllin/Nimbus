@@ -603,7 +603,8 @@ static void test_cum523_tool_results_name_telegram_tools_only_when_offered() {
       TEST_ASSERT_TRUE_MESSAGE(!namesReply || replyGate, (name + ": reply.telegram").c_str());
     }
   }
-  TEST_ASSERT_TRUE(handlers >= 30);   // the scan really saw the handlers
+  // E2-P-TOOLS: ten handlers became named functions engine 2 binds (main.cpp, memory_subsystem.cpp).
+  TEST_ASSERT_TRUE(handlers >= 20);   // the scan really saw the handlers
 }
 
 void runStoreTests();   // store.cpp: the SkillStore rules, the attach block, /skill

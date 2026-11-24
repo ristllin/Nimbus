@@ -83,3 +83,6 @@ src/agent/tools_plain_send.cpp
 
 # E2-P-OUT2: the files_admin and media tools over engine 1's handlers.
 src/agent/tools_plain_files.cpp
+
+# E2-P-TOOLS: the device, people, models and docs groups over engine 1's handlers.
+src/agent/tools_plain_device.cpp

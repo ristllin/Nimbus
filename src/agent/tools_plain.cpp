@@ -122,10 +122,13 @@ void registerMemoryFamilies(nimbus::orch::ToolRegistry& reg, const nimbus::orch:
   registerSend(reg);                         // E2-P-OUT1: send and speak (tools_plain_send.cpp)
   plainfiles::registerDevice(reg);         // E2-P-OUT2: image, PDF, share, stat, fetch, music (behind more)
   skillsplain::registerSkills(reg, turnOrigin);   // E2-P-SKILL: the skills group behind more
+  registerPlainDevice(reg);                // E2-P-TOOLS: device, people and docs behind more
   nimbus::orch::registerMore(reg);
 }
 
-void registerModelsFamily(nimbus::orch::ToolRegistry&, const nimbus::orch::ModelsToolHandlers&) {}
+void registerModelsFamily(nimbus::orch::ToolRegistry& reg, const nimbus::orch::ModelsToolHandlers& h) {
+  registerPlainModels(reg, h);   // E2-P-TOOLS: models.list behind more
+}
 
 }  // namespace tools
 }  // namespace agent

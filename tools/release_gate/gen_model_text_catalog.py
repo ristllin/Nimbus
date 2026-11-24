@@ -148,6 +148,8 @@ NON_MODEL_FILES: dict = {
     "never sent to a model",
     "lib/harness/src/plain_surface.cpp": "E2-P-SURF (PC-0250, PC-0251): the web pages of an engine-2 chat (the turn "
     "inspector, the turn log, the summary card): text and JSON for the person at the page, never sent to a model",
+    "src/agent/tools_plain_device.cpp": "E2-P-TOOLS: the device binding of the bound groups; its literals are the "
+    "provider slug a head switch is held to and the registry name models.list is reached by, never prose",
     "nimbusd/src/engine2_host.h": "E2-HOST: the startup switch's refusal line (the daemon log) and two owner-facing "
     "lines of the hosted engine-2 chat (a non-Claude model picked, a chat that could not start), sent to the owner's "
     "chat, never to a model",
@@ -289,6 +291,8 @@ E2_EXTRA_SOURCES: tuple = (
     ("src/agent/tools_plain_files.cpp", "tool_results"),
     # E2-P-SKILL: skill_list, skill_save, skill_delete over the shared skill store (PC-0247 to PC-0249).
     ("lib/harness/include/nimbus/harness/plain/chat_skill_tools.h", "tool_results"),
+    # E2-P-TOOLS: the device, people, models and docs groups on engine 2 (registry names, argument keys).
+    ("src/agent/tools_plain_device.h", "tool_results"),
 )
 # The engine-2 files that may hold no model text of their own once texts.h exists.
 E2_ENGINE_GLOBS = (r"lib/harness/src/plain_[^/]*\.(cpp|h)$", r"lib/harness/src/providers/plain_wire_[^/]*\.(cpp|h)$")

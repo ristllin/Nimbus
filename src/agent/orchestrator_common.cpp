@@ -27,7 +27,10 @@
 #include "nimbus/speaker_reply.h"       // speakerFailText - the speaker's honest failure (host-tested)
 #include "voice_reply.h"                // reply.telegram voice:true - Telegram with a receipt
 #include "nimbus/fault.h"               // the speaker fault (reply.speak)
-#include "../sfx/sound_fx.h"            // speakReply / awaitReplyStart (reply.speak)
+#include "../sfx/sound_fx.h"            // speakReply / awaitReplyStart (reply.speak); refreshConfig
+#include "../sys/config_nvs.h"          // saveDeviceName (fillDeviceApplyDeps)
+#include "model_refresh.h"              // R5: the orch_model miss answer (fillDeviceApplyDeps)
+#include "nimbus/harness/device_apply.h"   // DeviceApplyDeps (lane E2-P-TOOLS)
 
 // orchestrator_common - the engine-neutral half of the device seam (lanes RB-SEAM1a and
 // RB-SEAM1b, no behavior change): job glue, ring arcs, voice, the tenant table, the session
@@ -761,6 +764,55 @@ bool sendToChat(const String& chatId, const String& text, bool asVoice, std::str
                            withTurnTag("via:telegram"));
   }
   return sent;
+}
+
+// Lane E2-P-TOOLS: engine 1's device-action executors (buildApplyDeps), shared with engine 2's
+// device_control. Returns from execConfig whether a stored value CHANGED (23 Oct: a no-op
+// action reports "no change" and never backs a "switched" reply).
+void fillDeviceApplyDeps(DeviceApplyDeps& d) {
+  d.execConfig = [](const nimbus::orch::ValidatedAction& va) -> bool {
+    bool changed = false;
+    if (va.hasLedBrightness) changed = store::setLedBright(va.ledBrightness) || changed;
+    // `priority` tunes the SUB-SESSION provider preference only (never the
+    // orchestrator-host list - see the protected-key rail).
+    if (va.hasPriority)  changed = store::setSubPriority(String(va.priority.c_str())) || changed;
+    if (va.hasTtsVoice)  changed = store::setTtsVoice(String(va.ttsVoice.c_str())) || changed;
+    if (va.hasTtsProv)   changed = store::setTtsProvider(String(va.ttsProv.c_str())) || changed;
+    if (va.hasTtsOn)     changed = store::setTtsEnabled(va.ttsOn) || changed;
+    if (va.hasSleepOvr)  changed = store::setSleepOvr(va.sleepOvr) || changed;
+    if (va.hasBrightOvr) changed = store::setBrightOvr(va.brightOvr) || changed;
+    if (va.hasSttProv)   changed = store::setSttProvider(String(va.sttProv.c_str())) || changed;
+    if (va.hasSfxLvlN || va.hasSfxLvlO || va.hasSfxVol || va.hasSfxTheme) {
+      if (va.hasSfxLvlN)  changed = store::setSfxLevelNotif(va.sfxLvlN) || changed;
+      if (va.hasSfxLvlO)  changed = store::setSfxLevelOrch(va.sfxLvlO) || changed;
+      if (va.hasSfxVol)   changed = store::setSfxVolume(va.sfxVol) || changed;
+      if (va.hasSfxTheme) changed = store::setSfxTheme(String(va.sfxTheme.c_str())) || changed;
+      ::sfx::refreshConfig();   // live-apply, same seam the web setters use
+    }
+    if (va.hasDevName) {
+      const String before = nimbus::sys::deviceName();
+      changed = nimbus::sys::saveDeviceName(String(va.devName.c_str())) != before || changed;
+    }
+    return changed;
+  };
+  if (g_sinks.device)
+    d.stageDevice = [](const nimbus::orch::ValidatedAction& va) { g_sinks.device(va); };
+  if (g_sinks.speak)
+    d.speak = [](const std::string& chat, const std::string& s) {
+      return g_sinks.speak(String(chat.c_str()), String(s.c_str()));
+    };
+  d.speakerVolume = [] { return (int)store::sfxVolume(); };   // live: a tts at volume 0 plays silence
+  // Lane F: the check the web pick asks (the model store, the cold-start list, the default).
+  d.modelIsValid = [](const std::string& p, const std::string& m) {
+    return store::modelSelectable(String(p.c_str()), String(m.c_str()), nimbus::orch::PickRole::Any);
+  };
+  // R5 (lane H): a miss queues one list refresh and answers with the cache date.
+  d.modelMiss = [](const std::string& p, const std::string& m) { return agent::model_refresh::missText(p, m); };
+  d.providerHasKey = [](const std::string& p) { return store::providerHasKey(String(p.c_str())); };
+  d.setOrchHostModel = [](const std::string& p, const std::string& m) {
+    store::setOrchHost(String(p.c_str()));
+    store::setOrchModel(String(p.c_str()), String(m.c_str()));
+  };
 }
 
 }  // namespace orchestrator

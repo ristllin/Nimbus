@@ -42,6 +42,7 @@ namespace agent {
 namespace voicereply {
 struct Outcome;   // voice_reply.h
 }
+struct DeviceApplyDeps;   // nimbus/harness/device_apply.h
 namespace orchestrator {
 
 // ---- caller-supplied sinks (installed by main.cpp) --------------------------
@@ -190,6 +191,12 @@ bool   speakOnDevice(const String& text, bool capture = true, String* why = null
 // `voiceOut` (engine 2's send, lane E2-P-OUT1): the voice delivery's whole outcome.
 bool   sendToChat(const String& chatId, const String& text, bool asVoice,
                   std::string* result = nullptr, voicereply::Outcome* voiceOut = nullptr);
+
+// The device-action executors (lifted from engine 1's buildApplyDeps by lane E2-P-TOOLS):
+// config knobs into the stores, led/lights/reboot to the main loop's DeviceSink, tts to the
+// speak sink, orch_model checked against the model store and written to the head setting.
+// Execution only; the policy is device_apply.cpp's. Both engines fill their deps from it.
+void fillDeviceApplyDeps(DeviceApplyDeps& d);
 
 }  // namespace orchestrator
 }  // namespace agent

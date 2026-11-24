@@ -170,6 +170,52 @@ inline constexpr ToolDecl kBehindMore[] = {
      R"({"type":"object","properties":{"id":{"type":"string"},"md":{"type":"string"}},"required":["id","md"]})", nullptr},
     {"skill_delete", "Delete a skill you wrote, by id.",
      R"({"type":"object","properties":{"id":{"type":"string"}},"required":["id"]})", nullptr},
+    // The device, people, models and docs groups (lane E2-P-TOOLS, PC-0243): engine 1's handlers
+    // under their registry names (spelled with '_' for the model), these declarations for engine 2.
+    {"device.status",
+     "The device's live state as JSON: versions, clock, battery, Wi-Fi, storage, memory counts, usage and "
+     "spend against the ceilings, settings (cfg), the last failed turn.",
+     R"({"type":"object","properties":{}})", nullptr},
+    {"device.log",
+     "The device's own log, newest last, at most 4 KB: match keeps lines holding any of up to 3 words split "
+     "by |, lines caps them (1-60), scan_kb bounds the search (4-64).",
+     R"({"type":"object","properties":{"match":{"type":"string"},"lines":{"type":"integer"},"scan_kb":{"type":"integer"}}})",
+     nullptr},
+    {"ota.status",
+     "Firmware update state: the running version, the latest seen with its notes, the last install's result. "
+     "Only the owner installs.",
+     R"({"type":"object","properties":{}})", nullptr},
+    {"device.selftest",
+     "Hardware self test, PASS, FAIL or SKIP per item; audible true adds the speaker and mic loopback (skipped "
+     "while the device is silent).",
+     R"({"type":"object","properties":{"audible":{"type":"boolean"}}})", nullptr},
+    {"system.health", "Live health of the ring, display, mic, speaker, card, memory, Wi-Fi and Telegram.",
+     R"({"type":"object","properties":{}})", nullptr},
+    {"device.control",
+     "Change the device now, one action: config (settings, e.g. sfxVol 0-100), led, lights, tts. reboot and "
+     "orch_model (switch the main model) run after this reply is sent.",
+     R"({"type":"object","properties":{"action":{"type":"object","description":"type config: sfxVol, ledBrightness, sfxTheme, posture dark|calm|full, theme; led: mode solid|spinner|pulse|flash|rainbow|off, r, g, b, brightness; lights: value full|off; tts: text; reboot; orch_model: provider, model"}},"required":["action"]})",
+     nullptr},
+    {"tenant.list", "The people who may use the device: chat id, role and storage use against their quota.",
+     R"({"type":"object","properties":{}})", nullptr},
+    {"tenant.set_role", "Set a person's role by chat id: admin, user, guest, or unknown (no access). The last admin stays.",
+     R"({"type":"object","properties":{"chat":{"type":"string"},"role":{"type":"string","enum":["admin","user","guest","unknown"]}},"required":["chat","role"]})",
+     nullptr},
+    {"tenant.set_quota",
+     "Set one person's storage quota: vectors, bytes, ttl_hours, pins; 0 restores the role's default.",
+     R"({"type":"object","properties":{"chat":{"type":"string"},"vectors":{"type":"integer"},"bytes":{"type":"integer"},"ttl_hours":{"type":"integer"},"pins":{"type":"integer"}},"required":["chat"]})",
+     nullptr},
+    {"models.list",
+     "The models a provider offers, from the device's cached lists: id, name, context, lifecycle. query "
+     "matches part of an id or name; refresh queues a fetch for after this turn.",
+     R"({"type":"object","properties":{"provider":{"type":"string"},"query":{"type":"string"},"refresh":{"type":"boolean"}}})",
+     nullptr},
+    {"docs.list", "The device's own documentation: the files, or with file one file's sections by id.",
+     R"({"type":"object","properties":{"file":{"type":"string"}}})", nullptr},
+    {"docs.search", "Search the device's own documentation by words: section ids with a snippet.",
+     R"({"type":"object","properties":{"query":{"type":"string"}},"required":["query"]})", nullptr},
+    {"docs.read", "One section of the device's own documentation by id, in full.",
+     R"({"type":"object","properties":{"id":{"type":"string"}},"required":["id"]})", nullptr},
 };
 }  // namespace tool_descriptions
 
@@ -356,6 +402,12 @@ inline constexpr char kSpeakOff[] = "not spoken: voice replies are off";
 inline constexpr char kSpeakMuted[] = "not spoken: the speaker volume is 0";
 inline constexpr char kSpeakDone[] = "spoken on the speaker";
 inline constexpr char kSpeakFailed[] = "not spoken: ";
+// device_control (lane E2-P-TOOLS, src/agent/tools_plain_device.h; PC-0244): the old applier's
+// summary after these leads; a restart or a head switch runs once the reply is sent.
+inline constexpr char kControlApplied[] = "applied: ";
+inline constexpr char kControlNotApplied[] = "not applied: ";
+inline constexpr char kControlNoAction[] = "action must be an object";
+inline constexpr char kControlAfterReply[] = " (runs after this reply is sent)";
 }  // namespace tool_results
 namespace probe {}
 // The summarizer (lane RB-C2, plain_compact.cpp; PRD section 3; lane RB-C3: one cumulative summary,

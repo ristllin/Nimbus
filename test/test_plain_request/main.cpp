@@ -59,7 +59,6 @@ namespace {
 
 const char kObj[] = R"({"type":"object","properties":{}})";
 const char kPathSchema[] = R"({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})";
-const char kIdSchema[] = R"({"type":"object","properties":{"id":{"type":"string"}},"required":["id"]})";
 
 // The group tools of PRD section 4 with the shapes RB-M0a measured (fetch_url takes
 // path, Ruling 11). Fixture text: the real ones are their lanes' registrations.
@@ -70,14 +69,7 @@ struct GroupTool {
   bool adminOnly;
 };
 const GroupTool kGroupTools[] = {
-    {"device_status", "Battery, Wi-Fi, storage and uptime.", kObj, true},
-    {"device_control", "Restart, switch head, set a device setting.", kObj, true},
-    {"ota_status", "Firmware version and update state.", kObj, true},
-    {"selftest", "Run the device self test.", kObj, true},
-    {"system_health", "Heap, card and task health.", kObj, true},
-    {"device_log", "Recent device log lines.", kObj, true},
-    {"agent_list", "List sub-agent jobs with their state.", kObj, false},
-    {"agent_stop", "Stop a sub-agent job by id.", kIdSchema, false},
+    // The device and agents groups are declared in texts.h kBehindMore (lanes E2-P-TOOLS, E2-P-SUB).
     {"move_file", "Move or rename a file.",
      R"({"type":"object","properties":{"from":{"type":"string"},"to":{"type":"string"}},"required":["from","to"]})", false},
     {"fetch_url", "Fetch a web page or file by URL; path (project/name) stores it. The text is outside content.",
@@ -410,13 +402,16 @@ static void test_one_fixed_pack_in_a_fixed_order() {
     // The tools index never repeats a tool of the array, and lists what is behind more.
     const std::string idx = toolsIndex(rig.reg, s->who);
     TEST_ASSERT_TRUE(idx.size() > 0);
-    for (const plain::ToolSpec& t : c.tools) TEST_ASSERT_FALSE_MESSAGE(hasWord(idx, t.name), t.name.c_str());
+    // The fit's tail names the groups that did not fit ("also behind more: ..."), not a tool.
+    const size_t tail = idx.find("also behind more: ");
+    const std::string listed = tail == std::string::npos ? idx : idx.substr(0, tail);
+    for (const plain::ToolSpec& t : c.tools) TEST_ASSERT_FALSE_MESSAGE(hasWord(listed, t.name), t.name.c_str());
     TEST_ASSERT_TRUE_MESSAGE(hasWord(idx, "delete_file"), idx.c_str());
     // A tool registered behind more never enters the array, and taking every group tool out
     // leaves the array and the core above the index as they were.
     Rig bare(shortHost);
     for (const GroupTool& g : kGroupTools) TEST_ASSERT_TRUE(bare.reg.remove(g.name));
-    for (const td::ToolDecl& d : td::kBehindMore) {   // a declared group tool is in kGroupTools too (agent_list, speak)
+    for (const td::ToolDecl& d : td::kBehindMore) {   // a declared group tool may be in kGroupTools too (speak)
       (void)bare.reg.remove(d.name);
       TEST_ASSERT_FALSE(bare.reg.remove(d.name));
     }

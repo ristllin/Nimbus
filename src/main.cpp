@@ -40,6 +40,7 @@
 #include <nvs.h>         // raw NVS read/write to preserve identity across the wipe
 #include "agent/adapters/image_vision.h"   // R1: device.status visionLastErr, the photo idle step
 #include "agent/device_log_tool.h"         // CUM-646: the device.log tool (the durable log read)
+#include "agent/tools_plain_device.h"      // E2-P-TOOLS: the bound device handlers (tools::bound)
 #include "agent/agent_config.h"            // AKEY_* frozen NVS key macros
 #include "nimbus/config/identity_keys.h"  // keys that must survive a factory reset
 #include "nimbus/orch/danger_zone.h"      // CUM-15: device-name keep-list preserved across a reset
@@ -3145,6 +3146,167 @@ static nimbus::hw::SelfTestInputs buildSelfTestInputs() {
   return in;
 }
 
+// The device tools' handlers, named so engine 2's device group binds the same code (lane
+// E2-P-TOOLS, tools_plain_device.cpp); engine 1 registers them below.
+namespace agent {
+namespace tools {
+namespace bound {
+
+nimbus::orch::ToolResult deviceStatus(ArduinoJson::JsonObjectConst, const nimbus::orch::Principal&) {
+  // W11: the hw snapshot PLUS the agent-layer live state (composed here,
+  // the top layer - src/hw must not include src/agent subsystems). One
+  // comprehensive self-state answer instead of scattered partial ones.
+  String s = nimbus::hw::deviceStatusJson();
+  if (s.endsWith("}")) s.remove(s.length() - 1);
+  // Ring/display config the model can set but couldn't read.
+  {
+    net::ConfigLockGuard lk;
+    static const char* kPostures[] = {"dark", "calm", "full"};
+    int p = (int)g_cfg.effective(nimbus::Param::Posture);
+    s += ",\"posture\":\"";
+    s += kPostures[p >= 0 && p <= 2 ? p : 1];
+    s += "\",\"profile\":\"";
+    s += nimbus::profileName(g_selector.user());
+    s += "\",\"effectiveProfile\":\"";
+    s += nimbus::profileName(g_selector.resolve());
+    s += "\",\"attnHoldMs\":";
+    s += (uint32_t)g_cfg.effective(nimbus::Param::AttnHoldMs);
+  }
+  s += ",\"devName\":\""; s += nimbus::sys::deviceName(); s += "\"";
+  s += ",\"subPriority\":\""; s += agent::store::subPriority(); s += "\"";
+  // Clock/timezone (the tz knob is web-settable; the model had no read).
+  s += ",\"tz\":\""; s += agent::store::deviceTz(); s += "\"";
+  s += ",\"clockSynced\":"; s += agent::memory::clockSynced() ? "true" : "false";
+  // Storage tiers: LIVE sd state (the hw block's `sd` is the mount) +
+  // internal flash + the artifact store's real usage vs caps.
+  s += ",\"sdLost\":"; s += agent::memory::sdLost() ? "true" : "false";
+  s += ",\"fsTotal\":"; s += (uint32_t)LittleFS.totalBytes();
+  s += ",\"fsUsed\":";  s += (uint32_t)LittleFS.usedBytes();
+  {
+    bool fp; uint32_t fc; uint64_t fb; uint32_t ffree;
+    agent::files::stats(fp, fc, fb, ffree);
+    s += ",\"files\":{\"present\":"; s += fp ? "true" : "false";
+    s += ",\"count\":"; s += fc;
+    s += ",\"bytes\":"; s += (uint32_t)fb;
+    s += ",\"freeBytes\":"; s += ffree; s += "}";
+  }
+  // Memory tiers as NUMBERS (count vs effective cap - the cap depends
+  // on the storage tier, so the configured knob alone misleads).
+  {
+    agent::memory::Stats ms = agent::memory::stats();
+    s += ",\"memory\":{\"vectors\":"; s += ms.vectorCount;
+    s += ",\"maxVectors\":"; s += ms.maxVectors;
+    s += ",\"episodicMsgs\":"; s += ms.episodicMsgs;
+    s += ",\"scratchItems\":"; s += ms.scratchItems;
+    s += ",\"flashFull\":"; s += ms.flashFull ? "true" : "false"; s += "}";
+  }
+  // Sub-agent capacity: the live picture behind [SPAWN CAPACITY].
+  s += ",\"spawn\":{\"running\":"; s += agent::orchestrator::activeJobCount();
+  s += ",\"queued\":"; s += agent::orchestrator::pendingSpawnCount();
+  s += ",\"maxInflight\":"; s += nimbus::orch::kMaxActiveInflight;
+  s += ",\"maxQueue\":"; s += nimbus::orch::kMaxPendingSpawns; s += "}";
+  // Real billed token usage (last turn + since boot) + W16: the
+  // per-provider PERIOD ledger - in/out split, calls, the $ estimate
+  // and ceilings - so the model can plan work against the owner's
+  // budget instead of discovering a refusal at dispatch. The $ math is
+  // the ledger's own estCents(): the same number the web Usage page
+  // and the budget gate use.
+  {
+    nimbus::orch::TokenUsage lu = agent::orchestrator::lastTurnUsage();
+    nimbus::orch::TokenUsage su = agent::orchestrator::sessionUsage();
+    s += ",\"usage\":{\"lastIn\":"; s += lu.promptTokens;
+    s += ",\"lastOut\":"; s += lu.completionTokens;
+    s += ",\"sessIn\":"; s += su.promptTokens;
+    s += ",\"sessOut\":"; s += su.completionTokens;
+    s += ",\"budget\":"; s += agent::store::providerBudgetJson(); s += "}";
+  }
+  // The last failed turn since boot (RAM only): its id, source, age and the
+  // first cause first - read this before explaining any failure.
+  s += ",\"lastFail\":"; s += agent::orchestrator::lastFailJson();
+  // L19-9: settings-storage health and the Telegram offset cursor (lane
+  // A's getters), so the head can explain lost settings and repeated
+  // deliveries itself instead of blaming the owner's app.
+  {
+    nimbus::orch::StorageState st;
+    nimbus::store::NvsUsage nu;
+    st.nvsStats = nimbus::sys::nvsUsage(nu);
+    st.nvsFree = nu.freeBytes;
+    st.saveFails = nimbus::sys::persistFailures();
+    st.lastSaveFail = std::string(nimbus::sys::lastPersistFailKey().c_str());
+    st.tgOffsetSaved = agent::telegram::pollStatus().offsetSaved;
+    // L19-9 (lane P): the embedding park, from the same source as
+    // /api/mem/stats - true means new memories wait on the device.
+    const String why = agent::memory::embedParkedWhy();
+    st.embedParked = why.length() > 0;
+    st.embedParkedWhy = std::string(why.c_str());
+    // L19-9 (lane C): the NVS reserve - the same numbers /api/state
+    // reports as nvsReserve, so the head can name a starved device.
+    const nimbus::sys::NvsGuardStats gs = nimbus::sys::nvsGuardStats();
+    st.nvsReserveStarved = gs.starved;
+    st.nvsReserveRefused = gs.refused;
+    // L19-9 (lane E): the photo reader's last failure (typed, never a body).
+    const agent::vision::LastError ve = agent::vision::lastError();
+    if (ve.atMs) {
+      st.visionErrAtS = ve.atMs / 1000;
+      st.visionErrProvider = ve.provider;
+      st.visionErrClass = agent::vision::readFailSlug(ve.fail);
+      st.visionErrStatus = ve.status;
+    }
+    s += ","; s += nimbus::orch::storageStateJson(st).c_str();
+  }
+  s += ",\"sfxSync\":\""; s += sfxsync::statusStr(); s += "\"";
+  s += ",\"otaSlot\":\""; s += otaupd::runningSlot(); s += "\"";
+  s += ",\"autoUpdate\":"; s += agent::store::otaAutoUpdate() ? "true" : "false";
+  // W18: the URL-download trust policy + pending count, so the model
+  // can explain WHY a download waits ("pending owner approval").
+  s += ",\"fetchPol\":\"";
+  s += nimbus::orch::fetchPolicyName(
+      nimbus::orch::fetchPolicyFromInt(agent::store::fetchPolicy()));
+  s += "\",\"fetchPending\":"; s += agent::files::fetchPendingCount();
+  s += "}";
+  return nimbus::orch::ToolResult::ok(std::string(s.c_str()));
+}
+
+nimbus::orch::ToolResult otaStatus(ArduinoJson::JsonObjectConst, const nimbus::orch::Principal&) {
+  // ArduinoJson, not concatenation (prism): release notes are free text
+  // with quotes/newlines - hand-built JSON garbled exactly the "what
+  // changed?" answer this tool exists for. Also: while a check is IN
+  // FLIGHT the version/notes globals are being written by the check
+  // task - report "checking" and skip them for that window instead of
+  // racing the write.
+  JsonDocument d;
+  const char* st = otaupd::statusStr();
+  d["state"] = st;
+  d["running"] = NIMBUS_FW_VERSION " (" NIMBUS_FW_BUILD ")";
+  if (strcmp(st, "checking") != 0) {
+    String lat = otaupd::latestSeen();
+    if (lat.length()) d["latest"] = lat;
+    String notes = otaupd::latestNotes();
+    if (notes.length()) d["notes"] = notes;
+  }
+  String last = agent::store::otaLastResult();
+  if (last.length()) d["lastResult"] = last;
+  const char* err = otaupd::lastError();
+  if (err && err[0]) d["lastError"] = err;
+  std::string out;
+  serializeJson(d, out);
+  return nimbus::orch::ToolResult::ok(out);
+}
+
+nimbus::orch::ToolResult selfTest(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
+  bool wantAudible = a["audible"].is<bool>() && a["audible"].as<bool>();
+  const bool allowed = wantAudible && !::sfx::isSilent() && agent::store::allowHwTests();
+  auto items = nimbus::hw::runNow(allowed);
+  std::string out = std::string(nimbus::hw::selfTestJson(items).c_str());
+  if (wantAudible && !allowed)
+    out += "  (audible tests skipped: device silent or owner-disabled)";
+  return nimbus::orch::ToolResult::ok(out);
+}
+
+}  // namespace bound
+}  // namespace tools
+}  // namespace agent
+
 #if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: no old-engine tool registers on engine 2 (RB-I0)
 // Register the orchestrator's device-introspection tools on the shared registry
 // (auto-advertised to the head tool-loop + reachable over /mcp). device.status
@@ -3179,120 +3341,7 @@ static void registerDeviceTools() {
           "it is true), and visionLastErr = the last time a photo could not be read "
           "(provider, class such as billing or network, HTTP status; null when none). "
           "Silent - never makes a sound.",
-          [](ArduinoJson::JsonObjectConst, const nimbus::orch::Principal&) -> nimbus::orch::ToolResult {
-            // W11: the hw snapshot PLUS the agent-layer live state (composed here,
-            // the top layer - src/hw must not include src/agent subsystems). One
-            // comprehensive self-state answer instead of scattered partial ones.
-            String s = nimbus::hw::deviceStatusJson();
-            if (s.endsWith("}")) s.remove(s.length() - 1);
-            // Ring/display config the model can set but couldn't read.
-            {
-              net::ConfigLockGuard lk;
-              static const char* kPostures[] = {"dark", "calm", "full"};
-              int p = (int)g_cfg.effective(nimbus::Param::Posture);
-              s += ",\"posture\":\"";
-              s += kPostures[p >= 0 && p <= 2 ? p : 1];
-              s += "\",\"profile\":\"";
-              s += nimbus::profileName(g_selector.user());
-              s += "\",\"effectiveProfile\":\"";
-              s += nimbus::profileName(g_selector.resolve());
-              s += "\",\"attnHoldMs\":";
-              s += (uint32_t)g_cfg.effective(nimbus::Param::AttnHoldMs);
-            }
-            s += ",\"devName\":\""; s += nimbus::sys::deviceName(); s += "\"";
-            s += ",\"subPriority\":\""; s += agent::store::subPriority(); s += "\"";
-            // Clock/timezone (the tz knob is web-settable; the model had no read).
-            s += ",\"tz\":\""; s += agent::store::deviceTz(); s += "\"";
-            s += ",\"clockSynced\":"; s += agent::memory::clockSynced() ? "true" : "false";
-            // Storage tiers: LIVE sd state (the hw block's `sd` is the mount) +
-            // internal flash + the artifact store's real usage vs caps.
-            s += ",\"sdLost\":"; s += agent::memory::sdLost() ? "true" : "false";
-            s += ",\"fsTotal\":"; s += (uint32_t)LittleFS.totalBytes();
-            s += ",\"fsUsed\":";  s += (uint32_t)LittleFS.usedBytes();
-            {
-              bool fp; uint32_t fc; uint64_t fb; uint32_t ffree;
-              agent::files::stats(fp, fc, fb, ffree);
-              s += ",\"files\":{\"present\":"; s += fp ? "true" : "false";
-              s += ",\"count\":"; s += fc;
-              s += ",\"bytes\":"; s += (uint32_t)fb;
-              s += ",\"freeBytes\":"; s += ffree; s += "}";
-            }
-            // Memory tiers as NUMBERS (count vs effective cap - the cap depends
-            // on the storage tier, so the configured knob alone misleads).
-            {
-              agent::memory::Stats ms = agent::memory::stats();
-              s += ",\"memory\":{\"vectors\":"; s += ms.vectorCount;
-              s += ",\"maxVectors\":"; s += ms.maxVectors;
-              s += ",\"episodicMsgs\":"; s += ms.episodicMsgs;
-              s += ",\"scratchItems\":"; s += ms.scratchItems;
-              s += ",\"flashFull\":"; s += ms.flashFull ? "true" : "false"; s += "}";
-            }
-            // Sub-agent capacity: the live picture behind [SPAWN CAPACITY].
-            s += ",\"spawn\":{\"running\":"; s += agent::orchestrator::activeJobCount();
-            s += ",\"queued\":"; s += agent::orchestrator::pendingSpawnCount();
-            s += ",\"maxInflight\":"; s += nimbus::orch::kMaxActiveInflight;
-            s += ",\"maxQueue\":"; s += nimbus::orch::kMaxPendingSpawns; s += "}";
-            // Real billed token usage (last turn + since boot) + W16: the
-            // per-provider PERIOD ledger - in/out split, calls, the $ estimate
-            // and ceilings - so the model can plan work against the owner's
-            // budget instead of discovering a refusal at dispatch. The $ math is
-            // the ledger's own estCents(): the same number the web Usage page
-            // and the budget gate use.
-            {
-              nimbus::orch::TokenUsage lu = agent::orchestrator::lastTurnUsage();
-              nimbus::orch::TokenUsage su = agent::orchestrator::sessionUsage();
-              s += ",\"usage\":{\"lastIn\":"; s += lu.promptTokens;
-              s += ",\"lastOut\":"; s += lu.completionTokens;
-              s += ",\"sessIn\":"; s += su.promptTokens;
-              s += ",\"sessOut\":"; s += su.completionTokens;
-              s += ",\"budget\":"; s += agent::store::providerBudgetJson(); s += "}";
-            }
-            // The last failed turn since boot (RAM only): its id, source, age and the
-            // first cause first - read this before explaining any failure.
-            s += ",\"lastFail\":"; s += agent::orchestrator::lastFailJson();
-            // L19-9: settings-storage health and the Telegram offset cursor (lane
-            // A's getters), so the head can explain lost settings and repeated
-            // deliveries itself instead of blaming the owner's app.
-            {
-              nimbus::orch::StorageState st;
-              nimbus::store::NvsUsage nu;
-              st.nvsStats = nimbus::sys::nvsUsage(nu);
-              st.nvsFree = nu.freeBytes;
-              st.saveFails = nimbus::sys::persistFailures();
-              st.lastSaveFail = std::string(nimbus::sys::lastPersistFailKey().c_str());
-              st.tgOffsetSaved = agent::telegram::pollStatus().offsetSaved;
-              // L19-9 (lane P): the embedding park, from the same source as
-              // /api/mem/stats - true means new memories wait on the device.
-              const String why = agent::memory::embedParkedWhy();
-              st.embedParked = why.length() > 0;
-              st.embedParkedWhy = std::string(why.c_str());
-              // L19-9 (lane C): the NVS reserve - the same numbers /api/state
-              // reports as nvsReserve, so the head can name a starved device.
-              const nimbus::sys::NvsGuardStats gs = nimbus::sys::nvsGuardStats();
-              st.nvsReserveStarved = gs.starved;
-              st.nvsReserveRefused = gs.refused;
-              // L19-9 (lane E): the photo reader's last failure (typed, never a body).
-              const agent::vision::LastError ve = agent::vision::lastError();
-              if (ve.atMs) {
-                st.visionErrAtS = ve.atMs / 1000;
-                st.visionErrProvider = ve.provider;
-                st.visionErrClass = agent::vision::readFailSlug(ve.fail);
-                st.visionErrStatus = ve.status;
-              }
-              s += ","; s += nimbus::orch::storageStateJson(st).c_str();
-            }
-            s += ",\"sfxSync\":\""; s += sfxsync::statusStr(); s += "\"";
-            s += ",\"otaSlot\":\""; s += otaupd::runningSlot(); s += "\"";
-            s += ",\"autoUpdate\":"; s += agent::store::otaAutoUpdate() ? "true" : "false";
-            // W18: the URL-download trust policy + pending count, so the model
-            // can explain WHY a download waits ("pending owner approval").
-            s += ",\"fetchPol\":\"";
-            s += nimbus::orch::fetchPolicyName(
-                nimbus::orch::fetchPolicyFromInt(agent::store::fetchPolicy()));
-            s += "\",\"fetchPending\":"; s += agent::files::fetchPendingCount();
-            s += "}";
-            return nimbus::orch::ToolResult::ok(std::string(s.c_str()));
-          },
+          agent::tools::bound::deviceStatus,
           R"({"type":"object","properties":{},"required":[]})");
   // The device's own durable log, for diagnosing failures that belong to no
   // turn (a settings save that failed, a scratchpad that could not be written,
@@ -3319,46 +3368,14 @@ static void registerDeviceTools() {
           "notes, and the last install outcome. Use when asked about updates or "
           "'what changed'. You cannot INSTALL updates - only the owner can "
           "(/update or the web UI); say so instead of promising to update.",
-          [](ArduinoJson::JsonObjectConst, const nimbus::orch::Principal&) -> nimbus::orch::ToolResult {
-            // ArduinoJson, not concatenation (prism): release notes are free text
-            // with quotes/newlines - hand-built JSON garbled exactly the "what
-            // changed?" answer this tool exists for. Also: while a check is IN
-            // FLIGHT the version/notes globals are being written by the check
-            // task - report "checking" and skip them for that window instead of
-            // racing the write.
-            JsonDocument d;
-            const char* st = otaupd::statusStr();
-            d["state"] = st;
-            d["running"] = NIMBUS_FW_VERSION " (" NIMBUS_FW_BUILD ")";
-            if (strcmp(st, "checking") != 0) {
-              String lat = otaupd::latestSeen();
-              if (lat.length()) d["latest"] = lat;
-              String notes = otaupd::latestNotes();
-              if (notes.length()) d["notes"] = notes;
-            }
-            String last = agent::store::otaLastResult();
-            if (last.length()) d["lastResult"] = last;
-            const char* err = otaupd::lastError();
-            if (err && err[0]) d["lastError"] = err;
-            std::string out;
-            serializeJson(d, out);
-            return nimbus::orch::ToolResult::ok(out);
-          },
+          agent::tools::bound::otaStatus,
           R"({"type":"object","properties":{},"required":[]})");
   reg.add("device.selftest",
           "Run a hardware self-test and return per-item PASS/FAIL/SKIP results. "
           "Set audible=true to also run the speaker+mic acoustic loopback and mic level; "
           "audible tests are refused when the device is on silent or the owner disabled "
           "hardware tests (the silent items always run).",
-          [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) -> nimbus::orch::ToolResult {
-            bool wantAudible = a["audible"].is<bool>() && a["audible"].as<bool>();
-            const bool allowed = wantAudible && !::sfx::isSilent() && agent::store::allowHwTests();
-            auto items = nimbus::hw::runNow(allowed);
-            std::string out = std::string(nimbus::hw::selfTestJson(items).c_str());
-            if (wantAudible && !allowed)
-              out += "  (audible tests skipped: device silent or owner-disabled)";
-            return nimbus::orch::ToolResult::ok(out);
-          },
+          agent::tools::bound::selfTest,
           R"({"type":"object","properties":{"audible":{"type":"boolean"}},"required":[]})");
 }
 #endif

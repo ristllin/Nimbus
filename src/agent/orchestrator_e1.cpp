@@ -638,50 +638,7 @@ static agent::ApplyDeps buildApplyDeps() {
   // Execution-only closures - every POLICY decision (scheduled-turn refusals,
   // risk notes, tts gate, orch_model validation order) lives in the portable
   // harness apply.cpp and is host-tested (test_harness_apply).
-  d.execConfig = [](const orch::ValidatedAction& va) -> bool {
-    // Returns whether a stored value CHANGED (before != after), so a no-op
-    // action reports "no change" and never backs a "switched" reply (23 Oct).
-    bool changed = false;
-    if (va.hasLedBrightness) changed = store::setLedBright(va.ledBrightness) || changed;
-    // `priority` tunes the SUB-SESSION provider preference only (never the
-    // orchestrator-host list - see the protected-key rail).
-    if (va.hasPriority)  changed = store::setSubPriority(String(va.priority.c_str())) || changed;
-    if (va.hasTtsVoice)  changed = store::setTtsVoice(String(va.ttsVoice.c_str())) || changed;
-    if (va.hasTtsProv)   changed = store::setTtsProvider(String(va.ttsProv.c_str())) || changed;
-    if (va.hasTtsOn)     changed = store::setTtsEnabled(va.ttsOn) || changed;
-    if (va.hasSleepOvr)  changed = store::setSleepOvr(va.sleepOvr) || changed;
-    if (va.hasBrightOvr) changed = store::setBrightOvr(va.brightOvr) || changed;
-    if (va.hasSttProv)   changed = store::setSttProvider(String(va.sttProv.c_str())) || changed;
-    if (va.hasSfxLvlN || va.hasSfxLvlO || va.hasSfxVol || va.hasSfxTheme) {
-      if (va.hasSfxLvlN)  changed = store::setSfxLevelNotif(va.sfxLvlN) || changed;
-      if (va.hasSfxLvlO)  changed = store::setSfxLevelOrch(va.sfxLvlO) || changed;
-      if (va.hasSfxVol)   changed = store::setSfxVolume(va.sfxVol) || changed;
-      if (va.hasSfxTheme) changed = store::setSfxTheme(String(va.sfxTheme.c_str())) || changed;
-      ::sfx::refreshConfig();   // live-apply, same seam the web setters use
-    }
-    if (va.hasDevName) {
-      const String before = nimbus::sys::deviceName();
-      changed = nimbus::sys::saveDeviceName(String(va.devName.c_str())) != before || changed;
-    }
-    return changed;
-  };
-  if (g_sinks.device)
-    d.stageDevice = [](const orch::ValidatedAction& va) { g_sinks.device(va); };
-  if (g_sinks.speak)
-    d.speak = [](const std::string& chat, const std::string& s) {
-      return g_sinks.speak(String(chat.c_str()), String(s.c_str()));
-    };
-  d.speakerVolume = [] { return (int)store::sfxVolume(); };   // live: a tts at volume 0 plays silence
-  d.modelIsValid = [](const std::string& p, const std::string& m) {
-    return modelIsValid(String(p.c_str()), m.c_str());
-  };
-  // R5 (lane H): a miss queues one list refresh and answers with the cache date.
-  d.modelMiss = [](const std::string& p, const std::string& m) { return agent::model_refresh::missText(p, m); };
-  d.providerHasKey = [](const std::string& p) { return providerHasKey(String(p.c_str())); };
-  d.setOrchHostModel = [](const std::string& p, const std::string& m) {
-    store::setOrchHost(String(p.c_str()));
-    store::setOrchModel(String(p.c_str()), String(m.c_str()));
-  };
+  fillDeviceApplyDeps(d);   // the executors, shared with engine 2 (orchestrator_common.cpp)
   // A pause never moves the owner's head (the policy is apply.cpp's): the facts.
   d.headHost = [] { return g_engine ? g_engine->headHost() : std::string(store::orchHost().c_str()); };
   d.headPause = [](const std::string& p) { return headPauseFor(p); };

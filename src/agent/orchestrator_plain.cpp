@@ -107,6 +107,8 @@
 #include "telegram.h"           // telegram::ownerChat, sendPart, turnUpdateIds, seenIndex
 #include "transport_tls.h"      // deviceTransport
 #include "tx_store_device.h"    // txdev::cardTxFiles
+#include "tools_plain_device.h"  // tools::switchHead - device_control's deferred head switch (E2-P-TOOLS)
+#include "nimbus/harness/jobs.h"  // keyFromTag - the head arc's ring key (E2-P-TOOLS)
 
 namespace agent {
 namespace orchestrator {
@@ -121,6 +123,8 @@ constexpr const char* kNotClaudeLine =
     "provider in Settings, then send the message again.";
 constexpr const char* kNoKeyLine = "No Anthropic key is set. Add one in Settings, then send the message again.";
 constexpr const char* kFrozenLine = "The monthly spend limit is reached. Raise it in Settings to continue.";
+// Lane E2-P-TOOLS: after a head switch the owner asked for, the model that answers from now on.
+constexpr const char* kHeadSwitchedLine = "Now answering with ";
 // Lane E2-FIX13: a message that arrives while the earlier conversation is read in is kept and answered
 // by itself when the reading is done. The person is told once per chat (the first message kept).
 constexpr const char* kReadingLine =
@@ -557,6 +561,9 @@ plain::ChatBinding* chatFor(const String& chatId, const std::string& model, nimb
     spend.add(provider.c_str(), m.c_str(), u);
     store::recordProviderSpend(spend, "compact");
   };
+  // E2-P-TOOLS: at each step of a turn a message that arrived meanwhile gets engine 1's short
+  // acknowledgement (telegram::turnAckQueued peeks without advancing; at most one peek per 10 s).
+  if (!localChat(chatId)) d.onProgress = [](const plain::ProgressEvent&) { (void)telegram::turnAckQueued(); };
   if (!localChat(chatId))   // the web chat shows its own spinner; Telegram gets the line (RB-E3)
     d.progress.send = [](const std::string& chat, const std::string& text, int64_t& msgId) {
       msgId = 0;   // a new line each time: no edit on this path
@@ -614,11 +621,19 @@ uint64_t rowNumber(const String& id) {
   return (uint64_t)strtoull(id.c_str() + 1, nullptr, 16);
 }
 
-// Effects a turn's tools asked for, after the turn. No engine-2 tool asks for one yet: each is
-// named in the log; an install runs through the hook the web route set, a restart restarts.
-void runDeferred(const plain::DeferredEffects& d) {
+// Effects a turn's tools asked for, after the turn: a head switch device_control accepted (lane
+// E2-P-TOOLS: the head setting written by engine 1's executor, the chat told which model answers
+// now), an install through the hook the web route set, a restart.
+bool sayInstead(const String& chatId, const char* line);   // below
+
+void runDeferred(const plain::DeferredEffects& d, const String& chatId) {
   if (!d.mask) return;
-  if (d.has(plain::Deferred::HeadSwitch)) alog("e2: a head switch was asked; not bound on this build");
+  if (d.has(plain::Deferred::HeadSwitch)) {
+    const std::string& to = d.arg[static_cast<size_t>(plain::Deferred::HeadSwitch)];
+    const bool ok = tools::switchHead(to);
+    alogf("e2: head switch to %s: %s", to.c_str(), ok ? "done" : "not a provider/model");
+    if (ok) sayInstead(chatId, (String(kHeadSwitchedLine) + (to.c_str() + to.find('/') + 1) + ".").c_str());
+  }
   if (d.has(plain::Deferred::Install) && s_otaInstallHook) alogf("e2: install: %s", s_otaInstallHook().c_str());
   if (d.has(plain::Deferred::Restart)) {
     alog("e2: restart asked by the turn");
@@ -764,10 +779,12 @@ bool turnFor(plain::ChatBinding& b, const String& chatId, const plain::ChatMessa
   // The crash journal (E2-FIX12): a restart inside this turn (a kept message's too) names its chat at the
   // next boot, where the engine resumes it once (bootLostChat).
   journalTurn(chatId, msg);
+  engineSetHeadArc(true);   // E2-P-TOOLS: the ring shows the turn working, as engine 1's TurnGuard does
   {
     PsramFirstScope psramFirst;
     st = b.turn(msg, out);
   }
+  engineSetHeadArc(false);
   nimbus::crash::turnEnded();
   if (status) *status = st;
   afterTurn(msg.probe, st, out);   // E2-FIX14: a turn refused before its first request gives the re-check back
@@ -782,7 +799,7 @@ bool turnFor(plain::ChatBinding& b, const String& chatId, const plain::ChatMessa
   else if (!out.statusStored.empty())   // the line without a provider's reason (E2-FIX11): a model may read this row
     memory::captureMessage(chatId.c_str(), "system", nimbus::orch::MsgKind::Message,
                            String(out.statusStored.c_str()), "", "e2");
-  runDeferred(out.deferred);
+  runDeferred(out.deferred, chatId);
   const bool sent = b.sentParts() > 0;
   for (const std::string& line : s_skillTell) sayInstead(chatId, line.c_str());
   s_skillTell.clear();
@@ -1226,7 +1243,7 @@ void onResumed(const std::string& chat, const plain::ResumeReport& r) {
     memory::captureMessage(chat.c_str(), "assistant", nimbus::orch::MsgKind::Message, String(assistant.c_str()), "", "e2");
   else if (!system.empty())
     memory::captureMessage(chat.c_str(), "system", nimbus::orch::MsgKind::Message, String(system.c_str()), "", "e2");
-  if (r.action == BootAction::Resume) runDeferred(out.deferred);
+  if (r.action == BootAction::Resume) runDeferred(out.deferred, String(chat.c_str()));
 }
 
 // Lane E2-FIX12: a person's message a restart cut (the crash journal names its chat) is taken up
@@ -1788,7 +1805,15 @@ void noteConfigChanged() {}
 
 bool engineRunning() { return false; }   // no ring arcs or sub-agents on engine 2 yet
 bool engineReapStuckTurn(uint32_t) { return false; }
-void engineSetHeadArc(bool) {}
+// The head's ring arc (E2-P-TOOLS): engine 1's event on the attention Router (blue comet, then off).
+void engineSetHeadArc(bool on) {
+  if (!g_sinks.event) return;
+  nimbus::attn::Event e;
+  e.type = nimbus::attn::Event::Type::JobState;
+  e.key = keyFromTag("head");
+  e.status = (uint8_t)(on ? solide::ring::Status::Running : solide::ring::Status::Offline);
+  g_sinks.event(e);
+}
 String withTurnTag(const char* base) { return String(base); }
 void engineNoteToolReplied(const std::string&) {}
 

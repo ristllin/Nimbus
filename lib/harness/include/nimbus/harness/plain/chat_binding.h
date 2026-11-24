@@ -813,6 +813,7 @@ class ChatBinding {
     o.isError = !r.success;
     o.text = r.success ? r.output : r.error;
     o.outside = d_.outside && d_.outside(c.name);
+    if (r.success) (void)deferredFromCode(r.code, o.deferred, o.deferredArg);   // E2-P-TOOLS: restart, head switch
     return o;
   }
 
