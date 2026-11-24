@@ -75,27 +75,32 @@ struct Tools {
   const orch::Journal* journal() const { return d.jobs ? d.jobs->journal() : nullptr; }
   std::string chat() const { return d.chat ? d.chat() : std::string(); }
 
-  orch::ToolResult start(ArduinoJson::JsonObjectConst a) {
-    const std::string chatId = chat();
-    if (chatId.empty()) return orch::ToolResult::fail(tr::kAgentNotStarted);
-    if (!onlyKeys(a, {"name", "task", "files", "model"})) return orch::ToolResult::fail(tr::kAgentArgs);
-    orch::Spawn s;
+  // agent_start's arguments as a spawn on this binding's backend; false when one is not valid.
+  bool spawnOf(ArduinoJson::JsonObjectConst a, orch::Spawn& s) const {
+    if (!onlyKeys(a, {"name", "task", "files", "model"})) return false;
     s.name = str(a, "name");
     s.task = str(a, "task");
     s.model = str(a, "model");
-    if (s.name.empty() || s.task.empty()) return orch::ToolResult::fail(tr::kAgentArgs);
-    if (!a["files"].isNull()) {
-      ArduinoJson::JsonArrayConst files = a["files"].as<ArduinoJson::JsonArrayConst>();
-      if (files.isNull() || files.size() > kAgentMaxFiles) return orch::ToolResult::fail(tr::kAgentArgs);
-      for (ArduinoJson::JsonVariantConst f : files) {
-        const char* p = f.is<const char*>() ? f.as<const char*>() : nullptr;
-        if (!p || !std::strchr(p, '/')) return orch::ToolResult::fail(tr::kAgentArgs);
-        s.attach.push_back(p);
-      }
-    }
     s.provider = d.backend;
     s.category = "research";
     s.project = kAgentsProject;
+    if (s.name.empty() || s.task.empty()) return false;
+    if (a["files"].isNull()) return true;
+    ArduinoJson::JsonArrayConst files = a["files"].as<ArduinoJson::JsonArrayConst>();
+    if (files.isNull() || files.size() > kAgentMaxFiles) return false;
+    for (ArduinoJson::JsonVariantConst f : files) {
+      const char* p = f.is<const char*>() ? f.as<const char*>() : nullptr;
+      if (!p || !std::strchr(p, '/')) return false;
+      s.attach.push_back(p);
+    }
+    return true;
+  }
+
+  orch::ToolResult start(ArduinoJson::JsonObjectConst a) {
+    const std::string chatId = chat();
+    if (chatId.empty()) return orch::ToolResult::fail(tr::kAgentNotStarted);
+    orch::Spawn s;
+    if (!spawnOf(a, s)) return orch::ToolResult::fail(tr::kAgentArgs);
     const std::set<std::string> before = openTags(journal());
     if (!d.jobs->enqueueSpawn(s, chatId, /*quiet=*/true)) return refused(chatId);
     if (d.dispatchNow) {
@@ -107,8 +112,7 @@ struct Tools {
     for (int i = 0; j && i < j->count(); ++i)
       if (j->get(i, r) && !before.count(r.tag) && chatId == r.chatId)
         return orch::ToolResult::ok(std::string(tr::kAgentStarted) + r.tag + tr::kAgentJob + r.jobId);
-    bool mayHaveRun = false;
-    const std::string notes = d.jobs->takeSpawnNotes(chatId, &mayHaveRun);
+    const std::string notes = d.jobs->takeSpawnNotes(chatId);
     if (!notes.empty()) return orch::ToolResult::fail(tr::kAgentNotStarted + notes);
     return orch::ToolResult::ok(tr::kAgentQueued);
   }
