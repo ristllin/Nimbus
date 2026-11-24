@@ -71,9 +71,8 @@ src/agent/tx_store_device.cpp
 src/agent/commands_plain.cpp
 src/agent/skills_device.cpp
 
-# E2-P-SKILL: skill tools, /skill, /prefs and the held notes on engine 2; no built-in skill.
+# E2-P-SKILL: skill tools, /skill, /prefs and the held notes on engine 2.
 src/agent/tools_plain_skills.cpp
-lib/harness/src/builtin_skills_none.cpp
 
 # E2-MIG: the earlier engine's conversation and standing rules, read at engine-2 start.
 src/agent/migrate_device.cpp
