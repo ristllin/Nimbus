@@ -17,13 +17,14 @@
 //               arguments (a limit change and its confirm); /remind (lane E2-SCHED: a reminder
 //               made through the schedule tool's own code, as the owner's); /skill and /prefs
 //               (lane E2-P-SKILL, plain/chat_skill_tools.h: engine 1's store and rules file; the
-//               rules reach engine 2 through the notes, and /prefs answers the held notes);
+//               rules reach engine 2 through the notes, and /prefs answers the held notes); /mcp approve|deny
+//               (lane E2-P-CONN1: engine 1's approval, connectors::mcp::approvalCommand);
 //   Clear       a new conversation on engine 2 (the stored one is kept on the card);
 //   Compact     a compaction of this chat now;
 //   BudgetView  a bare /budget: engine 2's budget view (the system prompt in tokens), then the
 //               spending text a bare /budget gives on engine 1;
-//   NotYet      engine 1 only for now, answered with one plain line: /mcp (engine 2 reaches no
-//               tool server);
+//   NotYet      engine 1 only for now, answered with one plain line: none today (the route stays
+//               for a verb engine 2 cannot answer yet);
 //   Unknown     a verb the table does not know: the same "try /help" answer as engine 1.
 // test_plain_chat_commands walks every verb of the table: a verb added there with no route here
 // fails it.
@@ -51,7 +52,6 @@ inline ChatCommandRoute chatCommandRoute(const nimbus::orch::Command& c) {
   if (v == "clear") return ChatCommandRoute::Clear;
   if (v == "compact") return ChatCommandRoute::Compact;
   if (v == "budget") return c.args.empty() ? ChatCommandRoute::BudgetView : ChatCommandRoute::Shared;
-  if (v == "mcp") return ChatCommandRoute::NotYet;
   return ChatCommandRoute::Shared;
 }
 

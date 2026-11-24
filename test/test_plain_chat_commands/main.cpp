@@ -24,7 +24,7 @@ struct Expect {
 constexpr Expect kExpected[] = {
     {"help", R::Shared},   {"start", R::Shared},   {"update", R::Shared},    {"loops", R::Shared},
     {"loop", R::Shared},   {"compact", R::Compact}, {"skill", R::Shared},    {"fetch", R::Shared},
-    {"remind", R::Shared}, {"clear", R::Clear},     {"mcp", R::NotYet},      {"play", R::Shared},
+    {"remind", R::Shared}, {"clear", R::Clear},     {"mcp", R::Shared},      {"play", R::Shared},
     {"prefs", R::Shared},  {"usage", R::Shared},    {"budget", R::BudgetView}, {"model", R::Shared},
     {"ota", R::Shared},
 };

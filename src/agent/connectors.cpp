@@ -30,6 +30,9 @@
 #include "nimbus/orch/oauth_step_runner.h"   // network steps run off the watched loop
 #include "../sys/heap_watch.h"               // spawnGate, Scope - the step worker
 #include "nimbus/store/persist.h"            // kStorageFullMessage - a refresh token that did not store
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+#include "tools_plain_connectors.h"   // E2-P-CONN1: engine 2 binds the registration
+#endif
 #include <esp_system.h>   // esp_random - retry jitter source
 #include <cstring>        // strcmp - non-allocating state compare in the OAuth callback
 #include <memory>
@@ -1003,23 +1006,23 @@ bool discover(const String& serverName, const UrlParts& u, const String& bearer,
   return true;
 }
 
+// The server's tools as they register: a tool with no description of its own reads "<slug> tool".
+std::vector<mc::ToolDef> described(const String& slug, const std::vector<mc::ToolDef>& tools) {
+  std::vector<mc::ToolDef> out = tools;
+  for (auto& t : out)
+    if (t.description.empty()) t.description = std::string(slug.c_str()) + " tool";
+  return out;
+}
+
 // Register a discovered server's tools into the registry. CALLER MUST HOLD
 // agent::memory::Lock (this is an in-RAM mutation of the shared registry, which
 // the AsyncTCP /mcp reader also touches under that Lock).
 void registerToolsLocked(ToolRegistry& reg, const String& slug, const std::vector<mc::ToolDef>& tools) {
   reg.removeByPrefix(prefixOf(slug));   // clear any stale set before re-adding
 #if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: no old-engine tool registers on engine 2 (RB-I0)
-  for (const auto& t : tools) {
-    std::string regName = mc::namespacedTool(std::string(slug.c_str()), t.name);
-    std::string s = slug.c_str();
-    std::string tn = t.name;
-    std::string desc = t.description.empty() ? (std::string(slug.c_str()) + " tool") : t.description;
-    reg.add(regName, desc,
-            [s, tn](ArduinoJson::JsonObjectConst a, const Principal& who) { return callTool(s, tn, a, who); },
-            t.inputSchemaJson);
-  }
+  mc::registerServerTools(reg, std::string(slug.c_str()), described(slug, tools), callTool);
 #else
-  (void)tools;
+  agent::tools::connectorsdev::addServer(reg, std::string(slug.c_str()), described(slug, tools), callTool);   // E2-P-CONN1
 #endif
 }
 

@@ -86,3 +86,6 @@ src/agent/tools_plain_files.cpp
 
 # E2-P-TOOLS: the device, people, models and docs groups over engine 1's handlers.
 src/agent/tools_plain_device.cpp
+
+# E2-P-CONN1: engine 2's binding of the remote tool servers.
+src/agent/tools_plain_connectors.cpp

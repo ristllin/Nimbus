@@ -193,6 +193,11 @@ void sync(nimbus::orch::ToolRegistry& reg);
 // failures - appended to catalog() so the model plans around real state.
 std::string catalogSection();
 
+// The owner's /mcp approve|deny <name> (CUM-33): flips the `appr` bit of the named mcp entry in
+// the connectors blob (the same NVS rail as the /api/connectors write) and answers the owner's
+// line, written only after the change landed. Enforcement is sync()'s. Both engines' /mcp.
+std::string approvalCommand(const std::string& args);
+
 // ---- OAuth 2.1 acquisition (CUM-256) -----------------------------------------
 // The FRONT half of OAuth: getting a refresh token for a hosted, OAuth-only MCP
 // server (mcp.linear.app-class) so the existing T3 broker (bearerFor/refreshAccess)

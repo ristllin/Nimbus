@@ -1844,46 +1844,8 @@ void handleMessage(const String& text, const String& fromName, const String& cha
         }
         return;
       }
-      if (v == "mcp") {
-        // Cross-lane (CUM-33): owner approves/denies a device-dialed MCP server so
-        // its tools can be discovered. Flips the `appr` bit on the mcp entry in the
-        // connectors blob - the SAME NVS rail as the token-gated /api/connectors
-        // write. Enforcement (discovery/retraction) lives in N4's connectors sync.
-        String rest = String(cmd.args.c_str()); rest.trim();
-        int sp = rest.indexOf(' ');
-        String action = (sp < 0) ? rest : rest.substring(0, sp); action.toLowerCase();
-        String name = (sp < 0) ? String("") : rest.substring(sp + 1); name.trim();
-        if ((action != "approve" && action != "deny") || name.length() == 0) {
-          say(selfTag + "Usage: /mcp approve <name>  |  /mcp deny <name>");
-          return;
-        }
-        JsonDocument blob;
-        bool ok = !deserializeJson(blob, store::connectorsJson());   // truthy == error
-        bool found = false;
-        if (ok && blob.is<ArduinoJson::JsonArray>()) {
-          for (ArduinoJson::JsonObject e : blob.as<ArduinoJson::JsonArray>()) {
-            if (String((const char*)(e["kind"] | "")) == "mcp" &&
-                String((const char*)(e["name"] | "")) == name) {
-              e["appr"] = (action == "approve") ? 1 : 0;
-              found = true;
-              break;
-            }
-          }
-        }
-        if (!found) {
-          say(selfTag + "No MCP server named \"" + name + "\". Add it on the web page first.");
-          return;
-        }
-        String out; serializeJson(blob, out);
-        // Reply only after the change landed: an approval a full NVS refused would
-        // otherwise read as done and silently revert at the next restart.
-        if (!store::setConnectorsJson(out)) {
-          say(selfTag + nimbus::store::kStorageFullMessage);
-          return;
-        }
-        say(selfTag + (action == "approve"
-                  ? ("Approved MCP server \"" + name + "\". Its tools will be discovered shortly.")
-                  : ("Removed approval for MCP server \"" + name + "\". Its tools are retracted.")));
+      if (v == "mcp") {   // CUM-33, shared with engine 2 (connectors::mcp::approvalCommand)
+        say(selfTag + String(connectors::mcp::approvalCommand(cmd.args).c_str()));
         return;
       }
       if (v == "compact") {

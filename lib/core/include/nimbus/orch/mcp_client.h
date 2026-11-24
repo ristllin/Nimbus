@@ -1,6 +1,7 @@
 #pragma once
 #include <ArduinoJson.h>
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -322,6 +323,24 @@ bool isNamespaced(const std::string& registryName);
 // The server slug embedded in a namespaced tool name (mcp.<slug>.<tool> ->
 // <slug>); "" if the name is not namespaced. Used by per-server approval.
 std::string serverOf(const std::string& registryName);
+
+// ---- registration (both engines, lane E2-P-CONN1) ----------------------------
+
+}  // namespace mcp
+class ToolRegistry;   // nimbus/orch/tool_registry.h
+struct Principal;     // nimbus/orch/rbac.h
+struct ToolResult;
+namespace mcp {
+
+// One remote call: the server slug, the server's own tool name, the arguments and the caller.
+using RemoteCall = std::function<ToolResult(const std::string& slug, const std::string& tool,
+                                            ArduinoJson::JsonObjectConst args, const Principal& who)>;
+
+// Register one discovered server's tools on `reg` as mcp.<slug>.<tool>, each handler a call of
+// `call` with the server's own tool name, described as `tools` says. No class
+// is declared: a remote tool reads as the connectors group, outside, effect (tool_groups.h).
+void registerServerTools(ToolRegistry& reg, const std::string& slug, const std::vector<ToolDef>& tools,
+                         const RemoteCall& call);
 
 }  // namespace mcp
 }  // namespace orch

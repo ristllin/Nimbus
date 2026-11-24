@@ -1,6 +1,7 @@
 #include "nimbus/orch/mcp_client.h"
 
 #include "nimbus/json_strict.h"
+#include "nimbus/orch/tool_registry.h"   // registerServerTools
 
 #include <cctype>
 
@@ -640,6 +641,16 @@ std::string serverOf(const std::string& registryName) {
   size_t b = registryName.find('.', a);
   if (b == std::string::npos) return "";
   return registryName.substr(a, b - a);
+}
+
+void registerServerTools(ToolRegistry& reg, const std::string& slug, const std::vector<ToolDef>& tools,
+                         const RemoteCall& call) {
+  for (const auto& t : tools) {
+    const std::string tn = t.name;
+    reg.add(namespacedTool(slug, t.name), t.description,
+            [slug, tn, call](ArduinoJson::JsonObjectConst a, const Principal& who) { return call(slug, tn, a, who); },
+            t.inputSchemaJson);
+  }
 }
 
 }  // namespace mcp

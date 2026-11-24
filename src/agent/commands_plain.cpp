@@ -18,6 +18,7 @@
 #include "../sys/config_nvs.h"      // sys::deviceName - the reply tag
 #include "../sys/ota_update.h"      // /ota (RB-OTA2)
 #include "budget_command.h"         // /usage, /budget, /model (lane BUD)
+#include "connectors.h"             // /mcp (CUM-33, engine 1's approval; E2-P-CONN1)
 #include "files_subsystem.h"        // /fetch (W18)
 #include "loops_subsystem.h"        // /loops, /loop
 #include "memory_subsystem.h"       // captureMessage - a budget change's copy for the web chat
@@ -297,6 +298,7 @@ void shared(const nimbus::orch::Command& cmd, const String& chatId, bool owner, 
   if (v == "loop") return loop(chatId, cmd.args);
   if (v == "remind") return remind(chatId, cmd.args);
   if (v == "skill" || v == "prefs") return say(chatId, selfTag() + agent::tools::skillsplain::command(v, cmd.args));   // E2-P-SKILL
+  if (v == "mcp") return say(chatId, selfTag() + String(connectors::mcp::approvalCommand(cmd.args).c_str()));   // E2-P-CONN1
   if (v == "usage" || v == "budget" || v == "model") return say(chatId, selfTag() + spending(cmd, chatId, owner, pseudo));
   alogf("e2: /%s has no shared handler", v.c_str());   // the route table and this list disagree
   say(chatId, selfTag() + kNotYetLine);

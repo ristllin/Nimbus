@@ -47,7 +47,10 @@
 #include "nimbus/harness/plain/waiting.h"
 #include "nimbus/harness/plain/request.h"
 #include "nimbus/harness/plain/texts.h"
+#include "nimbus/orch/mcp_client.h"   // registerServerTools, the parsers (E2-P-CONN1)
 #include "nimbus/orch/media_label.h"
+#include "nimbus/orch/tool_groups.h"   // registerMore
+#include "../test_mcp_client/real_fixtures.h"   // engine 1's fake tool server: a real server's bytes
 #include "nimbus/orch/tx/card_files.h"
 #include "nimbus/orch/no_dash.h"
 #include "nimbus/orch/owner_prefs.h"
@@ -400,6 +403,55 @@ static void test_a_turn_that_read_an_inbox_file_keeps_its_note_change_pending() 
       TEST_ASSERT_TRUE(has(shelf[0], "note") && has(shelf[0], "pin1"));
       TEST_ASSERT_TRUE_MESSAGE(has(dev.model.last().body, plain::texts::tool_results::kRailPending), "the model is told");
     }
+  }
+}
+
+// Lane E2-P-CONN1 (PC-0252 to PC-0254): a tool server's tools, registered the way both engines
+// register them (mcp::registerServerTools, over engine 1's tools/list fixture), are offered behind
+// `more` in the connectors group; a call reaches the server's own tool with its arguments and the
+// answer (engine 1's tools/call fixture through its parser) reaches the model; the turn that read it
+// is outside content, so its note change goes to the pending shelf. Counter-test: the same note in a
+// turn that reached no tool server is written.
+static void test_a_tool_servers_tools_are_behind_more_and_its_answer_taints_the_turn() {
+  namespace mc = nimbus::orch::mcp;
+  const mc::ToolsListResult listed = mc::parseToolsList(200, "text/event-stream", mcpfix::kToolsListBody, "everything");
+  TEST_ASSERT_TRUE(listed.ok);
+  for (int server = 0; server < 2; ++server) {
+    Device dev;
+    std::vector<std::string> calls, shelf;
+    int noteRuns = 0;
+    nimbus::orch::registerMore(dev.reg);
+    mc::registerServerTools(dev.reg, "everything", listed.tools,
+                            [&calls](const std::string& slug, const std::string& tool, ArduinoJson::JsonObjectConst a,
+                                     const nimbus::orch::Principal&) {
+                              calls.push_back(slug + "/" + tool + "/" + std::string(a["message"] | ""));
+                              const mc::CallToolResult r =
+                                  mc::parseCallTool(200, "text/event-stream", mcpfix::kCallEchoBody, "everything");
+                              return r.ok ? nimbus::orch::ToolResult::ok(r.text) : nimbus::orch::ToolResult::fail(r.errorMsg);
+                            });
+    dev.reg.add("note", "Keep a note.", [&noteRuns](ArduinoJson::JsonObjectConst, const nimbus::orch::Principal&) {
+      ++noteRuns;
+      return nimbus::orch::ToolResult::ok("set pin1");
+    }, R"({"type":"object","properties":{"op":{"type":"string"},"key":{"type":"string"},"value":{"type":"string"}},"required":["op","key"]})");
+    dev.railPending = [&shelf](const plain::TurnCtx&, const plain::ToolCall& c) {
+      shelf.push_back(c.name);
+      return plain::Status::success();
+    };
+    TEST_ASSERT_TRUE(dev.boot().ok());
+    if (server) dev.model.push(sp::calls({{"more", R"({"name":"mcp_everything_echo","args":{"message":"nimbus-mcp-ok"}})", ""}}));
+    dev.model.push(sp::calls({{"note", R"({"op":"set","key":"pin1","value":"from the server"})", ""}}));
+    dev.model.push(sp::say("Done."));
+    TEST_ASSERT_TRUE(dev.say("echo through the tool server").ok());
+    TEST_ASSERT_EQUAL(server, (int)calls.size());
+    if (server) {
+      TEST_ASSERT_EQUAL_STRING("everything/echo/nimbus-mcp-ok", calls[0].c_str());
+      TEST_ASSERT_TRUE_MESSAGE(has(dev.model.requests()[1].body, "Echo: nimbus-mcp-ok"), "the answer reaches the model");
+    }
+    // The tools index of the first request names the server's tools in the connectors group.
+    TEST_ASSERT_TRUE_MESSAGE(has(dev.model.requests()[0].body, "connectors: mcp_everything_echo(message)"),
+                             dev.model.requests()[0].body.c_str());
+    TEST_ASSERT_EQUAL_MESSAGE(server ? 0 : 1, noteRuns, server ? "tainted turn wrote a note" : "clean turn kept");
+    TEST_ASSERT_EQUAL(server ? 1 : 0, (int)shelf.size());
   }
 }
 
@@ -1524,6 +1576,7 @@ int main(int, char**) {
   RUN_TEST(test_a_message_reaches_the_turn_and_the_reply_the_channel_once);
   RUN_TEST(test_the_arena_and_the_cost_follow_the_head);
   RUN_TEST(test_an_outside_tool_taints_the_turn_and_recent_files_reach_the_request);
+  RUN_TEST(test_a_tool_servers_tools_are_behind_more_and_its_answer_taints_the_turn);
   RUN_TEST(test_a_turn_that_read_an_inbox_file_keeps_its_note_change_pending);
   RUN_TEST(test_a_rebooted_binding_carries_the_earlier_turns);
   RUN_TEST(test_the_seen_index_is_rebuilt_from_the_card);

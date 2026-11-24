@@ -60,6 +60,7 @@ ENGINE2_REGISTRATION_FILES: Tuple[str, ...] = (
     "src/agent/tools_plain_device.cpp",  # E2-P-TOOLS
     "src/agent/tools_plain_device.h",
     "src/agent/orchestrator_plain.cpp",  # lane E2-P-SUB: registerAgentTools (agent_start, agent_list, agent_stop)
+    "src/agent/tools_plain_connectors.cpp",
 )
 
 # A registry receiver: any identifier with "reg" in it (reg, g_reg, registry, toolReg, ...) or a

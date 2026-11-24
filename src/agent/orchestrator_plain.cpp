@@ -75,6 +75,7 @@
 #include "budget_command.h"     // noteTurnEnd - /model's last reply
 #include "commands_plain.h"     // the owner's slash commands
 #include "loops_subsystem.h"    // checkDue, routineGrants, quietHoursEndMinute (lane E2-SCHED)
+#include "tools_plain_connectors.h"  // connectorsdev::beforeTurn (E2-P-CONN1)
 #include "file_tools_device.h"  // tools::takeOutsideCall - the call just dispatched read outside content (E2-FSAFE)
 #include "memory_subsystem.h"   // memory::captureMessage, memory::registry
 #include "migrate_device.h"     // migratedev::fill, importRulesOnce - the earlier engine's history and rules
@@ -1041,6 +1042,7 @@ bool runOne(const String& text, const String& fromName, const String& chatId) {
     handBack(gate.probe);
     return keepMessage(text, fromName, chatId);
   }
+  tools::connectorsdev::beforeTurn();   // E2-P-CONN1: engine 1's MCP reconcile and discovery, before the turn
   const std::string model(store::orchModel(host).c_str());
   plain::ChatBinding* b = chatFor(chatId, model, roleOfChat(chatId));
   if (!b) {
