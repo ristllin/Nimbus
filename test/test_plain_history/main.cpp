@@ -31,6 +31,9 @@
 #include "nimbus/orch/tx/old_engine.h"
 #include "nimbus/orch/memory_tools.h"   // searchMemories (lane E2-P-MEM)
 #include "nimbus/orch/vector_memory.h"   // kMcpNs
+#include "nimbus/harness/providers.h"   // photoFileId (E2-BFIX2)
+#include "nimbus/orch/turn_images.h"
+#include "../../lib/harness/src/providers/image_parts.h"   // dropFileRefs (E2-BFIX2)
 
 namespace plain = agent::plain;
 namespace sp = harness_test::scripted;
@@ -920,8 +923,170 @@ static void test_with_no_embedding_route_the_memories_scope_says_so_in_one_line(
   TEST_ASSERT_EQUAL(1, m.vec.size());
 }
 
+// Lane E2-BFIX2 (bench E2-BENCH3 reason 2): a ten-photo album, uploaded once by file id, then ten
+// turns, then the head views photo 7. The view result carries the photo (by its id, else its bytes)
+// although four earlier photos already ride the request; an id the provider no longer holds is sent
+// once more as bytes with no error the model sees; a route without file references gets the bytes.
+std::string albumRef(int i) { return "p00000000000000a" + std::to_string(i); }
+std::string albumJpeg(int i) {
+  std::string s("\xFF\xD8\xFF\xE0", 4);
+  s.resize(6000, (char)('a' + i));
+  return s;
+}
+// From byte 6 on every base64 group is three fill bytes: a body holds photo i's pixels when it holds this.
+std::string albumPixels(int i) {
+  static const char* kB64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const unsigned c = (unsigned char)('a' + i), v = (c << 16) | (c << 8) | c;
+  std::string g;
+  for (int k = 18; k >= 0; k -= 6) g += kB64[(v >> k) & 63];
+  return g + g + g + g;
+}
+size_t imageBlocks(const std::string& b) {
+  size_t n = 0;
+  for (size_t p = b.find("\"type\":\"image\""); p != std::string::npos; p = b.find("\"type\":\"image\"", p + 1)) ++n;
+  return n;
+}
+
+// The album in the stored past, ten turns after it, its photos on the card and uploaded once.
+std::map<std::string, std::string>& albumStore() {
+  static std::map<std::string, std::string> store;
+  return store;
+}
+void seedAlbum(Device& dev) {
+  Past p(dev.files, "1001");
+  ++p.turn;
+  tx::Item album;
+  album.kind = tx::ItemKind::User;
+  album.x = "ten photos";
+  album.t = kNow - 3000;
+  for (int i = 0; i < 10; ++i) {
+    tx::Part part;
+    part.kind = tx::PartKind::Image;
+    part.ref = albumRef(i);
+    part.mime = "image/jpeg";
+    part.bytes = 6000;
+    album.parts.push_back(part);
+  }
+  p.put(album);
+  for (int i = 0; i < 10; ++i) p.turnOf("question " + std::to_string(i), "answer " + std::to_string(i), kNow - 2900 + i * 60);
+  std::map<std::string, std::string>& store = albumStore();
+  store.clear();
+  for (int i = 0; i < 10; ++i) store[albumRef(i)] = albumJpeg(i);
+  // The album's upload, as its own turn made it (the Files API, the kept ids of this chat).
+  std::unique_ptr<nimbus::orch::TurnImages> arriving;
+  arriving.reset(new nimbus::orch::TurnImages());
+  arriving->uploadOnce = true;
+  for (int i = 0; i < 10; ++i) {
+    nimbus::orch::TurnImage it;
+    it.ref = albumRef(i).substr(1);
+    it.mime = "image/jpeg";
+    it.bytes = reinterpret_cast<const uint8_t*>(store[albumRef(i)].data());
+    it.len = 6000;
+    arriving->items.push_back(it);
+  }
+  const auto upload = [](nimbus::orch::TurnImages& set) {
+    for (nimbus::orch::TurnImage& it : set.items) {
+      it.fileId = "file_" + it.ref;
+      it.fileHost = "anthropic";
+    }
+    return (int)set.items.size();
+  };
+  TEST_ASSERT_EQUAL_STRING(("file_" + albumRef(0).substr(1)).c_str(),
+                           agent::providers::photoFileId("1001", arriving.get(), albumRef(0), upload, dev.ms).c_str());
+  arriving.reset();
+}
+
+// The device binding on a direct Anthropic head (file ids) or a routed one (none).
+void bindAlbum(Device& dev, bool fileRoute) {
+  plain::HistoryDeps d;
+  d.files = &dev.files;
+  d.photoReadable = [](const std::string& ref) { return albumStore().count(ref) > 0; };
+  dev.history = plain::HistoryTools(d);
+  plain::ChatBindingConfig c;
+  c.provider = "anthropic";
+  c.host = "api.anthropic.com";
+  c.chatKey = "1001";
+  c.model = "claude-haiku-5-5";
+  if (!fileRoute) {   // the router refuses provider file ids: the same photo goes as its bytes
+    c.provider = "cumulo";
+    c.routed = true;
+  }
+  plain::ChatBindingDeps bd;
+  bd.platform = &dev.platform;
+  bd.transport = &dev.model;
+  bd.files = &dev.files;
+  bd.registry = &dev.reg;
+  bd.sendPart = [&dev](const std::string&, const std::string& part) {
+    dev.sent.push_back(part);
+    return true;
+  };
+  bd.key = [] { return std::string("sk-fake-history"); };
+  Device* dp = &dev;
+  bd.photo = [dp](const std::string& ref, plain::PhotoBytes& o) {
+    auto it = albumStore().find(ref);
+    if (it == albumStore().end()) return plain::Status::fail(tx::Err::NotFound, "photo");
+    o.bytes = reinterpret_cast<const uint8_t*>(it->second.data());
+    o.len = it->second.size();
+    o.mime = "image/jpeg";
+    o.fileId = agent::providers::photoFileId("1001", nullptr, ref, nullptr, dp->ms);
+    return plain::Status::success();
+  };
+  bd.turnTool = [&dev](const plain::ToolCall& call, const plain::TurnCtx& t, plain::ToolOutput& out) {
+    return dev.history.answer(call, t, out);
+  };
+  dev.binding.reset(new plain::ChatBinding(c, bd));
+  TEST_ASSERT_TRUE(dev.binding->boot().ok());
+}
+
+void albumThenView(bool fileRoute, bool refused) {
+  Device dev(true);
+  seedAlbum(dev);
+  bindAlbum(dev, fileRoute);
+  const std::string seven = albumRef(6), sevenId = "file_" + seven.substr(1);
+  dev.model.push(sp::call("view", "{\"id\":\"" + seven + "\"}"));
+  if (refused)
+    dev.model.push(sp::httpError(404, "{\"type\":\"error\",\"error\":{\"type\":\"not_found_error\",\"message\":\"File not found: " +
+                                          sevenId + "\"}}"));
+  dev.model.push(sp::say("Photo 7 shows the letter g."));
+  TEST_ASSERT_TRUE(dev.say("what is on the seventh photo of the album?").ok());
+  const auto& reqs = dev.model.requests();
+  TEST_ASSERT_EQUAL(refused ? 3 : 2, (int)reqs.size());
+  const std::string& first = reqs[0].body;
+  const std::string& last = reqs.back().body;
+  TEST_ASSERT_TRUE_MESSAGE(imageBlocks(first) >= 1, "the album's earlier photos did not ride the request");
+  const size_t at = last.find("photo " + seven);
+  TEST_ASSERT_TRUE_MESSAGE(at != std::string::npos, "the view result does not name photo 7");
+  TEST_ASSERT_TRUE_MESSAGE(last.find(": shown here", at) != std::string::npos, "the view result is not 'shown here'");
+  const size_t img = last.find("\"type\":\"image\"", at);
+  TEST_ASSERT_TRUE_MESSAGE(img != std::string::npos, "the view result of photo 7 carries no image");
+  const bool byId = last.find("\"file_id\":\"" + sevenId + "\"", at) != std::string::npos;
+  const bool byBytes = last.find(albumPixels(6), at) != std::string::npos;
+  if (fileRoute && !refused) TEST_ASSERT_TRUE_MESSAGE(byId && !byBytes, "photo 7 did not go by its file id");
+  else TEST_ASSERT_TRUE_MESSAGE(byBytes && !byId, "photo 7 did not go as its bytes");
+  if (refused) {
+    TEST_ASSERT_TRUE(has(reqs[1].body, sevenId));
+    TEST_ASSERT_FALSE_MESSAGE(has(last, "File not found"), "the model saw the provider's refusal");
+    TEST_ASSERT_FALSE(has(last, "\"is_error\":true"));
+  }
+  // The cached start does not move: from the system text on, the bytes ahead of the open turn are
+  // those of the first request (max_tokens, ahead of it, is per round on a routed head).
+  const size_t sys = first.find("\"system\""), open = first.find("what is on the seventh photo");
+  TEST_ASSERT_TRUE(sys != std::string::npos && open != std::string::npos && last.find("\"system\"") != std::string::npos);
+  TEST_ASSERT_TRUE_MESSAGE(last.compare(last.find("\"system\""), open - sys, first, sys, open - sys) == 0,
+                           "viewing a photo again moved the bytes ahead of the open turn");
+  TEST_ASSERT_EQUAL_STRING("Photo 7 shows the letter g.", dev.sent.back().c_str());
+  agent::providers::imageparts::dropFileRefs();
+}
+
+static void test_album_by_file_id_then_ten_turns_then_view_of_photo_7_shows_it() { albumThenView(true, false); }
+static void test_album_view_whose_id_the_provider_no_longer_holds_goes_as_bytes() { albumThenView(true, true); }
+static void test_album_view_on_a_route_without_file_references_goes_as_bytes() { albumThenView(false, false); }
+
 int main(int, char**) {
   UNITY_BEGIN();
+  RUN_TEST(test_album_by_file_id_then_ten_turns_then_view_of_photo_7_shows_it);
+  RUN_TEST(test_album_view_whose_id_the_provider_no_longer_holds_goes_as_bytes);
+  RUN_TEST(test_album_view_on_a_route_without_file_references_goes_as_bytes);
   RUN_TEST(test_D2_red_without_the_tools);
   RUN_TEST(test_D2_search_then_view_brings_a_compacted_turn_back_whole);
   RUN_TEST(test_D1_nothing_from_another_person_or_a_cleared_conversation);

@@ -117,11 +117,12 @@ inline Tx photoThreeTurnsLater() {
   return t;
 }
 
-// An open turn at the photo caps: the owner's photo plus view results that bring back four
-// more; the caps (tx::kInlinePhotosInViewMax) stop the last one, which renders as its line.
+// An open turn at the photo caps: the owner's photo plus view results that bring back five
+// more; the view results' own caps (tx::kInlinePhotosInViewMax, the owner's photo not counted,
+// lane E2-BFIX2) stop the last one, which renders as its line.
 inline Tx nearCapPhotoTurn() {
   Tx t;
-  const std::vector<std::string> refs = {"pb0000001", "pb0000002", "pb0000003", "pb0000004"};
+  const std::vector<std::string> refs = {"pb0000001", "pb0000002", "pb0000003", "pb0000004", "pb0000005"};
   t.open({"pa1b2c3d4"});
   t.owner("Compare this one with the four from last week.", {"pa1b2c3d4"});
   for (size_t i = 0; i < refs.size(); ++i) {

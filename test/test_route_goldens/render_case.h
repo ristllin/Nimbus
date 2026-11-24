@@ -28,8 +28,8 @@ inline constexpr const char* kFixtureKey = "fixture-key-not-a-secret";
 // The photos every fixture may name: a JPEG start and fixed filler, so base64 bytes never move.
 inline std::map<std::string, std::string> photoStore() {
   std::map<std::string, std::string> m;
-  const char* refs[] = {"pa1b2c3d4", "pb0000001", "pb0000002", "pb0000003", "pb0000004"};
-  for (int i = 0; i < 5; ++i) m[refs[i]] = std::string("\xFF\xD8\xFF\xE0", 4) + std::string(48 + 8 * i, (char)('A' + i));
+  const char* refs[] = {"pa1b2c3d4", "pb0000001", "pb0000002", "pb0000003", "pb0000004", "pb0000005"};
+  for (int i = 0; i < 6; ++i) m[refs[i]] = std::string("\xFF\xD8\xFF\xE0", 4) + std::string(48 + 8 * i, (char)('A' + i));
   return m;
 }
 

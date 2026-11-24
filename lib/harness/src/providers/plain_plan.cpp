@@ -463,6 +463,8 @@ struct Builder {
   // photos a view result brings back, lane E2-SRCH).
   size_t photosAttached = 0;
   size_t photoBytesAttached = 0;
+  size_t viewsAttached = 0;        // photos the open turn's view results carry (lane E2-BFIX2)
+  size_t viewBytesAttached = 0;    // their stored bytes (a photo by file id counts 0)
   std::vector<std::string> refs;   // the ref of each photo attached, one to one with out.photos
 
   Piece& add(PieceKind kind, uint32_t item, uint32_t turn) {
@@ -619,17 +621,21 @@ tx::ShowFacts showFacts(const RenderInput& in, const Facts& f) {
 
 // Lane E2-SRCH: a view result that names a photo of this conversation, while its turn is open,
 // carries the photo's pixels after its line (by file id, else inline bytes), as an owner message's
-// photo does, inside E2-FIX4's caps (kInlinePhotosInViewMax photos and kInlinePhotoBytesInViewMax
-// stored bytes for the whole request, the photos already attached counted).
+// photo does. Lane E2-BFIX2: E2-FIX4's caps (kInlinePhotosInViewMax photos and
+// kInlinePhotoBytesInViewMax stored bytes) bound the view results' photos on their own; the photos
+// the request already shows do not count, or four of them in view refused every view (bench
+// E2-BENCH3, reason 2).
 bool attachViewed(Builder& b, const std::string& ref, Piece& p) {
   PhotoBytes px;
   tx::PhotoAbsent why = tx::PhotoAbsent::Blind;
   if (photoAbsent(b.in, ref, why) || !b.in.photo || !b.in.photo(ref, px).ok()) return false;   // E2-P-PHOTO
   const bool file = !px.fileId.empty(), inline64 = px.bytes && px.len && imageMime(px.mime);
   const size_t bytes = file ? 0 : px.len;
-  if ((!file && !inline64) || b.photosAttached + 1 > tx::kInlinePhotosInViewMax ||
-      b.photoBytesAttached + bytes > tx::kInlinePhotoBytesInViewMax)
+  if ((!file && !inline64) || b.viewsAttached + 1 > tx::kInlinePhotosInViewMax ||
+      b.viewBytesAttached + bytes > tx::kInlinePhotoBytesInViewMax)
     return false;
+  ++b.viewsAttached;
+  b.viewBytesAttached += bytes;
   p.photo = b.photo(px, ref);
   p.flags |= kViewed;
   return true;
