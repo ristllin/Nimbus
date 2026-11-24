@@ -194,3 +194,73 @@ def test_the_baseline_is_the_measured_merge_and_the_ceilings_did_not_move():
         assert row["baseline"] == MEASURED[name], name
         assert row["ceiling"] == UNCHANGED_CEILINGS[name], f"{name}: a raised ceiling needs the bench heap A/B"
         assert row["baseline"] <= row["ceiling"], name
+
+
+# ---- declared allowances for the engine-2 rows (lane E2-GATE, ruling 121) ----------------
+
+E2_CEIL = {
+    "variants": {"nimbus-tft": {"env": "esp32s3", "baseline": 1000, "ceiling": 1100}},
+    "engine2_baseline_sha": "a" * 40,
+    "engine2": {"freenove-28-e2": {"env": "esp32s3-cyd-e2", "baseline": 1000, "ceiling": 3048}},
+}
+
+
+def e2_case(tmp_path, bss, budget=None):
+    elf = tmp_path / "firmware.elf"
+    elf.write_bytes(make_elf({".dram0.bss": bss, ".dram0.data": 400}))
+    ceil = tmp_path / "ceil.json"
+    ceil.write_text(json.dumps(E2_CEIL))
+    bdir = tmp_path / "budget.d"
+    bdir.mkdir(exist_ok=True)
+    if budget is not None:
+        (bdir / "E2-X.json").write_text(json.dumps(budget))
+    return ["--elf", str(elf), "--ceilings", str(ceil), "--budget-dir", str(bdir), "--lane", "E2-X"]
+
+
+def row(n):
+    return {"lane": "E2-X", "allowance_bytes": 0, "static_dram_bytes": n, "why": "a 512 B static buffer"}
+
+
+def test_declared_growth_under_the_ceiling_passes(tmp_path, capsys):
+    args = e2_case(tmp_path, 600 + 512, row(512))  # 1,512 B: +512 over the baseline, declared
+    assert dram.main([*args, "--variant", "freenove-28-e2"]) == 0
+    assert "inside E2-X's declared 512 B" in capsys.readouterr().out
+
+
+def test_counter_undeclared_growth_fails_under_the_ceiling(tmp_path, capsys):
+    args = e2_case(tmp_path, 600 + 513, row(512))  # 1 B more than declared, far under 3,048 B
+    assert dram.main([*args, "--variant", "freenove-28-e2"]) == 1
+    out = capsys.readouterr().out
+    assert "1 B more than E2-X declared (512 B)" in out and "static_dram_bytes" in out
+
+
+def test_counter_no_file_declares_nothing(tmp_path):
+    args = e2_case(tmp_path, 601)
+    assert dram.main([*args, "--variant", "freenove-28-e2"]) == 1
+
+
+def test_counter_a_declaration_never_lifts_the_ceiling(tmp_path):
+    args = e2_case(tmp_path, 600 + 2049, row(4096))
+    assert dram.main([*args, "--variant", "freenove-28-e2"]) == 1
+
+
+def test_counter_a_malformed_declaration_fails(tmp_path, capsys):
+    args = e2_case(tmp_path, 600, row(-1))
+    assert dram.main([*args, "--variant", "freenove-28-e2"]) == 1
+    assert "non-negative integer" in capsys.readouterr().out
+
+
+def test_a_shipped_engine1_row_keeps_its_ceiling_only_check(tmp_path, capsys):
+    args = e2_case(tmp_path, 690)  # nimbus-tft: +90 B over its baseline, under its ceiling, no file
+    assert dram.main([*args, "--variant", "nimbus-tft"]) == 0
+    assert "declared" not in capsys.readouterr().out
+
+
+def test_real_ceilings_say_how_to_declare_and_give_engine2_2048_b_of_room():
+    with open(dram.CEILINGS, encoding="utf-8") as f:
+        data = json.load(f)
+    how = data["allowance_how"]
+    assert "static_dram_bytes" in how and "image_budget.d" in how and "ruling 121" in how
+    assert len(data["engine2_baseline_sha"]) == 40
+    for name, r in data["engine2"].items():
+        assert r["ceiling"] == r["baseline"] + 2048, name
