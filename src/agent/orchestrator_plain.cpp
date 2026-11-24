@@ -689,8 +689,7 @@ plain::ChatBinding* chatFor(const String& chatId, nimbus::orch::Role role) {
     spend.add(provider.c_str(), m.c_str(), u);
     store::recordProviderSpend(spend, "compact");
   };
-  // E2-P-TOOLS: at each step of a turn a message that arrived meanwhile gets engine 1's short
-  // acknowledgement (telegram::turnAckQueued peeks without advancing; at most one peek per 10 s).
+  // E2-P-TOOLS: each step peeks for a message that arrived meanwhile and acknowledges it (turnAckQueued, 10 s apart).
   if (!localChat(chatId)) d.onProgress = [](const plain::ProgressEvent&) { (void)telegram::turnAckQueued(); };
   if (!localChat(chatId))   // the web chat shows its own spinner; Telegram gets the line (RB-E3)
     d.progress.send = [](const std::string& chat, const std::string& text, int64_t& msgId) {
