@@ -8,6 +8,7 @@
 #include "nimbus/harness/plain/deliver.h"   // StatusLine: the one status line of a failed exchange
 #include "nimbus/harness/plain/wire.h"
 #include "nimbus/orch/head_qual.h"
+#include "nimbus/orch/model_caps.h"
 
 namespace agent {
 struct Platform;
@@ -44,6 +45,12 @@ struct Platform;
 //          and sent once more; a second refusal is one plain line;
 //        billing or key refused (401, 402, 403, a billing marker): parkHost, one plain line;
 //        a 2xx that does not parse: Malformed, one plain line;
+//        a window-full answer (StopReason::Context, lane E2-R4a): kept like a cut, the ladder
+//          climbs one rung (climb(Climb::Refused)) and the request goes once more; cut or full
+//          again, the kept answer is delivered as Cut;
+//        a 400 or 422 naming a refused optional field: resent once without it (ExchangeDeps::refused);
+//        a provider's refusal code (Z.ai 1301): an answer with StopReason::Refusal, nothing to run;
+//        an unknown model: modelUnusable, one plain line;
 //        a cut answer (StopReason::MaxTokens): one retry at the retry cap (more room, and a
 //          lower effort where the table says so) when the window allows one, else or when
 //          the retry is cut too: the text is kept, every call of the cut answer is marked
@@ -127,16 +134,21 @@ using RefusedRefFn = std::function<bool(int httpStatus, const std::string& body)
 struct ExchangeDeps {
   HttpTransport* transport = nullptr;
   const Platform* platform = nullptr;   // nowMs and delayMs are required
+  // Lane E2-R4a: the boot's refused optional fields (router design section 9; the caller's PSRAM
+  // state). A 400 or 422 naming one is resent once without it and remembered here; null: the
+  // exchange remembers for itself only.
+  nimbus::orch::caps::RefusedFields* refused = nullptr;
 };
 
 struct ExchangeRequest {
   const WireCodec* wire = nullptr;
   const RenderInput* render = nullptr;   // turn and head are required; maxTokens is the exchange's
-  uint32_t timeoutMs = 0;      // the host's read window (Anthropic 120 s, ...); 0 = readWindowMsFor
+  uint32_t timeoutMs = 0;      // a read window; 0 or above the route's (readWindowMsFor): the route's
   uint32_t deadlineMs = 0;     // the turn's remaining soft wall clock; required
   uint32_t bodyCap = 0;        // the head's body cap (tx::budgetFor); 0 = its released row (requestBudgetFor)
   ClimbFn climb;               // the overflow ladder; empty = no rung to climb
   RefusedRefFn refusedRef;     // a refused file reference, once per exchange; empty = none
+  uint32_t capCeiling = 0;     // the caller's output cap ceiling (the summarizer's rungs); 0 = none
 };
 
 struct ExchangeResult {
@@ -153,6 +165,8 @@ struct ExchangeResult {
   bool cutRetried = false;     // a cut answer was asked again with the retry cap
   bool failOver = false;       // the router said fail over: the ladder's next target
   bool parkHost = false;       // billing or key refused: the caller parks the host
+  bool modelUnusable = false;  // the provider does not know the model: the caller marks it unusable
+  uint16_t dropped = 0;        // what the last request's pre-flight left out (plain/route.h dropped::)
   StatusLine status = StatusLine::None;   // CutAnswer or ProviderError when err != None
   std::string errorLine;       // the one plain line for the owner when err != None
   std::string errorLineStored; // errorLine as it may be stored or reach a model: without the provider's reason

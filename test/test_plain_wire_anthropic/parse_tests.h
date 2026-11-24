@@ -143,10 +143,10 @@ void test_parse_reads_a_refusal_interleaved_thinking_and_an_empty_answer() {
   TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, s.usage.cacheReadTokens);
   TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, s.usage.maxRequestIn);
   TEST_ASSERT_EQUAL(0, (int)s.usage.completionTokens);
-  // Other stops: the context window is a cut, a stop sequence ends the turn, pause and unknown are Other.
+  // Other stops: the context window is full (lane E2-R4a), a stop sequence ends the turn, pause and unknown are Other.
   const std::string base = R"({"type":"message","role":"assistant","model":"m","content":[{"type":"text","text":"t"},)"
                            R"({"type":"tool_use","id":"toolu_1","name":"read_file","input":{"path":"a"}}],"stop_reason":)";
-  const char* stops[][2] = {{"\"model_context_window_exceeded\"", "cut"}, {"\"stop_sequence\"", "end"},
+  const char* stops[][2] = {{"\"model_context_window_exceeded\"", "context"}, {"\"stop_sequence\"", "end"},
                             {"\"pause_turn\"", "other"}, {"\"a_new_reason\"", "other"}, {"null", "other"},
                             {"\"tool_use\"", "tool"}, {"\"end_turn\"", "end"}};
   for (const auto& st : stops) {

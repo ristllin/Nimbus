@@ -32,6 +32,8 @@ class TxArena;
 namespace agent {
 namespace plain {
 
+struct Route;   // plain/route.h (lane E2-R4a)
+
 // The system text in its three cache blocks: [core][skills index + pinned notes]
 // [digests + recent files].
 struct SystemBlocks {
@@ -106,10 +108,15 @@ struct RenderInput {
   // previous turn) carry the provider's 1-hour lifetime; the moving last block keeps 5 minutes.
   // False: every point has the 5-minute lifetime (what the request carried before).
   bool longCache = false;
+  // Lane E2-R4a: the head's route (plain/route.h: model, path, auth, version, the table rows), set by the
+  // exchange's pre-flight on every render; null: the wire's defaults (a direct Anthropic head as before).
+  const Route* route = nullptr;
+  uint32_t bodyCap = 0;                               // the body cap this request is held to (0 = not given)
 };
 
-// Why the model stopped.
-enum class StopReason : uint8_t { EndTurn = 0, ToolUse = 1, MaxTokens = 2, Refusal = 3, Other = 4 };
+// Why the model stopped. Context (lane E2-R4a): the window filled, so a larger output cap cannot
+// help; the exchange climbs one rung instead of the cut retry.
+enum class StopReason : uint8_t { EndTurn = 0, ToolUse = 1, MaxTokens = 2, Refusal = 3, Other = 4, Context = 5 };
 inline const char* stopSlug(StopReason s) {
   switch (s) {
     case StopReason::EndTurn: return "end";
@@ -117,6 +124,7 @@ inline const char* stopSlug(StopReason s) {
     case StopReason::MaxTokens: return "cut";
     case StopReason::Refusal: return "refusal";
     case StopReason::Other: return "other";
+    case StopReason::Context: return "context";
   }
   return "other";
 }

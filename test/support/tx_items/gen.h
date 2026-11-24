@@ -116,7 +116,12 @@ inline tx::Item fullItem(tx::ItemKind kind, uint64_t q, Rng& r, size_t textMax =
   ref.bodyHash = static_cast<uint32_t>(r.nonzero(0xFFFFFFFFu));
   ref.effort = anyBytes(r, 8);
   ref.omission = anyBytes(r, 40);
+  ref.dropped = static_cast<uint16_t>(r.nonzero(0xFFFFu));   // lane E2-R4a: the pre-flight's mask
   e.exchanges.push_back(ref);
+  tx::ExchangeFacts bare{3, 4, 200};   // a mask with no effort and no omission still rides last
+  bare.bodyHash = 9;
+  bare.dropped = 1;
+  e.exchanges.push_back(bare);
   e.events = {"change:pointer", anyBytes(r, 16)};
   e.promptHash = static_cast<uint32_t>(r.nonzero(0xFFFFFFFFu));
   e.manifestHash = static_cast<uint32_t>(r.nonzero(0xFFFFFFFFu));
@@ -157,9 +162,9 @@ inline tx::Item project(const tx::Item& in) {
 
 inline bool sameExchange(const tx::ExchangeFacts& p, const tx::ExchangeFacts& o) {
   return std::tie(p.requestBytes, p.ms, p.httpStatus, p.fromQ, p.thruQ, p.items, p.stub, p.closedThrough, p.stubThrough,
-                  p.omitThrough, p.maxTokens, p.toolChoiceNone, p.bodyHash, p.effort, p.omission) ==
+                  p.omitThrough, p.maxTokens, p.toolChoiceNone, p.bodyHash, p.effort, p.omission, p.dropped) ==
          std::tie(o.requestBytes, o.ms, o.httpStatus, o.fromQ, o.thruQ, o.items, o.stub, o.closedThrough, o.stubThrough,
-                  o.omitThrough, o.maxTokens, o.toolChoiceNone, o.bodyHash, o.effort, o.omission);
+                  o.omitThrough, o.maxTokens, o.toolChoiceNone, o.bodyHash, o.effort, o.omission, o.dropped);
 }
 
 // "" when every field of a and b is equal; else the first field that differs.

@@ -135,6 +135,7 @@ struct ExchangeFacts {
   uint32_t bodyHash = 0;        // fnv1a-32 of its path, body and spliced bytes (never a header)
   std::string effort;           // the reasoning effort it carried ("" = the provider default)
   std::string omission;         // the ladder's omission line ("" = none)
+  uint16_t dropped = 0;         // what the request's pre-flight left out (plain/route.h dropped::, lane E2-R4a)
 };
 
 // The e item: what the turn cost and why it ended.

@@ -36,7 +36,7 @@ namespace {
 size_t g_ran = 0, g_ranAnthropic = 0;
 
 // Run `body` on every row; a row still waiting for `extra` lanes or its codec is logged, not run.
-// An engine turn on a routed row also waits for `routedLane` (the routed binding, design lane R8).
+// An engine turn on a routed row also waits for `routedLane` (the route of a routed head, design lane R4a).
 void forEachRow(const char* property, std::initializer_list<const char*> extra,
                 const std::function<void(const txb::Row&)>& body, const char* routedLane = nullptr,
                 bool routedOnly = false) {
@@ -117,7 +117,8 @@ plain::StopReason stopOf(const std::string& slug) {
   if (slug == "tool") return plain::StopReason::ToolUse;
   if (slug == "cut") return plain::StopReason::MaxTokens;
   if (slug == "refusal") return plain::StopReason::Refusal;
-  return plain::StopReason::Other;   // context: StopReason::Context arrives with lane R4a
+  if (slug == "context") return plain::StopReason::Context;
+  return plain::StopReason::Other;
 }
 
 tx::Status parseWith(const txb::Row& r, const sp::WireFixture& f, plain::ParsedStep& step) {
@@ -221,7 +222,7 @@ void test_p4_tool_round_trip() {
     TEST_ASSERT_TRUE_MESSAGE(rc::roundTripHolds(b.world.dispatched, "read_file", next, why), msgOf(r, why).c_str());
     TEST_ASSERT_EQUAL_STRING_MESSAGE("It says alpha.", out.text.c_str(), r.name.c_str());
     TEST_ASSERT_TRUE_MESSAGE(b.model.verify(why), msgOf(r, why).c_str());
-  }, "RB-R8");
+  }, "RB-R4a");
 }
 
 // ---- 5. a not-complete answer's calls never run (in parse and after the exchange) --------------------------------------
@@ -246,8 +247,7 @@ void test_p5_cut_answer_calls_never_run() {
       TXB_OK(parseWith(r, f, step));
       for (const plain::ToolCall& c : step.calls)
         TEST_ASSERT_FALSE_MESSAGE(c.complete, msgOf(r, f.file + ": a call reads as complete").c_str());
-      if (f.expected("stop") != "context")
-        TEST_ASSERT_EQUAL_STRING_MESSAGE(plain::stopSlug(stopOf(f.expected("stop"))), plain::stopSlug(step.stop),
+      TEST_ASSERT_EQUAL_STRING_MESSAGE(plain::stopSlug(stopOf(f.expected("stop"))), plain::stopSlug(step.stop),
                                          msgOf(r, f.file).c_str());
       txb::Battery b(r);
       b.model.push(sp::replay(f));
@@ -256,7 +256,7 @@ void test_p5_cut_answer_calls_never_run() {
       (void)b.owner("go on", out);
       TEST_ASSERT_TRUE_MESSAGE(b.world.dispatched.empty(), msgOf(r, f.file + ": a call of a cut answer ran").c_str());
     }
-  }, "RB-R8");
+  }, "RB-R4a");
 }
 
 // ---- 6. errors that must not retry: billing, keys, an unknown model, the router's park classes -------------------------
@@ -288,7 +288,7 @@ void test_p6_no_retry_on_billing_auth_or_unknown_model() {
       ++checked;
     }
     TEST_ASSERT_TRUE_MESSAGE(checked > 0, msgOf(r, "no error fixture checked").c_str());
-  }, "RB-R8");
+  }, "RB-R4a");
 }
 
 // ---- 7. usage arithmetic: uncached + read + write by the row's usage mode ----------------------------------------------
@@ -352,7 +352,7 @@ void test_p11_limits() {
 }
 
 void test_p11_routed_request_declares_deadline_and_cap() {
-  forEachRow("p11 routed deadline", {"RB-E1a", "RB-R8"}, [](const txb::Row& r) {
+  forEachRow("p11 routed deadline", {"RB-E1a", "RB-R4a"}, [](const txb::Row& r) {
     txb::Battery b(r);
     b.model.push(sp::say("Hello."));
     plain::TurnOutcome out;

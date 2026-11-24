@@ -257,19 +257,24 @@ void encodeTurnEnd(Writer& w, const Item& it) {
       const uint64_t nums[] = {x.fromQ, x.thruQ, x.items, x.bodyHash, x.maxTokens, x.stub, x.toolChoiceNone ? 1u : 0u,
                                x.closedThrough, x.stubThrough, x.omitThrough};
       constexpr size_t kNums = sizeof(nums) / sizeof(nums[0]);
-      size_t n = !x.omission.empty() || !x.effort.empty() ? kNums : 4;
+      const bool strs = !x.omission.empty() || !x.effort.empty() || x.dropped;   // the dropped mask rides last
+      size_t n = strs ? kNums : 4;
       while (n < kNums && std::any_of(nums + n, nums + kNums, [](uint64_t v) { return v != 0; })) ++n;
       for (size_t i = 0; i < n; ++i) {
         w.put(',');
         putU64(w, nums[i]);
       }
-      if (!x.effort.empty() || !x.omission.empty()) {
+      if (strs) {
         w.put(',');
         putStr(w, x.effort.data(), x.effort.size());
       }
-      if (!x.omission.empty()) {
+      if (!x.omission.empty() || x.dropped) {
         w.put(',');
         putStr(w, x.omission.data(), x.omission.size());
+      }
+      if (x.dropped) {
+        w.put(',');
+        putU64(w, x.dropped);
       }
     }
     w.put(']');
@@ -719,6 +724,7 @@ bool readExchangeRef(Cursor& cc, int n, ExchangeFacts& x) {
     case 12: return readUnsigned(cc, x.omitThrough);
     case 13: return readStr(cc, x.effort);
     case 14: return readStr(cc, x.omission);
+    case 15: return readUnsigned(cc, x.dropped);
     default: return skipValue(cc);
   }
 }

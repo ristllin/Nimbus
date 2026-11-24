@@ -59,6 +59,7 @@
 #include <string>
 #include <vector>
 
+#include "nimbus/harness/plain/route.h"
 #include "nimbus/harness/plain/wire.h"
 #include "nimbus/orch/tx/arena.h"
 #include "nimbus/orch/tx/item.h"
@@ -310,20 +311,23 @@ void placePoints(std::vector<Point> points, bool longCache, HttpRequest& out) {
   }
 }
 
-// Where the request goes and its headers.
+// Where the request goes and its headers: the route's path, version and auth style (lane E2-R4a);
+// with no route, a direct head's defaults as before.
 void coordinates(const RenderInput& in, bool fileRef, HttpRequest& out) {
+  const Route* r = in.route;
   out.method = "POST";
   out.host = in.head->host.empty() ? kDefaultHost : in.head->host;
   out.port = in.head->port;
   out.tls = in.head->tls;
-  out.path = (in.head->basePath.empty() ? std::string("/v1") : in.head->basePath) + "/messages";
+  out.path = r ? r->path : (in.head->basePath.empty() ? std::string("/v1") : in.head->basePath) + "/messages";
   out.headers.emplace_back("content-type", "application/json");
-  out.headers.emplace_back("anthropic-version", kVersion);
+  out.headers.emplace_back("anthropic-version", r && *r->version ? r->version : kVersion);
   if (fileRef) out.headers.emplace_back("anthropic-beta", kFilesBeta);
   const std::string key = in.head->key ? in.head->key() : std::string();
   if (key.empty() || !in.head->tls) return;   // a key never rides a cleartext socket
-  if (in.head->routed) out.headers.emplace_back("authorization", std::string("Bearer") + ' ' + key);
-  else out.headers.emplace_back("x-api-key", key);
+  const bool bearer = r ? r->auth == nimbus::orch::caps::Auth::Bearer : in.head->routed;
+  if (bearer) out.headers.emplace_back("authorization", std::string("Bearer") + ' ' + key);
+  else if (!r || r->auth == nimbus::orch::caps::Auth::XApiKey) out.headers.emplace_back("x-api-key", key);
 }
 
 size_t reserveFor(const RenderInput& in, const plan::Plan& p) {
@@ -361,7 +365,8 @@ Status renderBody(const RenderInput& in, HttpRequest& out) {
 
   BodyWriter w(out.body, &out.splices);
   std::vector<Point> points;
-  w.beginObject().key("model").str(in.turn->model).key("max_tokens").unum(in.maxTokens);
+  // The route's model: a routed selector's bare id (the router prices it); else the turn's.
+  w.beginObject().key("model").str(in.route ? in.route->model : in.turn->model).key("max_tokens").unum(in.maxTokens);
   outputConfig(w, in);
   systemBlocks(w, out.body, *in.system, p.system, points);
   if (!(st = toolsArray(w, in)).ok()) return st;
@@ -394,9 +399,9 @@ Status renderBody(const RenderInput& in, HttpRequest& out) {
 //                     the open turn's next request goes without it; the provider accepts that,
 //                     evidence/LIVE-CONFORMANCE.md)
 //   other block types are not ours to act on and are passed over.
-// stop_reason: end_turn and stop_sequence end the turn, tool_use asks for the calls, max_tokens
-// and model_context_window_exceeded are a cut (every call complete = false: its arguments may be
-// cut), refusal keeps the text and drops every call (stop_details names why), anything else is
+// stop_reason: end_turn and stop_sequence end the turn, tool_use asks for the calls, max_tokens is a
+// cut and model_context_window_exceeded a full window (lane E2-R4a: StopReason::Context; every call
+// complete = false either way: its arguments may be cut), refusal keeps the text and drops every call (stop_details names why), anything else is
 // Other. usage: input_tokens (Anthropic leaves cache reads and writes out of it), the cache split
 // (read, write, the 1-hour part of the write), output_tokens, the served model.
 // One content block as read: its fields and where its bytes sit in the body.
@@ -572,7 +577,8 @@ bool topField(JsonReader& j, const std::string& key, Answer& a) {
 StopReason stopOf(const std::string& s) {
   if (s == "end_turn" || s == "stop_sequence") return StopReason::EndTurn;
   if (s == "tool_use") return StopReason::ToolUse;
-  if (s == "max_tokens" || s == "model_context_window_exceeded") return StopReason::MaxTokens;
+  if (s == "max_tokens") return StopReason::MaxTokens;
+  if (s == "model_context_window_exceeded") return StopReason::Context;
   if (s == "refusal") return StopReason::Refusal;
   return StopReason::Other;
 }

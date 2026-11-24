@@ -16,6 +16,7 @@
 #include "nimbus/harness/plain/rails.h"
 #include "nimbus/harness/plain/request.h"
 #include "nimbus/harness/plain/resume.h"
+#include "nimbus/harness/plain/route.h"
 #include "nimbus/harness/plain/wire.h"
 #include "nimbus/net/tg_inbox.h"
 #include "nimbus/orch/tx/arena.h"
@@ -118,6 +119,19 @@ inline tx::Status probeRails() {
   return plain::installRails(hooks, plain::RailsDeps{});
 }
 
+// RB-R4a: the route of a routed Claude head names the Anthropic upstream (not the router's default).
+inline tx::Status probeRoute() {
+  plain::TurnCtx turn;
+  turn.host = "cumulo";
+  turn.model = "claude-sonnet-5-5";
+  plain::HeadEndpoint head;
+  head.routed = true;
+  plain::Route r;
+  tx::Status st = plain::resolveRoute(head, turn, r);
+  if (st.ok() && r.provider != "anthropic") return tx::Status::pending("plain::resolveRoute routed upstream");
+  return st;
+}
+
 // RB-TG1: a text over the cap is saved to the inbox (the intake the battery's owner() runs).
 inline tx::Status probeInbox() {
   const auto keep = [](const std::string&, const std::string&) { return true; };
@@ -156,9 +170,11 @@ inline bool sentinelFor(const std::string& lane, std::function<tx::Status()>& ou
       {"RB-N3", [] { return tx::Status::pending("RB-N3 view of a long argument or reply"); }},
       {"RB-TG1", probeInbox},
       {"RB-I3", [] { return tx::Status::pending("RB-I3 reopen of the log when storage returns"); }},
-      // Router design lane R8 (bindings and routed): an engine-2 routed request carries the
-      // x-cumulo-deadline-ms header (property 11 of test_router_conformance waits on it).
-      {"RB-R8", [] { return tx::Status::pending("RB-R8 routed deadline header on engine 2"); }},
+      // Router design lane R4a (route and pre-flight): a routed head resolves to its upstream's row,
+      // so the exchange sends it a real output cap and the x-cumulo-deadline-ms header.
+      {"RB-R4a", probeRoute},
+      // Router design lane R8 (bindings and routed): the device's bindings ask resolveRoute per provider.
+      {"RB-R8", [] { return tx::Status::pending("RB-R8 engine-2 bindings per provider"); }},
   };
   for (const Row& r : rows)
     if (lane == r.lane) {

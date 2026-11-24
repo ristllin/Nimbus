@@ -20,6 +20,7 @@
 #include "../support/scripted_provider/scripted_provider.h"
 #include "nimbus/harness/platform.h"
 #include "nimbus/harness/plain/exchange.h"
+#include "nimbus/harness/plain/route.h"
 #include "nimbus/orch/wire_limits.h"
 #include "nimbus/tg_html.h"
 #include "nimbus/utf8.h"
@@ -96,6 +97,7 @@ struct TestWire : plain::WireCodec {
     }
     const std::string stop = doc["stop_reason"] | "";
     out.stop = stop == "max_tokens" ? plain::StopReason::MaxTokens
+               : stop == "model_context_window_exceeded" ? plain::StopReason::Context
                : stop == "tool_use" ? plain::StopReason::ToolUse
                : stop == "refusal"  ? plain::StopReason::Refusal
                                     : plain::StopReason::EndTurn;
@@ -478,6 +480,127 @@ static void test_a_custom_messages_host_sends_an_output_cap() {
   TEST_ASSERT_EQUAL(0, (int)chat.out.maxTokens);
 }
 
+// ---- lane E2-R4a: the route and the pre-flight ---------------------------------------------------------
+
+// A routed Claude head (the router's host, a bare or prefixed selector) is its Anthropic upstream's: a
+// real output cap (before the route every routed Claude request carried 0 and the codec refused it),
+// the deadline header, the router's path and the bearer key.
+static void test_a_routed_claude_head_gets_a_cap_and_the_deadline_header() {
+  for (const char* model : {"claude-sonnet-5-5", "anthropic/claude-sonnet-5-5"}) {
+    Rig r("cumulo", model);
+    r.model.push(sp::say("ok"));
+    expectOk(r.run());
+    TEST_ASSERT_TRUE_MESSAGE(r.out.err == ExchangeErr::None, model);
+    TEST_ASSERT_TRUE_MESSAGE(r.sentMaxTokens(0) > 0, model);
+    uint32_t deadline = 0;
+    for (const auto& h : r.model.requests()[0].req.headers)
+      if (h.first == "x-cumulo-deadline-ms") deadline = (uint32_t)std::atol(h.second.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(deadline > 0 && deadline + 5000 <= 90000, model);   // the routed ceiling less 5 s
+    plain::Route route;
+    expectOk(plain::resolveRoute(r.head, r.turn, route));
+    TEST_ASSERT_EQUAL_STRING("anthropic", route.provider.c_str());
+    TEST_ASSERT_EQUAL_STRING("claude-sonnet-5-5", route.model.c_str());
+    TEST_ASSERT_EQUAL_STRING("/router/anthropic/v1/messages", route.path.c_str());
+    TEST_ASSERT_TRUE(route.auth == nimbus::orch::caps::Auth::Bearer && route.routed && route.bodyCap > 0);
+  }
+  Rig direct;   // a direct head carries no deadline header
+  direct.model.push(sp::say("ok"));
+  expectOk(direct.run());
+  for (const auto& h : direct.model.requests()[0].req.headers) TEST_ASSERT_TRUE(h.first != "x-cumulo-deadline-ms");
+}
+
+// A full window (StopReason::Context) climbs one rung and is sent once more, never cut-retried; full
+// again, or no rung left, the kept answer is delivered as a cut whose calls never run.
+static void test_a_full_window_climbs_one_rung_instead_of_the_cut_retry() {
+  auto full = [] {
+    sp::Step s = sp::call("ledger_write", R"({"day":"2026-11-24"})", "Logging");
+    s.finish = sp::Finish::Context;
+    return s;
+  };
+  Rig climbs;
+  climbs.model.push(full());
+  climbs.model.push(sp::say("done"));
+  expectOk(climbs.run());
+  TEST_ASSERT_TRUE(climbs.out.err == ExchangeErr::None);
+  TEST_ASSERT_EQUAL(2, (int)climbs.model.requests().size());
+  TEST_ASSERT_EQUAL(1, climbs.ladder.refusedAsked);
+  TEST_ASSERT_FALSE(climbs.out.cutRetried);
+  TEST_ASSERT_EQUAL_STRING("done", climbs.out.step.text.c_str());
+  for (int rungs : {3, 0}) {   // full twice; no rung to climb
+    Rig r;
+    r.ladder.maxRungs = rungs;
+    r.model.push(full());
+    r.model.push(full());
+    expectOk(r.run());
+    TEST_ASSERT_TRUE(r.out.err == ExchangeErr::Cut);
+    TEST_ASSERT_EQUAL(rungs ? 2 : 1, (int)r.model.requests().size());
+    TEST_ASSERT_FALSE(r.out.cutRetried);
+    TEST_ASSERT_EQUAL(1, (int)r.out.step.calls.size());
+    TEST_ASSERT_FALSE(r.out.step.calls[0].complete);
+  }
+}
+
+// A caller's read window above the route's is lowered to it; a shorter one stands.
+static void test_a_timeout_above_the_read_window_is_lowered() {
+  for (uint32_t asked : {600000u, 30000u}) {
+    Rig r;
+    r.req.timeoutMs = asked;
+    r.req.deadlineMs = 900000;
+    r.model.push(sp::say("ok"));
+    expectOk(r.run());
+    TEST_ASSERT_EQUAL_UINT32(asked < 120000 ? asked : 120000, r.model.requests()[0].req.timeoutMs);
+  }
+}
+
+// A 400 that names a refused optional field is resent once without it, and the pre-flight records what
+// it left out; the boot's memory keeps the next exchange from asking again.
+static void test_a_refused_field_is_resent_once_without_it() {
+  const char* refused =
+      R"({"type":"error","error":{"type":"invalid_request_error","message":"Unsupported parameter: 'effort' is not supported with this model."}})";
+  nimbus::orch::caps::RefusedFields mem;
+  Rig r;
+  r.model.push(sp::raw(400, refused));
+  r.model.push(sp::say("ok"));
+  plain::ExchangeDeps deps;
+  deps.transport = &r.model;
+  deps.platform = &gPlatform;
+  deps.refused = &mem;
+  expectOk(plain::runExchange(deps, r.req, r.out));
+  TEST_ASSERT_TRUE(r.out.err == ExchangeErr::None);
+  TEST_ASSERT_EQUAL(2, (int)r.model.requests().size());
+  TEST_ASSERT_TRUE(r.model.requests()[0].body.find("\"effort\"") != std::string::npos);
+  TEST_ASSERT_TRUE(r.model.requests()[1].body.find("\"effort\"") == std::string::npos);
+  TEST_ASSERT_EQUAL(plain::dropped::kEffort, r.out.dropped);
+  TEST_ASSERT_EQUAL(plain::dropped::kEffort, r.out.ref.dropped);
+  Rig again;   // the same refusal twice is one resend, never a loop
+  for (int i = 0; i < 3; ++i) again.model.push(sp::raw(400, refused));
+  expectOk(again.run());
+  TEST_ASSERT_EQUAL(2, (int)again.model.requests().size());
+  TEST_ASSERT_TRUE(again.out.err == ExchangeErr::Other);
+}
+
+// No codec is asked for an output cap of 0 on a row that requires one; a caller's ceiling clamps it.
+static void test_a_required_cap_is_never_zero_and_a_ceiling_clamps_it() {
+  plain::Route route;
+  Rig r;
+  expectOk(plain::resolveRoute(r.head, r.turn, route));
+  plain::PreflightState own;
+  plain::RenderInput in = r.in;
+  in.maxTokens = 0;
+  TEST_ASSERT_EQUAL(0, plain::preflight(route, 0, own, in));
+  TEST_ASSERT_TRUE(in.maxTokens > 0);
+  TEST_ASSERT_TRUE(in.route == &route);
+  in = r.in;
+  in.maxTokens = 32000;
+  TEST_ASSERT_EQUAL(plain::dropped::kCapClamped, plain::preflight(route, 4096, own, in));
+  TEST_ASSERT_EQUAL_UINT32(4096, in.maxTokens);
+  Rig ceiling;
+  ceiling.req.capCeiling = 4096;
+  ceiling.model.push(sp::say("ok"));
+  expectOk(ceiling.run());
+  TEST_ASSERT_EQUAL_UINT32(4096, ceiling.sentMaxTokens(0));
+}
+
 static void test_the_output_cap_fits_the_body_and_the_time() {
   Rig full;
   full.model.push(sp::say("a"));
@@ -658,8 +781,9 @@ static void test_the_provider_markers_decide_the_class() {
        ExchangeErr::Server, 3},
       {"openai", "gpt-0.0-nope", 404, R"({"error":{"message":"The model does not exist","code":"model_not_found"}})",
        ExchangeErr::Other, 1},
+      // Lane E2-R4a: a provider's refusal code is the model's refusal answer (nothing to run).
       {"zai", "glm-5.3-flash", 400, R"({"error":{"code":"1301","message":"unsafe or sensitive content"}})",
-       ExchangeErr::Other, 1},
+       ExchangeErr::None, 1},
       {"zai", "glm-5.3-flash", 429, R"({"error":{"code":"1113","message":"Your account is in arrears"}})",
        ExchangeErr::KeyRefused, 1},
   };
@@ -669,6 +793,12 @@ static void test_the_provider_markers_decide_the_class() {
     expectOk(rig.run());
     TEST_ASSERT_TRUE_MESSAGE(rig.out.err == c.err, c.body);
     TEST_ASSERT_EQUAL_MESSAGE(c.sent, (int)rig.model.requests().size(), c.body);
+    const bool refusal = c.err == ExchangeErr::None;
+    TEST_ASSERT_TRUE_MESSAGE(!refusal || (rig.out.step.stop == plain::StopReason::Refusal && rig.out.step.calls.empty() &&
+                                          rig.out.step.refusal == "unsafe or sensitive content"),
+                             c.body);
+    // An unknown model is marked unusable for the caller (lane E2-R4a).
+    TEST_ASSERT_EQUAL_MESSAGE(c.status == 404, rig.out.modelUnusable, c.body);
   }
   TEST_ASSERT_TRUE(plain::classifyAnswer(413, R"({"reason":"large_body_busy","retryable":true,"retryAfterMs":2000})",
                                          true) == ExchangeErr::RateLimited);
@@ -1495,6 +1625,11 @@ int main(int, char**) {
   RUN_TEST(test_a_key_or_billing_refusal_parks_and_is_never_retried);
   RUN_TEST(test_other_answers_are_one_plain_line);
   RUN_TEST(test_a_custom_messages_host_sends_an_output_cap);
+  RUN_TEST(test_a_routed_claude_head_gets_a_cap_and_the_deadline_header);
+  RUN_TEST(test_a_full_window_climbs_one_rung_instead_of_the_cut_retry);
+  RUN_TEST(test_a_timeout_above_the_read_window_is_lowered);
+  RUN_TEST(test_a_refused_field_is_resent_once_without_it);
+  RUN_TEST(test_a_required_cap_is_never_zero_and_a_ceiling_clamps_it);
   RUN_TEST(test_a_refused_file_reference_is_forgotten_and_sent_once_more);
   RUN_TEST(test_a_cut_answer_retries_once_then_is_delivered_with_its_line);
   RUN_TEST(test_cut_arguments_are_never_returned_for_dispatch);
