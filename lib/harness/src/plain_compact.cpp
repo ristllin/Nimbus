@@ -895,6 +895,7 @@ Status CompactDriver::run(const IdleCtx& ctx, CompactOutcome& out) {
 
 // Due: the summary prepared ahead is swapped in with no request, else one attempt (or nothing to take).
 Status CompactDriver::onDue(const IdleCtx& ctx, const SlicePlan& plan, CompactOutcome& out) {
+  if (!manual_ && (plan.thru || pendingValid())) return crossing(ctx, plan, out);
   if (pendingValid()) return swapPending(ctx.now, out);
   if (!plan.thru) {
     if (turnAsks(ctx))
@@ -1650,6 +1651,59 @@ Status CompactDriver::prepare(const IdleCtx& ctx, CompactOutcome& out) {
   return attempt(ctx, plan, out, true);
 }
 
+// Lane E2-FIX15: a crossing of the due mark is one event. Slice after slice goes into the pending summary (no request
+// changes meanwhile) until no turn may go, an urgent step's time or kCompactCrossingSlices is spent, or an attempt
+// fails; then the summary is swapped in once. The cycle ends there unless slices remain that only the slice count or
+// the time held back (a very large backlog: the next step goes on with it). Before, the cycle stayed open while the newest six
+// owner turns held more than the recent part, so every turn open folded the one turn that had just aged out of them
+// and swapped (the bench: 15 updates in a row, each rewriting the whole cached request).
+Status CompactDriver::crossing(const IdleCtx& ctx, SlicePlan plan, CompactOutcome& out) {
+  if (pendingValid()) {   // prepared ahead of time (ruling 106 item 3): swapped at once, no request, no wait
+    endCycle();
+    return swapPending(ctx.now, out);
+  }
+  const bool urgent = ctx.urgency != Urgency::None && d_.platform->nowMs;
+  const uint32_t startMs = urgent ? d_.platform->nowMs() : 0;
+  bool said = false;   // the turn's status line says once that it waits, however many slices
+  IdleCtx once = ctx;
+  once.waiting = [&ctx, &said] {
+    if (!said && ctx.waiting) ctx.waiting();
+    said = true;
+  };
+  uint32_t slices = 0;
+  bool failed = false;
+  for (; plan.thru && slices < kCompactCrossingSlices && crossingMayAsk(urgent, startMs); ++slices) {
+    CompactOutcome one;
+    const Status s = attempt(once, plan, one, true);
+    out.requests = (uint8_t)std::min<uint32_t>(255, out.requests + one.requests);
+    out.ran = out.ran || one.ran;
+    if (!s.ok() || one.step != CompactStep::Prepared) {
+      out.step = one.step;
+      if (!s.ok()) return s;
+      failed = true;
+      break;
+    }
+    if (!planSlice(*d_.arena, pending_.thru, rules_, plan).ok()) plan = SlicePlan{};
+  }
+  if (failed || !plan.thru) endCycle();
+  if (!pendingValid()) return Status::success();   // nothing prepared: the failed attempt logged its cause
+  const uint8_t requests = out.requests;
+  const bool ran = out.ran;
+  const Status s = swapPending(ctx.now, out);
+  out.requests = requests;
+  out.ran = ran;
+  if (out.step == CompactStep::Swapped) out.step = CompactStep::Stored;   // asked in this crossing
+  hlog::logf("compact(%s): one summary write for this crossing (%u slices prepared, %u requests)", d_.chatKey.c_str(),
+             (unsigned)slices, (unsigned)requests);
+  return s.err == Err::TooLarge ? s : Status::success();   // as attempt: a refused swap stores nothing and is tried again
+}
+
+// Another slice in this crossing: an urgent step inside its time, an idle one inside its window's requests.
+bool CompactDriver::crossingMayAsk(bool urgent, uint32_t startMs) const {
+  if (urgent) return (uint32_t)(d_.platform->nowMs() - startMs) < kCompactUrgentMs;
+  return manual_ || windowAsks_ < kCompactRequestsPerWindow;   // an idle window's requests (RB-C2)
+}
+
 // At the due mark: the pending summary is swapped in with no request.
 Status CompactDriver::swapPending(uint64_t now, CompactOutcome& out) {
   SlicePlan plan;
@@ -1658,6 +1712,7 @@ Status CompactDriver::swapPending(uint64_t now, CompactOutcome& out) {
   plan.lastRow = pending_.lastRow;
   plan.turns = pending_.turns;
   const Status s = swap(plan, pending_.text, now, out);
+  windowQ_ = d_.arena->lastQ();   // the summary's own s item is no turn: the idle window goes on (lane E2-FIX15)
   if (!s.ok() || out.step != CompactStep::Stored) return s;
   out.step = CompactStep::Swapped;
   manualStored_ += manual_;

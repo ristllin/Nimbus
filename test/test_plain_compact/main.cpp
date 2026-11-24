@@ -442,6 +442,20 @@ void threeDays(Chat& c) {
   c.day(0, 12, 3000, "d3");
 }
 
+// Lane E2-FIX15: a chat whose crossing takes exactly one slice (one summarizer exchange), for the tests of one
+// attempt's behavior (threeDays' crossing now prepares its two slices in one event and swaps once).
+void oneSliceDays(Chat& c) {
+  c.day(-2, 14, 3000, "d1");
+  c.day(0, 6, 3000, "d3");
+}
+
+// Every request the summarizer was sent, one text (a crossing may take several slices).
+std::string allBodies(const Chat& c) {
+  std::string all;
+  for (const sp::Recorded& r : c.model.requests()) all += r.body + "\n";
+  return all;
+}
+
 }  // namespace
 
 void setUp() {
@@ -773,7 +787,7 @@ void test_a_turn_that_read_outside_content_is_framed_and_so_is_its_digest() {
 
 void test_the_request_is_the_summarizer_text_capped_at_its_block_under_the_psram_scope() {
   Chat c;
-  threeDays(c);
+  oneSliceDays(c);
   ScopeProbe probe;
   probe.inner = &c.model;
   plain::CompactDeps d = c.deps();
@@ -958,9 +972,9 @@ void test_owner_first_quiet_window_and_no_clock_gates() {
   for (int d = -9; d <= -2; ++d) big.day(d, 12, 3000, "a" + std::to_string(-d));
   big.day(0, 6, 3000, "d");
   big.answer([] { return sp::say(kSummary); });
-  int ran = 0;
-  for (int i = 0; i < 2 * plain::kCompactRequestsPerWindow; ++i) ran += big.step().ran;
-  TEST_ASSERT_EQUAL(plain::kCompactRequestsPerWindow, ran);
+  for (int i = 0; i < 2 * plain::kCompactRequestsPerWindow; ++i) (void)big.step();
+  // Lane E2-FIX15: a crossing prepares its slices in one step, still at most kCompactRequestsPerWindow per window.
+  TEST_ASSERT_EQUAL(plain::kCompactRequestsPerWindow, (int)big.model.requests().size());
   big.now += 60;
   big.chat("new turn", "ok");
   TEST_ASSERT_TRUE(big.step().ran);
@@ -1469,7 +1483,7 @@ void test_items_the_fill_gave_up_are_named_in_the_input() {
   c.driver.reset(new plain::CompactDriver(d));
   c.answer([] { return sp::say(kSummary); });
   TEST_ASSERT_EQUAL(plain::CompactStep::Stored, c.step().step);
-  TEST_ASSERT_TRUE(c.model.last().body.find(plain::texts::summarizer::kNotLoaded) != std::string::npos);
+  TEST_ASSERT_TRUE(allBodies(c).find(plain::texts::summarizer::kNotLoaded) != std::string::npos);
   Chat n;
   threeDays(n);
   n.answer([] { return sp::say(kSummary); });
@@ -1588,7 +1602,10 @@ void test_a_summary_that_needs_room_finishes_within_its_attempt() {
     const plain::CompactOutcome out = c.step();
     const std::string why = std::to_string(need) + " tokens needed";
     TEST_ASSERT_EQUAL_MESSAGE(plain::CompactStep::Stored, out.step, why.c_str());
-    TEST_ASSERT_EQUAL_MESSAGE(need <= plain::kSummarizerMaxTokens ? 1 : 2, (int)out.requests, why.c_str());
+    // Each slice of the crossing: one request when the room suffices, else the request and its retry with room.
+    size_t retries = 0;
+    for (const sp::Recorded& r : c.model.requests()) retries += r.view.maxTokens == plain::kSummarizerRetryMaxTokens;
+    TEST_ASSERT_EQUAL_MESSAGE(need <= plain::kSummarizerMaxTokens ? 0 : (int)out.requests / 2, (int)retries, why.c_str());
   }
 }
 
@@ -1684,7 +1701,7 @@ void test_the_days_count_holds_and_only_rises() {
     c.ctlText = "compact v1\nday " + std::to_string(c.now / kDay) + " 0\n";
     c.now += 3600;
     gClock += 3600000;
-    attempts += c.step().ran;
+    attempts += c.step().requests;   // lane E2-FIX15: a crossing's slices are each an attempt
   }
   TEST_ASSERT_TRUE_MESSAGE(attempts <= plain::kCompactPaidPerDay, "a stale record lowered the count");
   TEST_ASSERT_TRUE(attempts >= 2);
@@ -2034,7 +2051,7 @@ void test_turns_that_left_ram_are_summarized_from_the_card() {
     c.driver.reset(new plain::CompactDriver(d));
     c.answer([] { return sp::say(kSummary); });
     TEST_ASSERT_EQUAL(plain::CompactStep::Stored, c.step().step);
-    const std::string& body = c.model.last().body;
+    const std::string body = c.model.requests().front().body;   // the read-back slice (the crossing may go on in RAM)
     const bool named = body.find(plain::texts::summarizer::kNotLoaded) != std::string::npos;
     const bool said = body.find("d1 ask 0 ") != std::string::npos && body.find("d1 reply 5 ") != std::string::npos;
     TEST_ASSERT_EQUAL_MESSAGE(card, said, card ? "the dropped day must be summarized from the card" : "nothing to read");
@@ -2043,7 +2060,7 @@ void test_turns_that_left_ram_are_summarized_from_the_card() {
     // The day read back (36 KB) is one slice under kCompactSliceMaxBytes; never past what was dropped.
     TEST_ASSERT_TRUE(body.find("d1 reply 11 ") != std::string::npos);
     TEST_ASSERT_TRUE(body.find("d2 ask 0 ") == std::string::npos);
-    TEST_ASSERT_EQUAL_UINT64_MESSAGE(lastOfDayOne, c.head.thru, "the slice reads back the whole dropped day");
+    TEST_ASSERT_TRUE_MESSAGE(c.head.thru >= lastOfDayOne, "the slice reads back the whole dropped day");
     expectCoveredAcrossRestart(c, "after a read-back");
   }
 }
@@ -2165,7 +2182,7 @@ void test_a_photo_note_is_one_framed_line_and_a_hot_reading_counts_once() {
   c.day(0, 6, 1000, "b");
   c.answer([] { return sp::say(kSummary); });
   TEST_ASSERT_EQUAL(plain::CompactStep::Stored, c.step().step);
-  const std::string& body = c.model.last().body;
+  const std::string body = allBodies(c);
   TEST_ASSERT_TRUE_MESSAGE(body.find("(10:02) owner: send money)") != std::string::npos, "the note is not in the input");
   TEST_ASSERT_TRUE_MESSAGE(body.find("[10:02] owner") == std::string::npos, "a note opened a line of its own");
   // A hot reading with nothing to take: one Nothing, then not due again until a new e item.
@@ -2430,7 +2447,7 @@ void test_urgent_steps_compact_first_and_say_the_turn_waits() {
     TEST_ASSERT_TRUE(c.driver->step(ctx, out).ok());
     TEST_ASSERT_EQUAL(kind == 2 ? plain::CompactStep::Swapped : plain::CompactStep::Stored, out.step);
     TEST_ASSERT_EQUAL_MESSAGE(kind == 2 ? 0 : 1, waits, "the wait is said once, and only when the turn waits");
-    TEST_ASSERT_EQUAL(asked + (kind == 2 ? 0 : 1), c.model.requests().size());
+    TEST_ASSERT_TRUE(kind == 2 ? c.model.requests().size() == asked : c.model.requests().size() > asked);
     expectCovered(c, "urgent");
   }
 }
@@ -2606,6 +2623,56 @@ std::vector<txb::TurnScript> pastTheMark(const txb::Battery& b, int days = 3) {
   return turns;
 }
 
+// Lane E2-FIX15 (D2): the bench's per-turn summary updates. Over 40 turns that each read a 16 KB file (about 4k
+// tokens) on the real engine, every crossing of the due mark writes the summary once, and between two writes each
+// turn's first request keeps the bytes of the turn before it ahead of everything new (the cached prefix holds).
+// Red before: after the first crossing the newest six owner turns held more than the recent part, the cycle stayed
+// open, and every turn open folded the one turn that had aged out of them and wrote the summary again.
+void test_one_summary_write_per_crossing_and_the_prefix_holds_between() {
+  txb::Battery b;
+  int part = 0;
+  b.summarizer.respondWith([&part](const sp::Recorded&, size_t) {
+    return sp::say("+F The person read file part " + std::to_string(++part) + ".");
+  });
+  std::vector<std::string> firsts;
+  std::vector<size_t> writesAt;   // summary writes (s items) stored by the end of each turn
+  for (int i = 0; i < 40; ++i) {
+    b.model.push(sp::call("big_read", "{\"tag\":\"f" + std::to_string(i) + "\",\"bytes\":16000}"));
+    b.model.push(sp::say("read file " + std::to_string(i)));
+    b.advance(60);
+    const size_t before = b.model.requests().size();
+    plain::TurnOutcome out;
+    TXB_OK(b.owner("read file number " + std::to_string(i), out));
+    TEST_ASSERT_EQUAL_STRING(("read file " + std::to_string(i)).c_str(), out.text.c_str());
+    const std::string& body = b.model.requests()[before].body;
+    firsts.push_back(body.substr(std::min(body.size(), body.find("\"system\""))));
+    std::vector<tx::Item> items;
+    TXB_OK(b.stored(items));
+    size_t writes = 0;
+    for (const tx::Item& it : items) writes += it.kind == tx::ItemKind::Digest;
+    writesAt.push_back(writes);
+  }
+  size_t crossings = 0, early = 0;
+  for (size_t k = 1; k < firsts.size(); ++k) {
+    const size_t newWrites = writesAt[k] - writesAt[k - 1];
+    TEST_ASSERT_TRUE_MESSAGE(newWrites <= 1, ("more than one summary write in turn " + std::to_string(k)).c_str());
+    crossings += newWrites;
+    const std::string& a = firsts[k - 1];
+    const std::string& c = firsts[k];
+    size_t same = 0;
+    while (same < a.size() && same < c.size() && a[same] == c[same]) ++same;
+    const bool changed = same + 1500 < a.size();   // bytes changed well before the end of the turn before
+    early += changed;
+    if (!newWrites)
+      TEST_ASSERT_FALSE_MESSAGE(changed, ("the prefix changed with no summary write in turn " + std::to_string(k)).c_str());
+  }
+  char msg[96];
+  std::snprintf(msg, sizeof msg, "%u summary writes and %u prefix changes in 40 turns", (unsigned)crossings, (unsigned)early);
+  TEST_MESSAGE(msg);
+  TEST_ASSERT_TRUE_MESSAGE(crossings >= 1, msg);   // the case crosses the mark
+  TEST_ASSERT_TRUE_MESSAGE(crossings <= 3, msg);   // and the next crossing is many turns away
+}
+
 // Ruling 98 item 1 as amended (RB-I1's and RB-I2's check): several owner messages under 120 s apart right
 // after the due mark leave no turn out of a request unsummarized. The engine compacts first at turn open,
 // says the turn waits for the summary, and the request then carries it; rung 3's omission line never shows.
@@ -2700,7 +2767,7 @@ void test_a_too_long_answer_gets_one_compaction_and_one_retry_then_an_honest_err
     TXB_OK(b.owner("and the plan?", out));
     const size_t summaries = b.summarizer.requests().size() - asked;
     const std::string what = "run " + std::to_string(run);
-    TEST_ASSERT_EQUAL_MESSAGE(run < 2 ? 1 : 0, (int)summaries, what.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(run < 2 ? summaries >= 1 : summaries == 0, what.c_str());   // one crossing, one or more slices
     // One retry after the compaction; with nothing to compact and nothing to trim, no retry at all.
     TEST_ASSERT_EQUAL_MESSAGE(run < 2 ? 2 : 1, (int)(b.model.requests().size() - sent), (what + ": one retry").c_str());
     if (run > 0) {
@@ -2892,7 +2959,9 @@ void test_a_title_alone_is_nothing_to_change_at_the_second_compaction() {
     for (int d = 0; d < 4; ++d) c.day(-20 + d, 10, 3000, "b" + std::to_string(d));
     const size_t sent = c.model.requests().size();
     TEST_ASSERT_EQUAL_MESSAGE(plain::CompactStep::Stored, compactNow(c), answer);
-    TEST_ASSERT_EQUAL_MESSAGE(1, (int)(c.model.requests().size() - sent), "one request: the answer was taken");
+    TEST_ASSERT_TRUE(c.model.requests().size() > sent);
+    for (size_t k = sent; k < c.model.requests().size(); ++k)   // every slice's answer taken at its first request
+      TEST_ASSERT_TRUE_MESSAGE(c.model.requests()[k].answerSchema, "a second try in lines: the answer was not taken");
     TEST_ASSERT_TRUE(c.head.thru > thru);
     std::string after;
     TEST_ASSERT_TRUE(tx::encodeSummary(summaryOf(c), after).ok());
@@ -2935,7 +3004,8 @@ void test_nothing_to_change_is_a_whole_answer_in_the_structured_form() {
   c.now += 2 * kDay;
   const size_t sent = c.model.requests().size();
   TEST_ASSERT_EQUAL(plain::CompactStep::Stored, compactNow(c));
-  TEST_ASSERT_EQUAL(1, (int)(c.model.requests().size() - sent));
+  TEST_ASSERT_TRUE(c.model.requests().size() > sent);
+  for (size_t k = sent; k < c.model.requests().size(); ++k) TEST_ASSERT_TRUE(c.model.requests()[k].answerSchema);   // each taken at once
   TEST_ASSERT_TRUE(c.head.thru > first);
   const tx::Summary after = summaryOf(c);
   TEST_ASSERT_EQUAL(before.lines.size(), after.lines.size());
@@ -2950,7 +3020,7 @@ void test_an_answer_not_taken_is_asked_once_more_as_lines_and_logged() {
   for (const char* bad : {kNothingProse, "=Facts and standing preferences:\nF1 a boat and paint.", "Summary: a boat and paint."}) {
     gLogLines.clear();
     Chat c;
-    threeDays(c);
+    oneSliceDays(c);
       int asked = 0;
     c.model.respondWith([&](const sp::Recorded&, size_t) {
       ++asked;
@@ -3025,7 +3095,7 @@ void test_an_urgent_attempt_never_waits_longer_than_one_ask_did() {
   for (bool urgent : {true, false}) {
     gLogLines.clear();
     Chat c;
-    threeDays(c);
+    oneSliceDays(c);
     int asked = 0;
     c.model.respondWith([&](const sp::Recorded&, size_t) {
       sp::Step s = sp::say(++asked == 1 ? kNothingProse : kSummary);
@@ -3047,7 +3117,7 @@ void test_an_urgent_attempt_never_waits_longer_than_one_ask_did() {
   // A quick first answer leaves time: the second try runs inside the bound.
   gLogLines.clear();
   Chat c;
-  threeDays(c);
+  oneSliceDays(c);
   int asked = 0;
   c.model.respondWith([&](const sp::Recorded&, size_t) {
     sp::Step s = sp::say(++asked == 1 ? kNothingProse : kSummary);
@@ -3111,7 +3181,7 @@ void test_a_model_that_refuses_the_form_is_asked_in_lines_from_then_on() {
   {
     gLogLines.clear();
     Chat c;
-    threeDays(c);
+    oneSliceDays(c);
     int asked = 0;
     c.model.respondWith([&](const sp::Recorded&, size_t) {
       return ++asked == 1 ? sp::httpError(400, kFormRefusedBody) : sp::say(kSummary);
@@ -3123,13 +3193,13 @@ void test_a_model_that_refuses_the_form_is_asked_in_lines_from_then_on() {
     c.now += 2 * kDay;
     const size_t sent = c.model.requests().size();
     TEST_ASSERT_EQUAL(plain::CompactStep::Stored, compactNow(c));
-    TEST_ASSERT_EQUAL(sent + 1, c.model.requests().size());   // one request, no doomed form first
-    TEST_ASSERT_FALSE(c.model.requests().back().answerSchema);
+    TEST_ASSERT_TRUE(c.model.requests().size() > sent);   // no doomed form first: every request of it in lines
+    for (size_t k = sent; k < c.model.requests().size(); ++k) TEST_ASSERT_FALSE(c.model.requests()[k].answerSchema);
   }
   {
     gLogLines.clear();
     Chat c;
-    threeDays(c);
+    oneSliceDays(c);
     const char* other = R"({"type":"error","error":{"type":"invalid_request_error","message":"messages: text content blocks must be non-empty"}})";
     c.model.respondWith([&](const sp::Recorded&, size_t) { return sp::httpError(400, other); });
     const plain::CompactOutcome out = c.step();
@@ -3154,7 +3224,7 @@ void test_the_form_refused_or_ignored_and_storage_failures() {
   {
     gLogLines.clear();
     Chat c;
-    threeDays(c);
+    oneSliceDays(c);
     int asked = 0;
     c.model.respondWith([&](const sp::Recorded&, size_t) { return ++asked == 1 ? sp::httpError(400, kFormRefusedBody) : sp::say(kSummary); });
     const plain::CompactOutcome out = c.step();
@@ -3165,7 +3235,7 @@ void test_the_form_refused_or_ignored_and_storage_failures() {
   }
   {
     Chat c;
-    threeDays(c);
+    oneSliceDays(c);
     c.model.structuredOutput = false;
     c.answer([] { return sp::say(kSummary); });
     const plain::CompactOutcome out = c.step();
@@ -3174,7 +3244,7 @@ void test_the_form_refused_or_ignored_and_storage_failures() {
   }
   {
     Chat c;
-    threeDays(c);
+    oneSliceDays(c);
     c.answer([] { return sp::say(kSummary); });
     c.files.refuseAll = true;   // the summary cannot be stored or archived
     const plain::CompactOutcome out = c.step();
@@ -3190,7 +3260,7 @@ void test_the_form_refused_or_ignored_and_storage_failures() {
 // spend through; an answer not taken was paid too and is counted; a request that never left is not.
 void test_every_summarizer_request_is_counted() {
   Chat c;
-  threeDays(c);
+  oneSliceDays(c);
   int asked = 0;
   c.model.respondWith([&](const sp::Recorded&, size_t) {
     sp::Step s = sp::say(++asked == 1 ? kNothingProse : kSummary);
@@ -3213,7 +3283,7 @@ void test_every_summarizer_request_is_counted() {
   TEST_ASSERT_EQUAL(1, (int)c.spent[1].second.responses);
   // A cut answer asked again with room: one ask, both responses summed.
   Chat d;
-  threeDays(d);
+  oneSliceDays(d);
   int n = 0;
   d.model.respondWith([&](const sp::Recorded&, size_t) {
     sp::Step s = ++n == 1 ? sp::cut("+F half") : sp::say(kSummary);
@@ -3226,7 +3296,7 @@ void test_every_summarizer_request_is_counted() {
   TEST_ASSERT_EQUAL(2, (int)d.spent[0].second.responses);
   // A transport that never answered bills nothing.
   Chat e;
-  threeDays(e);
+  oneSliceDays(e);
   e.answer([] { return sp::transportCut(45000); });
   TEST_ASSERT_EQUAL(plain::CompactStep::Failed, e.step().step);
   TEST_ASSERT_TRUE(e.spent.empty());
@@ -3288,6 +3358,7 @@ int main(int, char**) {
   RUN_TEST(test_day_digests_are_taken_in_once_and_archived_before_the_swap);
   RUN_TEST(test_the_owner_ceiling_holds_the_attended_limits_and_lowers_them_only_by_choice);
   RUN_TEST(test_the_budget_view_reports_every_part_in_tokens);
+  RUN_TEST(test_one_summary_write_per_crossing_and_the_prefix_holds_between);
   RUN_TEST(test_messages_right_after_the_mark_are_compacted_first_never_left_out);
   RUN_TEST(test_a_failing_summary_at_turn_open_still_answers_the_owner);
   RUN_TEST(test_a_too_long_answer_gets_one_compaction_and_one_retry_then_an_honest_error);

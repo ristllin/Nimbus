@@ -131,6 +131,9 @@ inline constexpr uint32_t kCompactHeadTries = 2;           // failures on rung 1
 inline constexpr uint32_t kCompactWaitS[] = {600, 1800, 7200, 21600};
 inline constexpr uint32_t kCompactWindowS = 3600;          // an idle window ends at a turn or after this
 inline constexpr uint32_t kCompactManualRequests = 8;
+// Lane E2-FIX15: the slices one crossing of the due mark may prepare before its one swap (the bench's first crossing
+// of a large imported conversation took four).
+inline constexpr uint32_t kCompactCrossingSlices = 8;
 inline constexpr uint32_t kCompactThinFloor = 120;
 inline constexpr uint32_t kCompactThinSlice = 2048;
 // kDayStartDefaultMin (04:00) lives in plain/turn.h: TurnCtx carries the day start too.
@@ -345,6 +348,8 @@ class CompactDriver {
   Status foldTools(const SliceRules& rules, CompactOutcome& out);
   Status noSlice(const SlicePlan& plan, CompactOutcome& out);
   Status dueBy(const nimbus::orch::tx::HeadBudget& b, const SlicePlan& plan, bool& due);
+  Status crossing(const IdleCtx& ctx, SlicePlan plan, CompactOutcome& out);   // lane E2-FIX15: one write a crossing
+  bool crossingMayAsk(bool urgent, uint32_t startMs) const;
   SliceRules rulesFor(const IdleCtx& ctx, const nimbus::orch::tx::HeadBudget& b) const;
   Status planDropped(const IdleCtx& ctx, uint64_t omitted, SlicePlan& plan, bool& read);
   SliceRules rules_;   // the last planIfDue's rules (the tool fold reads them)
