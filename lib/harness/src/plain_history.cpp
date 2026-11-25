@@ -233,6 +233,58 @@ bool earlierRef(const TurnCtx& t, const std::string& s, char sep, uint32_t& g, s
   return g < cur;
 }
 
+// One hit's line: its label (a cleared conversation's id starts with 'c'; after a /clear the earlier
+// engine's rows are of a cleared conversation too), then its excerpt, framed when outside content.
+std::string hitLine(const tx::SearchHit& h, const std::string& when, bool afterClear) {
+  const std::string ex = (h.cutBefore ? R::kCutMark : "") + h.excerpt + (h.cutAfter ? R::kCutMark : "");
+  const bool old = h.source == tx::HitSource::OldPerson || h.source == tx::HitSource::OldAssistant;
+  return label(h.id, when, h.source, h.tool, h.outside, h.id[0] == 'c' || (old && afterClear)) + ": " +
+         (h.outside ? framed(ex) : ex) + "\n";
+}
+
+// After the hits: the further matches and their dates, how far the reading went, the cursor, or the end.
+// `when` names an instant in its own zone.
+template <typename When>
+std::string restText(const tx::SearchOutcome& o, const When& when) {
+  const std::string readTo = R::kSearchMore + when(o.readFromT) + R::kSearchBefore;
+  if (!o.further) return o.complete ? std::string(R::kSearchEnd) : readTo + R::kBeforeEq + o.next;
+  std::string text = std::to_string(o.further) + R::kSearchFurther;
+  if (o.furtherFromT) text += ", " + when(o.furtherFromT) + R::kSearchTo + when(o.furtherToT);
+  if (!o.complete) text += "\n" + readTo;   // the cursor below reaches the older part after these
+  return o.next.empty() ? text : text + R::kBeforeEq + o.next;
+}
+
+// One conversation's search into the page: its hits (an earlier conversation's ids under `pre`, "c<g>"),
+// the card it read, and its rest; its cursor under the same prefix.
+void absorb(tx::SearchOutcome& all, tx::SearchOutcome& o, const std::string& pre) {
+  for (tx::SearchHit& h : o.hits) {
+    if (!pre.empty() && h.id[0] == 'r') h.id = pre + h.id;
+    all.hits.push_back(std::move(h));
+  }
+  all.card.reads += o.card.reads;
+  all.card.bytes += o.card.bytes;
+  all.card.totalMs += o.card.totalMs;
+  all.card.longestMs = std::max(all.card.longestMs, o.card.longestMs);
+  all.oldRead = all.oldRead || o.oldRead;
+  all.unreadBulk += o.unreadBulk;
+  all.further = o.further;
+  all.furtherFromT = o.furtherFromT;
+  all.furtherToT = o.furtherToT;
+  all.readFromT = o.readFromT;
+  all.readToT = o.readToT;
+  all.complete = o.complete;
+  all.next = o.next.empty() ? std::string() : (pre.empty() ? o.next : pre + ":" + o.next);
+}
+
+// The page is full or the window's card budget is spent: the next call starts at conversation `g`.
+bool pageEnds(tx::SearchOutcome& all, uint32_t g, size_t maxHits, const tx::SearchLimits& lim) {
+  const bool spent = all.card.bytes >= lim.windowBytes || all.card.totalMs >= lim.cardMs;
+  if (all.hits.size() < maxHits && !spent) return false;
+  all.complete = false;
+  all.next = "c" + std::to_string(g) + ":";
+  return true;
+}
+
 }  // namespace
 
 std::string viewedPhoto(const std::string& toolName, const std::string& text) {
@@ -299,23 +351,11 @@ std::string HistoryTools::answerText(const tx::SearchOutcome& o, const tx::Statu
   if (!st.ok()) return R::kCardStopped + o.next;   // nothing above it claims absence (ruling 116)
   for (const tx::SearchHit& h : o.hits) {
     const int16_t zone = h.hasTz ? h.tzMinutes : tz(h.t);
-    const std::string when = h.hourOnly ? hourOf(h.t, zone) : whenOf(h.t, zone);
-    const std::string ex = (h.cutBefore ? R::kCutMark : "") + h.excerpt + (h.cutAfter ? R::kCutMark : "");
-    const bool old = h.source == tx::HitSource::OldPerson || h.source == tx::HitSource::OldAssistant;
-    text += label(h.id, when, h.source, h.tool, h.outside, h.id[0] == 'c' || (old && afterClear)) + ": " + (h.outside ? framed(ex) : ex) + "\n";
+    text += hitLine(h, h.hourOnly ? hourOf(h.t, zone) : whenOf(h.t, zone), afterClear);
   }
   if (o.hits.empty()) text += std::string(R::kSearchNone) + "\n";
   if (o.unreadBulk) text += std::to_string(o.unreadBulk) + R::kSearchUnread + "\n";
-  const std::string readTo = R::kSearchMore + whenOf(o.readFromT, tz(o.readFromT)) + R::kSearchBefore;
-  if (o.further) {
-    text += std::to_string(o.further) + R::kSearchFurther;
-    if (o.furtherFromT)
-      text += ", " + whenOf(o.furtherFromT, tz(o.furtherFromT)) + R::kSearchTo + whenOf(o.furtherToT, tz(o.furtherToT));
-    if (!o.complete) text += "\n" + readTo;   // the cursor below reaches the older part after these
-    return o.next.empty() ? text : text + R::kBeforeEq + o.next;
-  }
-  if (!o.complete) return text + readTo + R::kBeforeEq + o.next;
-  return text + R::kSearchEnd;
+  return text + restText(o, [this](uint64_t t) { return whenOf(t, tz(t)); });
 }
 
 ToolOutput HistoryTools::search(const ToolCall&, const TurnCtx& turn, JsonObjectConst a) {
@@ -357,7 +397,7 @@ tx::Status HistoryTools::searchFrom(const TurnCtx& turn, bool chained, uint32_t 
     tx::SearchDeps sd;
     sd.files = d_.files;
     sd.chatKey = own ? turn.chatKey : keyOfGeneration(turn, g);
-    sd.old = (own && turn.chatKey == turn.chatId) || (!own && g == 0) ? oldFor(turn) : nullptr;
+    sd.old = sd.chatKey == turn.chatId ? oldFor(turn) : nullptr;   // the first conversation's
     sd.nowMs = d_.nowMs;
     sd.limits = d_.limits;
     sd.limits.maxHits = maxHits - all.hits.size();
@@ -365,33 +405,11 @@ tx::Status HistoryTools::searchFrom(const TurnCtx& turn, bool chained, uint32_t 
     if (!own) ask.openTurn = 0;   // the open turn is the new conversation's
     tx::SearchOutcome o;
     const tx::Status st = tx::search(sd, ask, o);
-    const std::string pre = own ? std::string() : "c" + std::to_string(g);
-    for (tx::SearchHit& h : o.hits) {
-      if (!own && h.id[0] == 'r') h.id = pre + h.id;
-      all.hits.push_back(std::move(h));
-    }
-    all.card.reads += o.card.reads;
-    all.card.bytes += o.card.bytes;
-    all.card.totalMs += o.card.totalMs;
-    all.card.longestMs = std::max(all.card.longestMs, o.card.longestMs);
-    all.oldRead = all.oldRead || o.oldRead;
-    all.unreadBulk += o.unreadBulk;
-    all.further = o.further;
-    all.furtherFromT = o.furtherFromT;
-    all.furtherToT = o.furtherToT;
-    all.readFromT = o.readFromT;
-    all.readToT = o.readToT;
-    all.complete = o.complete;
-    all.next = o.next.empty() ? std::string() : (own ? o.next : pre + ":" + o.next);
+    absorb(all, o, own ? std::string() : "c" + std::to_string(g));
     if (!st.ok() || !o.next.empty() || !chained || g == 0) return st;
     --g;
     ask.before.clear();
-    const bool spent = all.card.bytes >= d_.limits.windowBytes || all.card.totalMs >= d_.limits.cardMs;
-    if (all.hits.size() >= maxHits || spent) {
-      all.complete = false;
-      all.next = "c" + std::to_string(g) + ":";
-      return st;
-    }
+    if (pageEnds(all, g, maxHits, d_.limits)) return st;
   }
 }
 

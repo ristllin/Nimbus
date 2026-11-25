@@ -116,6 +116,28 @@ inline void knobForm(ArduinoJson::JsonObject o) {
   }
 }
 
+// A key no action reads, or one only the owner may set, is never "applied": the answer names what the
+// tool takes (E2-BFIX4; E2-CFIX2 for the refused key, which was answered "applied: protected-BLOCKED").
+inline bool keyRefused(const nimbus::orch::ValidatedAction& va) {
+  return va.kind == nimbus::orch::ActionKind::Unknown || (va.kind == nimbus::orch::ActionKind::Config && !va.allowed);
+}
+
+// The keys of an allowed config action that no knob reads ("" for any other action).
+inline std::string unreadKeys(const nimbus::orch::ValidatedAction& va, ArduinoJson::JsonVariantConst action) {
+  return va.kind == nimbus::orch::ActionKind::Config && va.allowed ? nimbus::orch::unknownConfigKeys(action)
+                                                                   : std::string();
+}
+
+// What the applier did (defined after deviceControl, which reads it).
+inline std::string appliedText(const DeviceOutcome& dev, const std::string& unknown, const std::string& risk);
+
+// A restart or a head switch the action asked for runs after the reply: said in the result, asked of the turn.
+inline void deferAfterReply(nimbus::orch::ToolResult& r, bool restart, const std::string& head) {
+  if (!restart && head.empty()) return;
+  r.output += plain::texts::tool_results::kControlAfterReply;
+  r.code = restart ? plain::deferredCode(plain::Deferred::Restart) : plain::deferredCode(plain::Deferred::HeadSwitch, head);
+}
+
 // One device action now, by the shared applier (engine 1's device.control, the same caller rules
 // and summary); a restart or a model switch it accepts is recorded and asked of the turn instead.
 inline nimbus::orch::ToolResult deviceControl(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who,
@@ -128,17 +150,13 @@ inline nimbus::orch::ToolResult deviceControl(ArduinoJson::JsonObjectConst a, co
   const ArduinoJson::JsonVariantConst given = a["action"];
   if (!given.is<ArduinoJson::JsonObjectConst>()) return ToolResult::fail(tr::kControlNoAction);
   ArduinoJson::JsonDocument doc;
-  doc.set(given);
+  doc.set(given);   // a config object in its knobs' form (knobForm), keyed or typed
   if (doc[kConfig].is<ArduinoJson::JsonObject>()) knobForm(doc[kConfig].as<ArduinoJson::JsonObject>());
   else if (doc["type"] == kConfig) knobForm(doc.as<ArduinoJson::JsonObject>());
   const ArduinoJson::JsonVariantConst action = doc.as<ArduinoJson::JsonVariantConst>();
-  // A key no action reads, or one only the owner may set, is never "applied": the answer names what the
-  // tool takes (E2-BFIX4; E2-CFIX2 for the refused key, which was answered "applied: protected-BLOCKED").
   const nimbus::orch::ValidatedAction va = nimbus::orch::validateAction(action);
-  if (va.kind == nimbus::orch::ActionKind::Unknown || (va.kind == nimbus::orch::ActionKind::Config && !va.allowed))
-    return ToolResult::fail(tr::kControlNotApplied + va.reason + tr::kControlKeys + controlKeys());
-  const std::string unknown =
-      va.kind == nimbus::orch::ActionKind::Config && va.allowed ? nimbus::orch::unknownConfigKeys(action) : std::string();
+  if (keyRefused(va)) return ToolResult::fail(tr::kControlNotApplied + va.reason + tr::kControlKeys + controlKeys());
+  const std::string unknown = unreadKeys(va, action);
   bool restart = false;
   std::string head;   // provider/model of an accepted switch
   const auto stage = d.stageDevice;
@@ -154,17 +172,18 @@ inline nimbus::orch::ToolResult deviceControl(ArduinoJson::JsonObjectConst a, co
   serializeJson(action, json);
   const DeviceOutcome dev = applyDeviceAction(json, who, unattended, chat, d, &risk);
   if (dev.refusedWhole) return ToolResult::fail(tr::kControlNotApplied + dev.refusals);
+  ToolResult r = ToolResult::ok(appliedText(dev, unknown, risk));
+  deferAfterReply(r, restart, head);
+  return r;
+}
+
+// What the applier did: the summary, its refusals, the keys no knob read, the risk and the reply note.
+inline std::string appliedText(const DeviceOutcome& dev, const std::string& unknown, const std::string& risk) {
+  namespace tr = plain::texts::tool_results;
   std::string out = tr::kControlApplied + dev.summary;
   if (!dev.refusals.empty()) out += "\n" + std::string(tr::kControlNotApplied) + dev.refusals;
   if (!unknown.empty()) out += "\n" + std::string(tr::kControlNotApplied) + unknown + tr::kControlKeys + controlKeys();
-  out += risk + dev.replyNote;
-  ToolResult r = ToolResult::ok(out);
-  if (restart || !head.empty()) {
-    r.output += tr::kControlAfterReply;
-    r.code = restart ? plain::deferredCode(plain::Deferred::Restart)
-                     : plain::deferredCode(plain::Deferred::HeadSwitch, head);
-  }
-  return r;
+  return out + risk + dev.replyNote;
 }
 
 // Every bound tool on `reg` (the people group admin only, as on engine 1), device_control over `c`.
