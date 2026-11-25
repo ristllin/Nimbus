@@ -23,11 +23,20 @@
 #include "../sys/psram_static.h" // pending-slot buffers live in PSRAM, not internal .bss
 #include <esp_task_wdt.h>       // quiesce() feeds the main-task WDT while it waits
 #include "memory_subsystem.h"   // captureMediaFile - durable voice-note sidecar
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: histV2 (tools/engine/guard_files.txt)
 #include "nimbus/harness/turn_inbox.h"   // histV2: what the sender sent, for the turn's history row
+#else
+#include "nimbus/net/tg_inbox.h"     // RB-TG1: documents and long pastes to inbox/
+#include "nimbus/orch/seen_index.h"  // RB-TG1: the updates engine 2 already took
+#include "nimbus/orch/tx/budget.h"   // RB-TG1: tx::kInlineMessageCap, the paste cap
+#endif
 #include "adapters/image_vision.h"   // R1: a photo goes to the head as an image (a transcription as the fallback)
 #include "files_subsystem.h"        // per-sender storage limit, checked pre-download
 #include "tg_archive.h"             // lane R: every update and every send is archived on SD
 #include "orchestrator.h"           // roleOfChat / tenantQuotaOf - who is sending
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+#include "loops_subsystem.h"        // webMutationsWaiting - a staged routine change ends the idle wait (E2-FIX5)
+#endif
 #include "nimbus/mem_cap.h"         // utf8CapLen - never sever a character
 
 #include "nimbus/telegram_offset.h"   // nimbus::core::TgOffsetCursor (host-tested)
@@ -416,7 +425,11 @@ static bool idleWaitEnds() {
 #if defined(NIMBUS_TEST)
   if (settleInjectFresh()) return true;
 #endif
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+  return nimbus::net::tgIdleEnds(localTurnWaiting(), stagedWorkWaiting(), loops::webMutationsWaiting(), g_running);
+#else
   return localTurnWaiting() || stagedWorkWaiting() || !g_running;
+#endif
 }
 
 // Sleep an idle pause (the inter-cycle pause, a poll-error backoff) in short
@@ -715,6 +728,12 @@ static size_t s_turnMedia = 0;
 static int64_t s_turnMsgId = 0;
 // histV2: the blob ref (16 hex) of the voice note processVoice just stored ("" = none).
 static char s_voiceRef[17] = {};
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+// Lane E2-FIX10: the file-store paths stored for the turn about to run (its photos, documents, a long
+// paste), only those whose store succeeded; cleared with the turn's media (TurnInput::stored).
+static std::vector<std::string> s_turnStored;
+static std::string s_storedPath;   // the path storeInbound just stored ("" when it stored none)
+#endif
 
 // Route a text field into cu as a batched turn segment (grouped into one turn per
 // chat by the drain driver). Model sees the full length; a late one carries its send
@@ -803,6 +822,27 @@ static bool parsePageBody(const char* body, size_t len, std::vector<nimbus::tg::
   return true;   // a well-formed ok:true body - this poll cycle authenticated
 }
 
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+// RB-TG1: the updates engine 2 already took (nimbus/orch/seen_index.h), one PSRAM block made on
+// first use. RB-I1's boot rebuilds it from the chat's owner rows and head.json's hw.
+static nimbus::orch::SeenIndex g_seen;
+nimbus::orch::SeenIndex& seenIndex() {
+  static bool tried = false;   // one try: a PSRAM shortfall is said once, not per update
+  if (!tried) {
+    tried = true;
+    if (!g_seen.init([](size_t n) { return heap_caps_malloc(n, MALLOC_CAP_SPIRAM); }, [](void* p) { free(p); }).ok())
+      alog("telegram: no PSRAM for the seen index: a re-served update may be answered again");
+  }
+  return g_seen;   // not ready (PSRAM short): seen() is false and note() a no-op, as before RB-TG1
+}
+static_assert(nimbus::net::kSettleQuietTextMs == 2000, "RB-TG1: engine 2 holds a text 2 s (tg_settle.h)");
+static bool seenBefore(const nimbus::tg::Update& u) {
+  if (!seenIndex().seen(u.chatId, (uint64_t)u.updateId)) return false;
+  alogf("telegram: update %ld already taken: acked, not answered again", (long)u.updateId);
+  return true;
+}
+#endif
+
 // Classify ONE update and run its inline side effect (take a media slot / hand a file
 // to the files lane / push an unlisted sender for approval / route a caption as text).
 // Returns the drain action. The receive cycle calls this LAZILY, in order, and only for
@@ -823,6 +863,9 @@ static nimbus::orch::ClassifiedUpdate handleUpdate(const nimbus::tg::Update& u, 
           (long)g_cursor.offset());
     return cu;
   }
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+  if (polled && seenBefore(u)) return cu;   // RB-TG1: taken before a reboot or a refused offset write
+#endif
 
   const String chatId(u.chatId.c_str());
   const String from(u.from.c_str());
@@ -1530,14 +1573,47 @@ static Kept storeInbound(const InboundFile& in, const nimbus::orch::Principal& w
   // the web UI. The hash and in.slot.fileUniqueId are the files store's dedupe keys.
   char proj[48];
   snprintf(proj, sizeof(proj), "chat-%s", in.slot.chatId);
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+  if (!in.photo) {   // RB-TG1: a document is inbox/<update id>-<valid name>, the path its message shows.
+    // No content hash: the files store would skip bytes it already holds under another name, and
+    // the message names this path.
+    snprintf(proj, sizeof(proj), "inbox");
+    snprintf(fname, sizeof(fname), "%s", nimbus::net::inboxDocName((uint64_t)in.slot.updateId, in.slot.fileName).c_str());
+    std::string derr;
+    if (agent::files::saveStream(proj, fname, agent::files::StagedFile{LittleFS, in.lfsPath}, derr, who.ns)) {
+      s_storedPath = std::string(proj) + "/" + fname;
+      return Kept::Stored;
+    }
+    alogf("telegram: attach store failed: %s", derr.c_str());
+    if (!agent::files::noteRefusal(derr)) return Kept::Failed;
+    sendFileStoreNotice();
+    return Kept::Full;
+  }
+#endif
   std::string ferr;
-  if (agent::files::saveStream(proj, fname, agent::files::StagedFile{LittleFS, in.lfsPath}, ferr, who.ns, in.hash))
+  if (agent::files::saveStream(proj, fname, agent::files::StagedFile{LittleFS, in.lfsPath}, ferr, who.ns, in.hash)) {
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+    s_storedPath = std::string(proj) + "/" + fname;   // a copy of bytes already kept adds no entry: no effect
+#endif
     return Kept::Stored;
+  }
   alogf("telegram: attach store failed: %s", ferr.c_str());
   if (!agent::files::noteRefusal(ferr)) return Kept::Failed;
   sendFileStoreNotice();   // the episode's first refusal: queued before this turn's reply
   return Kept::Full;
 }
+
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+// RB-TG1: store the item, then let its label name the inbox path only if the file is there (else
+// the document's name, as engine 1 shows it). True when the file store is full.
+static bool keepInbound(const InboundFile& in, const nimbus::orch::Principal& who, nimbus::orch::MediaLabel& label) {
+  s_storedPath.clear();
+  const Kept kept = storeInbound(in, who);
+  if (kept == Kept::Stored && !s_storedPath.empty()) s_turnStored.push_back(s_storedPath);   // E2-FIX10
+  if (label.cls == nimbus::orch::MediaClass::Stored && kept != Kept::Stored) label.detail = in.slot.fileName;
+  return kept == Kept::Full;
+}
+#endif
 
 static nimbus::orch::Principal senderOf(const char* chatId) {
   return nimbus::orch::principalForRole(
@@ -1774,7 +1850,11 @@ static void describeStaged(const InboundFile& in, size_t turn, size_t k, size_t 
       return;
     }
     label.cls = nimbus::orch::MediaClass::Stored;
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+    label.detail = nimbus::net::documentDetail(nimbus::net::inboxDocPath((uint64_t)m.updateId, m.fileName), m.mime);
+#else
     label.detail = m.fileName;
+#endif
     return;
   }
   label.kind = nimbus::orch::MediaKind::Image;
@@ -1840,6 +1920,9 @@ static bool processMedia(size_t turn, size_t k, size_t n, int slot, std::string&
   const InboundFile in{m, localPath, contentHash, photo, image};
   agent::vision::ReadFail fail;
   describeStaged(in, turn, k, n, label, fail);
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+  const bool full = keepInbound(in, who, label);   // RB-TG1: stored before its label names the path
+#endif
   seg = nimbus::orch::mediaSegment(label);
   const std::string row = rowSegment(label);
   noteTurnMedia(slot, label, true);
@@ -1847,7 +1930,9 @@ static bool processMedia(size_t turn, size_t k, size_t n, int slot, std::string&
   // storage limit, and a photo someone sent shows up in Memory & Files like any other
   // file. The episodic row is what the MODEL reads later, stamped with the original
   // send time; the blob sidecar is what it can be re-shown from.
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
   const bool full = storeInbound(in, who) == Kept::Full;
+#endif
   g_slots[slot].media.kept = agent::memory::captureMediaFile(
       m.chatId, "user", photo ? nimbus::orch::MsgKind::Image : nimbus::orch::MsgKind::File,
       String(row.c_str()), localPath, photo ? "jpg" : "bin", m.date);
@@ -1918,7 +2003,11 @@ static bool processVoice(int slot, std::string& transcript) {
   // section 4). SD-gated no-op: with no card, nothing is retained. histV2: the
   // transcript is what the sender said, so it lives in the turn's owner row and the
   // audio row keeps the blob only (stored once); the turn names it by its ref.
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
   const bool histV2 = agent::history::v2Enabled();
+#else
+  const bool histV2 = false;   // engine 2 has no histV2 switch: the audio row keeps the transcript
+#endif
   std::string ref;
   agent::memory::captureMediaFile(v.chatId, "user", nimbus::orch::MsgKind::Audio,
                                   histV2 ? String() : text, localPath, "ogg", v.date, &ref);
@@ -2061,6 +2150,10 @@ static void bootGuard() {
 }
 
 static void noteHistory(const nimbus::orch::PsString& text);
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+static String ownerIntake(const std::string& chat, const nimbus::orch::PsString& text);
+static void noteTaken();
+#endif
 
 // The typing indicator while a plain text is held (tg_settle.h HoldTyping: at its first
 // sight, again when Telegram's action lapses), sent on the open keep-alive poll socket:
@@ -2164,6 +2257,9 @@ struct TgIo {
   void mediaFailed(const std::string& chat, size_t turn) {
     telegram::mediaFailed(chat.c_str(), g_batch.mediaCountAt(turn));
     s_turnMedia = 0;
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+    s_turnStored.clear();   // E2-FIX10: they belonged to that turn
+#endif
     agent::vision::dropTurnSet();   // R1: no turn runs, so no photo is shown
   }
   void skipMedia(size_t, size_t k, size_t n, int slot, std::string& seg) { telegram::skipMedia(k, n, slot, seg); }
@@ -2176,17 +2272,34 @@ struct TgIo {
     // R1: the photos this turn attached go to the head as images (the engine takes
     // them with the turn and frees them when it ends; a turn that never took them, a
     // command or a refusal, frees them here).
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+    // Lane E2-CHAT: the set is offered under the text engine 2 receives (the intake's), which is
+    // what it takes the set with.
+    const String intake = ownerIntake(chat, text);
+    agent::vision::offerTurnSet(String(chat.c_str()), intake);
+#else
     agent::vision::offerTurnSet(String(chat.c_str()), String(text.c_str()));
+#endif
     noteCrossed(chat, text);
     s_turnMsgId = turnMessageId();   // lane ECHO: the progress line replies to this message
     {
       const TurnSendWindow now;   // RB-TS1: the reply goes out when queued
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+      if (g_cb) g_cb(String(from.c_str()), String(chat.c_str()), intake);
+#else
       if (g_cb) g_cb(String(from.c_str()), String(chat.c_str()), String(text.c_str()));
+#endif
     }
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+    if (polled) noteTaken();   // RB-TG1: a re-served update is acked, not answered
+#endif
     s_turnMsgId = 0;
     s_warmedText.clear();   // RB-TS1: the next held text is embedded again, even the same words
     agent::vision::dropTurnSet();
     s_turnMedia = 0;   // the ordered segment list belonged to that turn
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+    s_turnStored.clear();   // E2-FIX10: they belonged to that turn
+#endif
   }
   void notice(const nimbus::net::TgNotice& n) { sendGuardNotice(n); }
   void typing(const std::string& chat) { holdTyping(chat); }
@@ -2194,6 +2307,9 @@ struct TgIo {
   void endPage() {
     s_turnMedia = 0;
     freeSlots();
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+    s_turnStored.clear();   // E2-FIX10: they belonged to that page's turns
+#endif
     publishGuard();
     agent::vision::dropTurnSet();
     agent::vision::endPage();   // the next page's photos walk the providers from the top
@@ -2234,6 +2350,7 @@ static uint32_t heldRepollMs(uint32_t normalMs) {
 // sender sent with each stored item cut back to its label (the media row keeps the
 // description). Noted just before the turn is routed; the engine takes it at capture.
 static void noteHistory(const nimbus::orch::PsString& text) {
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
   const std::string voiceRef = s_voiceRef;
   s_voiceRef[0] = 0;
   if (!agent::history::v2Enabled()) return;
@@ -2252,7 +2369,77 @@ static void noteHistory(const nimbus::orch::PsString& text) {
   const size_t sent = nimbus::net::withoutCrossedNote(routed.c_str(), routed.size());
   if (in.said.empty() && sent != routed.size()) in.said = routed.substr(0, sent);
   agent::history::noteInbound(in, routed);
+#else
+  (void)text;   // engine 2 has no histV2 note
+#endif
 }
+
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+// RB-TG1: an owner text over the inline cap is saved whole as inbox/<update id>.txt and the turn
+// gets its head and the pointer (nimbus/net/tg_inbox.h); no card or a refused save: whole.
+static String ownerIntake(const std::string& chat, const nimbus::orch::PsString& text) {
+  if (text.size() <= nimbus::orch::tx::kInlineMessageCap) return String(text.c_str());
+  const size_t i = g_receiver.currentTurn();
+  const uint64_t id = i < g_batch.turnCount() ? (uint64_t)g_batch.firstIdAt(i) : 0;
+  const std::string ns = senderOf(chat.c_str()).ns;
+  const nimbus::net::InboxSave save = [&ns](const std::string& name, const std::string& whole) {
+    if (!agent::memory::haveSd()) return false;
+    std::string err;
+    if (agent::files::saveText("inbox", name, whole, err, ns)) return true;
+    alogf("telegram: paste not kept in the inbox: %s", err.c_str());
+    return false;
+  };
+  const nimbus::net::OwnerText t = nimbus::net::ownerTextIntake(std::string(text.c_str(), text.size()), id,
+                                                                nimbus::orch::tx::kInlineMessageCap, save);
+  if (!t.saved.empty()) alogf("telegram: paste of %u B kept at %s", (unsigned)text.size(), t.saved.c_str());
+  if (!t.saved.empty()) s_turnStored.push_back(t.saved);   // E2-FIX10: part of the turn it opens
+  return String(t.text.c_str());
+}
+
+// Lane E2-DEV: the update ids of the message the running turn handles (TurnInput::src).
+std::vector<uint64_t> turnUpdateIdsImpl(const String& chatId) {
+  std::vector<uint64_t> ids;
+  const size_t turn = g_receiver.currentTurn();
+  if (turn >= g_batch.turnCount() || chatId != g_batch.chatIdAt(turn)) return ids;
+  for (size_t m = 0; m < g_batch.messageCountAt(turn); ++m) {
+    const int64_t id = g_batch.updateIdAt(turn, m);
+    if (id > 0) ids.push_back((uint64_t)id);
+  }
+  return ids;
+}
+
+// Lane E2-FIX10: the paths stored for the message the running turn handles (TurnInput::stored), when
+// that turn is `chatId`'s; empty otherwise.
+std::vector<std::string> turnStoredPathsImpl(const String& chatId) {
+  const size_t turn = g_receiver.currentTurn();
+  if (turn >= g_batch.turnCount() || chatId != g_batch.chatIdAt(turn)) return {};
+  return s_turnStored;
+}
+
+// Lane E2-DEV: one already-made part, sent now (doSendMessageImpl: HTML, then the plain resend).
+bool sendPartImpl(const String& chatId, const std::string& part) {
+  if (!enabled() || chatId.length() == 0 || part.empty()) return false;
+  agent::tgarchive::onOutboundText(chatId, String(part.c_str()), "send");   // archive hook
+  const bool ok = doSendMessageImpl(chatId.c_str(), part.c_str(), 0);
+  // RB-TS1: a part of the running turn's answer is out: its message is recorded as answered now,
+  // so a crash in the rest of the turn does not run it again on the re-served page.
+  const size_t turn = g_receiver.currentTurn();
+  if (ok && s_turnWindow && turn < g_batch.turnCount() && chatId == g_batch.chatIdAt(turn))
+    g_receiver.noteCurrentAnswered(deviceEpoch());
+  return ok;
+}
+// Lane E2-DEV: the seen index for the seam's boot (the public seenIndex() below).
+nimbus::orch::SeenIndex& seenIndexRef() { return seenIndex(); }
+
+// RB-TG1: every update of the bucket that just ran is noted as taken (its text, media and voice).
+static void noteTaken() {
+  const size_t turn = g_receiver.currentTurn();
+  if (turn >= g_batch.turnCount()) return;
+  const char* chat = g_batch.chatIdAt(turn);
+  for (size_t m = 0; m < g_batch.messageCountAt(turn); ++m)
+    seenIndex().note(chat, (uint64_t)g_batch.updateIdAt(turn, m));
+}
+#endif
 
 static int drainAndDispatch(int longPollS, nimbus::net::TgPollOutcome* outcome, bool& yielded,
                             int& retryAfterS) {
@@ -2867,6 +3054,14 @@ void pollTask(void*) {
 
 }  // namespace
 
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+// Lane E2-DEV: the engine-2 seam's way in (telegram.h); the bodies sit in the file's own namespace.
+nimbus::orch::SeenIndex& seenIndex() { return seenIndexRef(); }
+std::vector<uint64_t> turnUpdateIds(const String& chatId) { return turnUpdateIdsImpl(chatId); }
+std::vector<std::string> turnStoredPaths(const String& chatId) { return turnStoredPathsImpl(chatId); }
+bool sendPart(const String& chatId, const std::string& part) { return sendPartImpl(chatId, part); }
+#endif
+
 // ---- lane PROG: the running turn's round-boundary signals --------------------
 // All of this runs on the poll task (the turn's own task) at a round boundary,
 // where no provider request is in flight: each signal opens its own SHORT TLS
@@ -3124,6 +3319,10 @@ String injectRawPage(const String& body) {
          (settleMarked(body.c_str(), body.length()) ? " settle=1" : "");
 }
 #endif  // NIMBUS_TEST
+
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+bool inboxOpen() { return g_inboundQ != nullptr; }
+#endif
 
 bool injectMessage(const String& chatId, const String& text) {
   if (!g_inboundQ) return false;

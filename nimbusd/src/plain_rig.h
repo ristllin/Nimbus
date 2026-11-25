@@ -12,7 +12,9 @@
 #include "nimbus/harness/channel.h"
 #include "nimbus/harness/http.h"
 #include "nimbus/harness/plain/engine.h"
+#include "nimbus/harness/plain/guards.h"       // installSuppression (a routine fire, lane E2-SCHED)
 #include "nimbus/harness/plain/hooks.h"
+#include "nimbus/harness/plain/unattended.h"   // OwnerSink, RoutineDeps (lane E2-SCHED)
 #include "nimbus/harness/platform.h"
 #include "nimbus/orch/rbac.h"
 #include "nimbus/orch/tool_registry.h"
@@ -52,6 +54,14 @@ struct PlainRigBindings {
   // A tool call the registry does not answer the way the host wants (a binding that marks
   // outside content); null: every call goes to registry().dispatch with the chat's Principal.
   plain::ToolDispatchFn dispatch;
+  // What the host adds to each turn's setup after the rig's own fields (the pinned notes, the
+  // owner's ceiling, the guard costs); null: nothing.
+  std::function<void(const plain::TurnCtx&, plain::TurnSetup&)> setup;
+  // EngineDeps::recentFiles (the live file store's list); null: no list.
+  nimbus::orch::tx::RecentFilesBlock::Source recentFiles;
+  // Runs in boot once the arena and the log exist, before the engine boots: where a host installs
+  // a seam that needs them (the compaction driver). A failure ends the boot; null: nothing.
+  std::function<plain::Status()> beforeBoot;
 };
 
 struct PlainRigConfig {
@@ -60,6 +70,10 @@ struct PlainRigConfig {
   plain::Dialect dialect = plain::Dialect::AnthropicMessages;
   std::string host = "api.anthropic.com";      // the head's host (HeadEndpoint::host)
   std::string model = "claude-sonnet-5-5";
+  std::function<std::string()> modelNow;       // read at each turn when set (the owner's pick), else model
+  std::function<int16_t()> tzNow;              // read at each turn when set, else tzMinutes
+  // The owner's pinned profile (ruling 83: full unless the owner chose a smaller one).
+  nimbus::orch::tx::Profile profile = nimbus::orch::tx::kDefaultProfile;
   std::function<std::string()> key;            // read at render time, never stored
   std::string effort;                          // "" = the provider default
   bool routed = false;                         // through the Cumulo router
@@ -74,6 +88,10 @@ struct PlainRigConfig {
   // Boot refuses a chat with no compaction installed on hooks() (ruling 91 blockers/F6) unless this
   // names why (plain::EngineDeps::noCompaction). RB-I2 installs the hosted compaction here.
   const char* noCompaction = nullptr;
+  // plain::EngineDeps::stablePrefix (lane E2-CACHE): the owner's conversation keeps its system blocks
+  // frozen between the listed events and its stable cache points for 1 hour. Off by default.
+  bool stablePrefix = false;
+  uint32_t bodyCapLimit = 0;                   // plain::TurnSetup::bodyCapLimit (test rigs only; 0: the head's)
 };
 
 // How a turn ended, from the host's side. The engine decides every owner-facing byte; the
@@ -105,6 +123,28 @@ struct PlainTurn {
   std::string stated;
 };
 
+// How a turn ended, from what the engine returned and what the host's channel took (lane
+// E2-P-HOST1: Engine2Host states its ChatBinding turns the same way).
+inline void settleEnding(PlainTurn& t) {
+  const bool replied = t.out.delivered && !t.out.text.empty();
+  if (replied) {
+    t.ending = PlainEnding::Reply;
+    t.stated = t.out.text;
+  } else if (!t.sent.empty()) {
+    t.ending = PlainEnding::Status;
+    t.stated = t.sent.back();
+  } else if (!t.unsent.empty()) {
+    t.ending = PlainEnding::Failed;
+    t.stated = "plain-rig:channel-refused:" + std::to_string(t.unsent.size());
+  } else if (t.status.ok()) {
+    t.ending = PlainEnding::Silent;
+    t.stated = "plain-rig:silent:" + t.out.end.cause;
+  } else {
+    t.ending = PlainEnding::Failed;
+    t.stated = std::string("plain-rig:failed:") + nimbus::orch::tx::errSlug(t.status.err) + "@" + t.status.where;
+  }
+}
+
 class PlainRig {
  public:
   PlainRig(PlainRigConfig cfg, PlainRigBindings b) : cfg_(std::move(cfg)), b_(std::move(b)) {
@@ -128,6 +168,9 @@ class PlainRig {
   const nimbus::orch::Principal& who() const { return who_; }
   // The engine after boot (null before): head() and digests() for the compaction driver.
   plain::PlainEngine* engine() { return engine_.get(); }
+  // The chat's log and arena once boot made them (null before): a seam installed in beforeBoot.
+  nimbus::orch::tx::TxLog* log() { return log_.get(); }
+  nimbus::orch::tx::TxArena* arena() { return arena_.get(); }
 
   // Once: the arena, the log over the host's files, the engine and its boot (open the log,
   // fill the arena, the resume seam). InvalidArgument without a required binding.
@@ -146,6 +189,8 @@ class PlainRig {
       if (!st.ok()) return st;
       arena_ = std::move(arena);
       log_.reset(new tx::TxLog(*b_.files, cfg_.chatKey));
+      if (b_.beforeBoot) st = b_.beforeBoot();
+      if (!st.ok()) return st;
       engine_.reset(new plain::PlainEngine(deps()));
       st = engine_->boot(plain::BootCtx{p->nowEpoch(), afterCrash});
     } catch (const std::bad_alloc&) {
@@ -155,9 +200,44 @@ class PlainRig {
     return st;
   }
 
+  // Lane E2-SCHED: this chat as the sink of a reminder or routine fire (plain::deliverHeld): the
+  // host's channel and a routine note appended between turns. Busy inside a turn.
+  plain::OwnerSink ownerSink() {
+    plain::OwnerSink s;
+    s.chatKey = cfg_.chatKey;
+    s.chatId = cfg_.chatId;
+    s.deliver = [this](const plain::DeliverInput& in, plain::DeliverOutcome& out) {
+      return plain::deliverTurn(plain::DeliverDeps{&channel_, nullptr, nullptr}, in, out);
+    };
+    s.append = [this](const std::string& note, uint64_t at) {
+      if (!engine_ || busy_) return plain::Status::fail(nimbus::orch::tx::Err::Busy, "nimbusd::PlainRig::ownerSink");
+      return plain::appendOwnerNote(*engine_, note, at);
+    };
+    return s;
+  }
+  // Lane E2-SCHED: one routine fire over this rig's parts (plain::runRoutine cuts the registry to the
+  // routine's tools); the head `model` ("" = the chat's). The caller sets held, quiet, tz and taint.
+  plain::RoutineDeps routineDeps(const std::string& model) {
+    plain::RoutineDeps r;
+    r.platform = b_.platform;
+    r.transport = b_.transport;
+    r.files = b_.files;
+    r.reg = &reg_;
+    r.dispatch = [this](const plain::ToolCall& c, const plain::TurnCtx& t) { return dispatchCall(c, t); };
+    r.setup = [this](const plain::TurnCtx& t, plain::TurnSetup& out) { return setup(t, out); };
+    r.head = turnCtx();
+    r.head.trigger = plain::Trigger::Routine;
+    if (!model.empty()) r.head.model = model;
+    r.moreHooks = [](plain::PlainHooks& h) { (void)plain::installSuppression(h); };
+    r.owner = ownerSink();
+    return r;
+  }
+
   // One owner message through the loop: from the u item to the e item.
   // One turn at a time: a say from inside a turn (a host send that answers back) is refused.
-  PlainTurn say(const std::string& text) {
+  // `parts`: the message's photos (Image parts "p<ref>", lane E2-P-PHOTO); their bytes come through the
+  // setup's photo hook.
+  PlainTurn say(const std::string& text, const char* ch = "rig", std::vector<nimbus::orch::tx::Part> parts = {}) {
     PlainTurn t;
     if (busy_) {
       t.status = plain::Status::fail(nimbus::orch::tx::Err::Busy, "nimbusd::PlainRig::say.busy");
@@ -179,8 +259,10 @@ class PlainRig {
     plain::TurnInput in;
     in.ctx = turnCtx();
     in.text = text;
-    in.ch = "rig";
-    in.tzMinutes = cfg_.tzMinutes;
+    in.ch = ch;
+    in.parts = std::move(parts);
+    in.tzMinutes = cfg_.tzNow ? cfg_.tzNow() : cfg_.tzMinutes;
+    (void)engine_->reopen();   // E2-STORE: a log that did not open at boot is opened again first
     t.status = engine_->runTurn(in, t.out);
     t.sent.swap(sent_);
     t.unsent.swap(unsent_);
@@ -196,13 +278,14 @@ class PlainRig {
     c.turn = 0;   // the engine numbers the turn
     c.trigger = plain::Trigger::Owner;
     c.host = cfg_.host;
-    c.model = cfg_.model;
+    c.model = cfg_.modelNow ? cfg_.modelNow() : cfg_.model;
     c.dialect = cfg_.dialect;
+    c.profile = cfg_.profile;
     c.who = &who_;
     return c;
   }
 
-  plain::Status setup(const plain::TurnCtx&, plain::TurnSetup& out) {
+  plain::Status setup(const plain::TurnCtx& turn, plain::TurnSetup& out) {
     out.facts.reg = &reg_;
     out.facts.admin = who_.owner;
     out.facts.timeZone = cfg_.timeZone;
@@ -214,6 +297,8 @@ class PlainRig {
     out.wire = b_.wire;
     out.storedRounds = cfg_.storedRounds;
     out.qualified = cfg_.qualified;
+    out.bodyCapLimit = cfg_.bodyCapLimit;
+    if (b_.setup) b_.setup(turn, out);
     return plain::Status::success();
   }
 
@@ -245,28 +330,12 @@ class PlainRig {
     d.dispatch = [this](const plain::ToolCall& c, const plain::TurnCtx& t) { return dispatchCall(c, t); };
     d.setup = [this](const plain::TurnCtx& t, plain::TurnSetup& out) { return setup(t, out); };
     d.noCompaction = cfg_.noCompaction;
+    d.recentFiles = b_.recentFiles;
+    d.stablePrefix = cfg_.stablePrefix;
     return d;
   }
 
-  void state(PlainTurn& t) const {
-    const bool replied = t.out.delivered && !t.out.text.empty();
-    if (replied) {
-      t.ending = PlainEnding::Reply;
-      t.stated = t.out.text;
-    } else if (!t.sent.empty()) {
-      t.ending = PlainEnding::Status;
-      t.stated = t.sent.back();
-    } else if (!t.unsent.empty()) {
-      t.ending = PlainEnding::Failed;
-      t.stated = "plain-rig:channel-refused:" + std::to_string(t.unsent.size());
-    } else if (t.status.ok()) {
-      t.ending = PlainEnding::Silent;
-      t.stated = "plain-rig:silent:" + t.out.end.cause;
-    } else {
-      t.ending = PlainEnding::Failed;
-      t.stated = std::string("plain-rig:failed:") + nimbus::orch::tx::errSlug(t.status.err) + "@" + t.status.where;
-    }
-  }
+  void state(PlainTurn& t) const { settleEnding(t); }
 
   PlainRigConfig cfg_;
   PlainRigBindings b_;

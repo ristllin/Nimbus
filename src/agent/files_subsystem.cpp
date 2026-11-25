@@ -5,6 +5,9 @@
 #include <vector>
 
 #include <cstdlib>
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+#include <unistd.h>   // truncate - the engine-2 file tools undo a short append (E2-FSAFE)
+#endif
 
 #include "../sys/agent_log.h"
 #include "../sys/web_task.h"   // onWebTask - image.note stays on the turn task
@@ -29,13 +32,24 @@
 #include "nimbus/orch/file_append.h"  // files.append + the files.read tail view
 #include "nimbus/orch/file_swap.h"    // whole-file replace without a moment the file is gone
 #include "nimbus/orch/file_edit.h"    // files.edit: its caps, reply head and keyed-CSV report
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: files.read and files.edit (tools/engine/guard_files.txt)
 #include "nimbus/orch/file_aids_e1.h"  // files.read and files.edit on the shared CSV scan and edit (RB-REC4)
+#endif
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
 #include "nimbus/harness/conversation.h"  // utcOffsetAtUnix: the running day's offset
+#else
+#include "agent/engine_api.h"             // orchestrator::utcOffsetAt: the file tools' local time (E2-TOOLS)
+#include "nimbus/orch/file_card_io.h"     // CardFilesIo: engine 2's file tools over this store (E2-TOOLS)
+#endif
 #include "nimbus/orch/file_store.h"
 #include "nimbus/orch/store_full.h"   // a full store is said once (storm leg g)
 #include "nimbus/orch/turn_effects.h"  // kSaveReplacedNote: the save receipt
 #include "nimbus/orch/spend_ceiling.h"  // paidCallAllowed - the scan's gate before the download (lane QW4)
 #include "nimbus/orch/tool_registry.h"
+
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+#include "skills_device.h"   // skillsdev::skillBody - read_file on skills/<id>.md (lane E2-CHAT)
+#endif
 
 namespace agent::files {
 
@@ -337,9 +351,15 @@ void jsonEscapeInto(String& out, std::string_view s) {
   }
 }
 
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: no old-engine tool registers on engine 2 (RB-I0)
 void registerTools();   // fwd (bottom)
+#endif
 
 }  // namespace
+
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+void recoverToolsNote();   // fwd (the engine-2 block): a file-tool change a power cut interrupted (E2-FSAFE)
+#endif
 
 void begin() {
   memory::Lock g;
@@ -348,7 +368,9 @@ void begin() {
   primeFetchLock();
   if (!memory::haveSd()) {
     alogf("files: no SD - artifact store absent");
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: no old-engine tool registers on engine 2 (RB-I0)
     registerTools();   // tools exist but answer honestly ("no SD card")
+#endif
     return;
   }
   fs::FS& fs = memory::dataFs();
@@ -406,10 +428,15 @@ void begin() {
   }
   reindexRecovered(swapped);
   reindexRecovered(g_keptAside);   // the owner sees it in the Files list
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+  recoverToolsNote();   // after the swap recovery and the index: the tools' journal note, if a cut left one
+#endif
   fs.remove(kPartPath);   // stale partial from a crash mid-upload
   alogf("files: ready (%u files, %llu KB)", unsigned(g_store.count()),
         (unsigned long long)(g_store.totalBytes() / 1024));
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: no old-engine tool registers on engine 2 (RB-I0)
   registerTools();
+#endif
 }
 
 bool available() { return g_begun && memory::haveSd(); }
@@ -798,6 +825,7 @@ static nimbus::orch::StreamEnd streamFile(const std::string& path, nimbus::orch:
   return end;
 }
 
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
 // The shared aids' reads on the card (file_aids.h AidSource). With `perChunk` each read takes
 // the card lock for itself and the file is opened for it: the tool call gave its whole-call
 // lock up (memory::withCardReleased), so no hold spans a scan, only one 4 KB read. The
@@ -966,6 +994,7 @@ static nimbus::orch::ToolResult readForms(ArduinoJson::JsonObjectConst a, nimbus
   }
   return readTail(project, name, (size_t)a["tail"].as<double>());
 }
+#endif
 
 // The quota refusal of every assistant write that would pass the caller's share.
 static const char kStorageLimit[] =
@@ -1044,10 +1073,12 @@ static bool commitAppend(const std::string& project, const std::string& name, si
   return true;
 }
 
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
 // The last keyed-CSV rows an edit removed (one file, in RAM only, bounded): a later edit
 // that lands rows for the same file is told which of them were not logged again (RCA
 // 2026-11-01/02 cause 15). A restart forgets it, which is the honest bound.
 static nimbus::orch::aids::e1::RemovedRows g_removedRows;
+#endif
 
 // The first row (the header) of a stored file, bounded: the keyed edit diff's
 // column names. "" when it cannot be read.
@@ -1163,6 +1194,7 @@ static nimbus::orch::ToolResult appendRows(const AppendArgs& a, const nimbus::or
   return appendBytes(a, size, plan, who, note);
 }
 
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
 // Swap the finished .part in over project/name. The entry keeps its owner and creation
 // time (still the same file); the content hash is unknown until the next whole write,
 // and an uploaded provider copy is stale now.
@@ -1280,6 +1312,7 @@ static nimbus::orch::ToolResult editDoc(nimbus::orch::aids::e1::EditCall& call, 
   alogf("files: edit %s/%s (%u B -> %u B)", project.c_str(), name.c_str(), (unsigned)size, (unsigned)sink.written);
   return ToolResult::ok(reply);
 }
+#endif
 
 std::string readDocText(const std::string& project, const std::string& name,
                         const nimbus::orch::Principal& who) {
@@ -1324,6 +1357,7 @@ bool wouldExceedQuota(const nimbus::orch::Principal& who, uint32_t bytes) {
   return (uint64_t)g_store.bytesFor(who.ns) + bytes > q.maxBytes;
 }
 
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
 bool tableReadNow(const std::string& project, const std::string& name, const nimbus::orch::aids::CsvQuery& q,
                   std::string& out) {
   const nimbus::orch::ToolResult r = readTable(project, name, q);
@@ -1334,6 +1368,24 @@ bool tableReadNow(const std::string& project, const std::string& name, const nim
 void lastScanStats(uint32_t& reads, uint32_t& longestUs) {
   reads = g_scanReads;
   longestUs = g_scanLongestUs;
+}
+#endif
+
+// Lane E2-REP4: a file fetch_url saved is outside content (FileEntry::outside), so a later read of it
+// marks the turn as having read outside content, in a person's own folder too. A refused index write
+// leaves the entry unmarked in the index on the card (logged); RAM keeps the mark for this boot.
+static void markFetched(const std::string& project, const std::string& name) {
+  memory::Lock g;
+  const nimbus::orch::FileEntry* fe = g_store.find(project, name);
+  if (!fe) return;
+  nimbus::orch::FileEntry e = *fe;
+  e.outside = true;
+  std::string err;
+  if (!g_store.add(e, err)) {
+    alogf("fetch: %s/%s not marked as outside content (%s)", project.c_str(), name.c_str(), err.c_str());
+    return;
+  }
+  persistIndex();
 }
 
 bool removeFile(const std::string& project, const std::string& name) {
@@ -1595,6 +1647,7 @@ void runScanFetch(nimbus::orch::FetchReq req) {
     }
     { memory::Lock g; if (rf) rf.close(); }
     if (!ok || !finishWrite(true, err)) { abortWrite(); saved = 0; noteRefusal(err); if (err.empty()) err = "promote failed"; }
+    else markFetched(req.project, req.name);   // E2-REP4: outside content wherever it is kept
   }
   { memory::Lock g; memory::dataFs().remove(kFetchTmp); }
 
@@ -1641,7 +1694,91 @@ void runScanFetch(nimbus::orch::FetchReq req) {
 }
 }  // namespace
 
+}  // namespace (the agent-tools block reopens below; searchText has the header's linkage)
 
+// files.search's scan (lane E2-P-MEM moved it out of registerTools unchanged, so engine 2's search
+// scope files runs the same code): the newest kSearchScanMax text docs the caller may read, each read
+// size-limited, ranked by textMatchScore (the shared lexical.h word rule, CUM-515), each with a snippet
+// around the earliest matching word. False: no store.
+bool searchText(const std::string& qy, const std::string& proj, const nimbus::orch::Principal& who, TextSearch& out) {
+  constexpr size_t kSearchScanMax = 512;   // newest text docs scanned per call
+  out = TextSearch();
+  std::vector<TextHit>& hits = out.hits;
+  const nimbus::orch::LexQuery qlex = nimbus::orch::lexParse(qy);
+  size_t candidates = 0, scanned = 0;
+  {
+    memory::Lock g;
+    if (!available()) return false;
+    // Lane FSCAP: collect the readable text docs in chunks (pointers
+    // only), newest first, and scan at most kSearchScanMax of them -
+    // one call never reads the whole card however large the index.
+    std::vector<const nimbus::orch::FileEntry*> docs;
+    for (size_t base = 0;; base += kListPageChunk) {
+      const auto page = g_store.listPage(proj, base, kListPageChunk);
+      if (page.empty()) break;
+      for (const auto* e : page) {
+        if (!textDocName(e->name)) continue;
+        if (!g_store.readableBy(*e, who.ns, who.owner, who.perms().readShared)) continue;
+        docs.push_back(e);
+      }
+    }
+    candidates = docs.size();
+    std::sort(docs.begin(), docs.end(),
+              [](const nimbus::orch::FileEntry* x, const nimbus::orch::FileEntry* y) {
+                if (x->createdAt != y->createdAt) return x->createdAt > y->createdAt;
+                return x->name < y->name;
+              });
+    if (docs.size() > kSearchScanMax) docs.resize(kSearchScanMax);
+    for (const auto* e : docs) {
+      ++scanned;
+      out.oldestAt = e->createdAt;
+      std::string body = readWhole(e->project, e->name, 64 * 1024);
+      int sc = nimbus::orch::textMatchScore(body, qy);
+      if (sc <= 0) continue;
+      // Snippet: a window around the earliest word that MATCHED, single-
+      // line. Any one word is enough to match now (CUM-515), so the
+      // query's first word may not occur in the doc at all - anchoring on
+      // it snipped the doc's head instead of the hit.
+      size_t at = nimbus::orch::lexFirstHit(body.data(), body.size(), qlex);
+      // Both ends on a character boundary: a byte-offset cut tore a character.
+      std::string snip = nimbus::utf8Window(body, at, 40, 160);
+      for (char& c : snip) if (c == '\n' || c == '\r' || c == '\t') c = ' ';
+      hits.push_back(TextHit{nimbus::orch::plainCopy(e->project), nimbus::orch::plainCopy(e->name), snip, sc});
+    }
+  }
+  std::sort(hits.begin(), hits.end(),
+            [](const TextHit& x, const TextHit& y) { return x.score > y.score; });
+  out.scanned = scanned;
+  out.candidates = candidates;
+  return true;
+}
+
+// files.send's delivery (engine 1), shared with engine 2's send (lane E2-P-OUT1). The file is
+// addressed by EXACT project/name and then MAILED: its siblings (files.list, files.stat) filter by
+// readableBy, so a file `who` may not read answers NotFound, as a missing one does (confirming a file
+// exists is itself a disclosure). An Image goes as a Telegram PHOTO (inline preview), everything else
+// as a document; photoOnly refuses a file that is not an image.
+StoredSend sendStored(const std::string& project, const std::string& name, const String& chatId,
+                      const nimbus::orch::Principal& who, bool photoOnly, const String& caption) {
+  bool isImage = false;
+  {
+    memory::Lock g;
+    const auto* e = g_store.find(project, name);
+    if (!e || !g_store.readableBy(*e, who.ns, who.owner, who.perms().readShared)) return StoredSend::NotFound;
+    isImage = (e->kind == nimbus::orch::FileKind::Image);
+  }
+  if (photoOnly && !isImage) return StoredSend::NotImage;
+  const std::string path = absPath(project, name);
+  if (path.empty()) return StoredSend::NotFound;
+  if (chatId.length() == 0 || !agent::orchestrator::isChatAllowed(chatId)) return StoredSend::NoTarget;
+  if (!agent::telegram::sendMediaSd(chatId, isImage ? "photo" : "document", path.c_str(), caption))
+    return StoredSend::Busy;
+  return StoredSend::Queued;
+}
+
+namespace {
+
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: no old-engine tool registers on engine 2 (RB-I0)
 void registerTools() {
   auto& reg = memory::registry();
 
@@ -1682,29 +1819,10 @@ void registerTools() {
 
   reg.add("files.stat",
           "Metadata for one stored file: size, kind, created time, provider file id.",
-          [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) -> nimbus::orch::ToolResult {
-            memory::Lock g;
-            if (!available())
-              return nimbus::orch::ToolResult::fail("no SD card - artifact store absent");
-            const std::string project = argStr(a, "project"), name = argStr(a, "name");
-            // (find validates nothing itself; unknown names just miss.)
-            for (const auto* e : g_store.list(project))
-              if (std::string_view(e->name) == name) {
-                // Another principal's artifact is INVISIBLE, not "forbidden":
-                // a distinguishable refusal would confirm the file exists.
-                if (!g_store.readableBy(*e, who.ns, who.owner, who.perms().readShared)) break;
-                char b[160];
-                snprintf(b, sizeof b, "%s/%s: %u bytes, kind=%s, createdAt=%u%s%s",
-                         e->project.c_str(), e->name.c_str(), unsigned(e->bytes),
-                         nimbus::orch::fileKindName(e->kind), unsigned(e->createdAt),
-                         e->providerFileId.empty() ? "" : ", provider file_id=",
-                         e->providerFileId.c_str());
-                return nimbus::orch::ToolResult::ok(b);
-              }
-            return nimbus::orch::ToolResult::fail("not found");
-          },
+          statTool,
           R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"}},"required":["project","name"]})");
 
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
   // v4.0.0: the read half the store never had - the head can finally READ a doc
   // back (a research run's accumulated documents, a report draft). Bounded
   // paginated view mirroring results.get; text documents only.
@@ -1751,6 +1869,7 @@ void registerTools() {
             return nimbus::orch::ToolResult::ok(out);
           },
           R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"offset":{"type":"number"},"tail":{"type":"number"},"column":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"}},"required":["project","name"]})");
+#endif
   // Content search: the head asks "which of my saved docs mention X" without
   // knowing exact names. Scans TEXT doc bodies only (readable by the caller),
   // ranks by textMatchScore (the shared lexical.h word rule, CUM-515: how many
@@ -1761,7 +1880,6 @@ void registerTools() {
   // older docs were not scanned) - no index to maintain (the corpus is too
   // small for BM25's IDF to earn its cost). For a MEANING search over facts
   // use memory.search; for conversation history use memory.episodic.
-  constexpr size_t kSearchScanMax = 512;   // newest text docs scanned per call
   reg.add("files.search",
           "Search the CONTENT of saved TEXT documents (md/txt/json/csv/log) for words. "
           "Returns the best-matching files with a snippet. Optional 'project' scopes it. "
@@ -1770,52 +1888,11 @@ void registerTools() {
             const std::string qy = argStr(a, "query");
             const std::string proj = argStr(a, "project");
             if (qy.empty()) return nimbus::orch::ToolResult::fail("need 'query'");
-            struct Hit { std::string project, name, snippet; int score; };
-            std::vector<Hit> hits;
-            const nimbus::orch::LexQuery qlex = nimbus::orch::lexParse(qy);
-            size_t candidates = 0, scanned = 0;
-            {
-              memory::Lock g;
-              if (!available())
-                return nimbus::orch::ToolResult::fail("no SD card - artifact store absent");
-              // Lane FSCAP: collect the readable text docs in chunks (pointers
-              // only), newest first, and scan at most kSearchScanMax of them -
-              // one call never reads the whole card however large the index.
-              std::vector<const nimbus::orch::FileEntry*> docs;
-              for (size_t base = 0;; base += kListPageChunk) {
-                const auto page = g_store.listPage(proj, base, kListPageChunk);
-                if (page.empty()) break;
-                for (const auto* e : page) {
-                  if (!textDocName(e->name)) continue;
-                  if (!g_store.readableBy(*e, who.ns, who.owner, who.perms().readShared)) continue;
-                  docs.push_back(e);
-                }
-              }
-              candidates = docs.size();
-              std::sort(docs.begin(), docs.end(),
-                        [](const nimbus::orch::FileEntry* x, const nimbus::orch::FileEntry* y) {
-                          if (x->createdAt != y->createdAt) return x->createdAt > y->createdAt;
-                          return x->name < y->name;
-                        });
-              if (docs.size() > kSearchScanMax) docs.resize(kSearchScanMax);
-              for (const auto* e : docs) {
-                ++scanned;
-                std::string body = readWhole(e->project, e->name, 64 * 1024);
-                int sc = nimbus::orch::textMatchScore(body, qy);
-                if (sc <= 0) continue;
-                // Snippet: a window around the earliest word that MATCHED, single-
-                // line. Any one word is enough to match now (CUM-515), so the
-                // query's first word may not occur in the doc at all - anchoring on
-                // it snipped the doc's head instead of the hit.
-                size_t at = nimbus::orch::lexFirstHit(body.data(), body.size(), qlex);
-                // Both ends on a character boundary: a byte-offset cut tore a character.
-                std::string snip = nimbus::utf8Window(body, at, 40, 160);
-                for (char& c : snip) if (c == '\n' || c == '\r' || c == '\t') c = ' ';
-                hits.push_back(Hit{nimbus::orch::plainCopy(e->project), nimbus::orch::plainCopy(e->name), snip, sc});
-              }
-            }
-            std::sort(hits.begin(), hits.end(),
-                      [](const Hit& x, const Hit& y) { return x.score > y.score; });
+            TextSearch found;
+            if (!searchText(qy, proj, who, found))
+              return nimbus::orch::ToolResult::fail("no SD card - artifact store absent");
+            const std::vector<TextHit>& hits = found.hits;
+            const size_t scanned = found.scanned, candidates = found.candidates;
             std::string out;
             if (scanned < candidates)
               out += "(scanned the newest " + std::to_string(scanned) + " of " +
@@ -1902,6 +1979,7 @@ void registerTools() {
           R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"text":{"type":"string"}},"required":["project","name","text"]})");
   reg.alsoReads("files.append", {"key", "sum", "replace"});   // read to be refused by name
 
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
   reg.add("files.edit",
           "Edit a saved TEXT document surgically: find an exact text span (a phrase, or a whole "
           "line's text) and replace it - never read and re-save the whole file. Replaces the "
@@ -1926,6 +2004,7 @@ void registerTools() {
             return editDoc(call, who);
           },
           R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"find":{"type":"string"},"replace":{"type":"string"},"all":{"type":"boolean"},"count":{"type":"integer"},"line":{"type":"integer"}},"required":["project","name","find"]})");
+#endif
 
   reg.add("files.delete",
           "Delete one of your saved files for good: the bytes and the index entry both go. "
@@ -1952,29 +2031,7 @@ void registerTools() {
           "Share one of your saved files with everyone who can talk to this "
           "device, or stop sharing it (set share false). Sharing is read-only: "
           "only you (or an admin) can change or delete it.",
-          [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who)
-              -> nimbus::orch::ToolResult {
-            if (!available())
-              return nimbus::orch::ToolResult::fail("no SD card - artifact store absent");
-            if (!who.perms().shareOwn)
-              return nimbus::orch::ToolResult::fail("this conversation can't share files");
-            const std::string project = argStr(a, "project"), name = argStr(a, "name");
-            const bool on = a["share"].is<bool>() ? (bool)a["share"] : true;
-            memory::Lock g;
-            const nimbus::orch::FileEntry* fe = g_store.find(project, name);
-            // Only the file's OWNER may change its sharing - an admin may too,
-            // but a reader of a shared file never can.
-            if (!fe || !g_store.ownedBy(*fe, who.ns, who.owner))
-              return nimbus::orch::ToolResult::fail("not found");
-            nimbus::orch::FileEntry e = *fe;
-            e.shared = on;
-            std::string err;
-            if (!g_store.add(e, err)) return nimbus::orch::ToolResult::fail(err);
-            persistIndex();
-            return nimbus::orch::ToolResult::ok(
-                project + "/" + name + (on ? " is now shared with everyone"
-                                           : " is no longer shared"));
-          },
+          shareTool,
           R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"share":{"type":"boolean"}},"required":["project","name"]})");
 
   reg.add("files.fetch",
@@ -1985,67 +2042,7 @@ void registerTools() {
           "status this tool returns; NEVER claim the file exists until "
           "files.list shows it. Per-file size cap applies (device.status "
           "files.maxMB).",
-          [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who)
-              -> nimbus::orch::ToolResult {
-            std::string url = a["url"].is<const char*>() ? a["url"].as<const char*>() : "";
-            std::string project = a["project"].is<const char*>() ? a["project"].as<const char*>() : "";
-            std::string name = a["name"].is<const char*>() ? a["name"].as<const char*>() : "";
-            if (!available())
-              return nimbus::orch::ToolResult::fail("no SD card - the file store is absent");
-            // Path safety BEFORE the queue (the same gate every save runs).
-            std::string perr;
-            if (g_store.relPath(project, name).empty())
-              return nimbus::orch::ToolResult::fail("invalid project or name");
-            if (!nimbus::orch::parseHttpsUrl(url).ok)
-              return nimbus::orch::ToolResult::fail(
-                  "only https:// URLs can be downloaded (http is refused)");
-            // prism: the SAME write rails every other save path enforces, at
-            // REQUEST time - a fetch must not be a back door around ownership
-            // (silently replacing another principal's artifact) or quota.
-            {
-              memory::Lock g;
-              if (!g_store.writeAllowed(project, name, who.ns, who.owner)) {
-                return nimbus::orch::ToolResult::fail(
-                    "that project/name belongs to someone else");
-              }
-            }
-            const auto pol = nimbus::orch::fetchPolicyFromInt(agent::store::fetchPolicy());
-            std::string err;
-            uint32_t id = 0;
-            bool pending = false;
-            {
-              std::lock_guard<std::mutex> lk(g_fetchMx);
-              id = g_fetchQ.request(pol, url, project, name,
-                                    std::string(who.ns.c_str() ? who.ns.c_str() : ""), err);
-              if (id && pol == nimbus::orch::FetchPolicy::Approve) {
-                g_fetchAlert = true;
-                pending = true;
-              }
-            }
-            if (!id) return nimbus::orch::ToolResult::fail(err);
-            if (pending) {
-              // Honest about the CHANNEL: with no allowlisted Telegram chat the
-              // prompt cannot be sent - the web Downloads card is then the only
-              // approval surface, and the reply must say so instead of promising
-              // a prompt that will never arrive.
-              const bool tgOwner =
-                  agent::orchestrator::firstAllowedChat().length() > 0;
-              return nimbus::orch::ToolResult::ok(
-                  "queued for OWNER APPROVAL (request " + std::to_string(id) +
-                  "). " +
-                  (tgOwner
-                       ? std::string("The owner gets a Telegram prompt; ")
-                       : std::string("The owner approves it on the web page "
-                                     "(Usage -> Downloads); ")) +
-                  "the download runs only if they approve. Tell the owner it is "
-                  "waiting on them - do not claim the file exists.");
-            }
-            return nimbus::orch::ToolResult::ok(
-                "queued for download (request " + std::to_string(id) + ", policy " +
-                nimbus::orch::fetchPolicyName(pol) +
-                "). It runs in the background - check files.list shortly; only "
-                "claim success once the file is listed.");
-          },
+          fetchTool,
           R"({"type":"object","properties":{"url":{"type":"string"},"project":{"type":"string"},"name":{"type":"string"}},"required":["url","project","name"]})");
 
   reg.add("files.send",
@@ -2063,16 +2060,6 @@ void registerTools() {
             // have delivered the whole document to them. The refusal deliberately
             // matches "not found": confirming a file exists is itself a
             // disclosure, and the whole point is that they cannot tell.
-            bool isImage = false;
-            {
-              memory::Lock g;
-              const auto* e = g_store.find(project, name);
-              if (!e || !g_store.readableBy(*e, who.ns, who.owner, who.perms().readShared))
-                return nimbus::orch::ToolResult::fail("file not found");
-              isImage = (e->kind == nimbus::orch::FileKind::Image);
-            }
-            const std::string path = absPath(project, name);
-            if (path.empty()) return nimbus::orch::ToolResult::fail("file not found");
             String cid = String(argStr(a, "chat_id").c_str());
             if (cid.length() == 0) {
               // The turn's own Telegram chat, else the OWNER's chat (the owners list,
@@ -2085,16 +2072,17 @@ void registerTools() {
                                                          std::string(agent::telegram::ownerChat().c_str()))
                                .c_str());
             }
-            if (cid.length() == 0 || !agent::orchestrator::isChatAllowed(cid))
-              return nimbus::orch::ToolResult::fail(
-                  "no allowed Telegram target (omit chat_id for the current chat, or pass an allowlisted id)");
-            // An Image goes as a Telegram PHOTO (inline preview), everything else
-            // as a document. The media lane already supports both kinds; only the
-            // send verb changes.
-            if (!agent::telegram::sendMediaSd(cid, isImage ? "photo" : "document", path.c_str(),
-                                              String((project + "/" + name).c_str())))
-              return nimbus::orch::ToolResult::fail(
-                  "Telegram media queue busy or Telegram not configured - try again shortly");
+            switch (sendStored(project, name, cid, who, /*photoOnly=*/false,
+                               String((project + "/" + name).c_str()))) {
+              case StoredSend::Queued: break;
+              case StoredSend::NoTarget:
+                return nimbus::orch::ToolResult::fail(
+                    "no allowed Telegram target (omit chat_id for the current chat, or pass an allowlisted id)");
+              case StoredSend::Busy:
+                return nimbus::orch::ToolResult::fail(
+                    "Telegram media queue busy or Telegram not configured - try again shortly");
+              default: return nimbus::orch::ToolResult::fail("file not found");
+            }
             agent::orchestrator::noteTurnSpoke();   // CUM-826: queued for an allowlisted owner chat
             return nimbus::orch::ToolResult::ok("queued " + project + "/" + name +
                                                 " for Telegram delivery");
@@ -2157,94 +2145,227 @@ void registerTools() {
           "Returns the saved project/name, which says how the owner gets it. Set describe "
           "true to also get a vision read-back of the result (an extra provider call). Needs "
           "an OpenAI key and an SD card.",
-          [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) -> nimbus::orch::ToolResult {
-            // Turn-only (like files.send): generation blocks on TLS up to ~2 min, so it
-            // must run on the turn task (tg_poll), NEVER the AsyncTCP /mcp path - a long
-            // block there starves the web server and drops the connection.
-            if (!agent::orchestrator::turnInFlight())
-              return nimbus::orch::ToolResult::fail("image.generate is only available during a turn");
-            const std::string prompt = argStr(a, "prompt");
-            if (prompt.empty()) return nimbus::orch::ToolResult::fail("need 'prompt'");
-            if (!available())
-              return nimbus::orch::ToolResult::fail("no SD card - image store absent");
-            if (!agent::imagegen::available())
-              return nimbus::orch::ToolResult::fail("no image provider - set an OpenAI key");
-            std::string project = argStr(a, "project");
-            if (project.empty()) project = "images";
-            // Name: a sanitized stem (from the caller or the prompt) + a boot-unique
-            // counter so repeated generations don't silently overwrite each other
-            // (add() REPLACES same project+name), always ending .png so the store
-            // classifies it as an Image.
-            std::string stem = argStr(a, "name");
-            if (stem.size() > 4 && stem.substr(stem.size() - 4) == ".png")
-              stem = stem.substr(0, stem.size() - 4);
-            if (stem.empty()) stem = prompt;
-            std::string safe;
-            for (char ch : stem) {
-              if (safe.size() >= 40) break;
-              if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9')) safe += ch;
-              else if (ch >= 'A' && ch <= 'Z') safe += (char)(ch - 'A' + 'a');
-              else if ((ch == ' ' || ch == '-' || ch == '_') && !safe.empty() && safe.back() != '-') safe += '-';
-            }
-            while (!safe.empty() && safe.back() == '-') safe.pop_back();
-            if (safe.empty()) safe = "image";
-
-            const std::string modl = argStr(a, "model"), size = argStr(a, "size"),
-                              qual = argStr(a, "quality");
-            // Decode the whole image into PSRAM during the long TLS read (image.generate
-            // dispatches OUTSIDE the engine Lock so the 90-120 s wait can't stall the
-            // main loop's watchdog). Touches no SD here - the buffer lands under a BRIEF
-            // Lock below, which is what serializes the non-re-entrant SD bus against a
-            // concurrent probe. Both were proven live: a lock-free SD stream corrupted
-            // every image; a Lock-held stream rebooted the device.
-            String err;
-            size_t n = 0;
-            uint8_t* buf = agent::imagegen::generateToBuffer(
-                String(prompt.c_str()),
-                modl.empty() ? nullptr : modl.c_str(),
-                size.empty() ? nullptr : size.c_str(),
-                qual.empty() ? nullptr : qual.c_str(), n, err);
-            if (!buf)
-              return nimbus::orch::ToolResult::fail(
-                  "couldn't generate image: " + std::string(err.c_str()));
-            std::string serr, name;
-            bool saved;
-            {
-              memory::Lock g;
-              // Pick a name that isn't already taken: add() REPLACES same project+name,
-              // so without this a new generation could silently overwrite an earlier
-              // artifact (a boot-static counter would reset to 0 every reboot).
-              int seq = 0;
-              do {
-                name = safe + (seq ? "-" + std::to_string(seq) : "") + ".png";
-                ++seq;
-              } while (g_store.find(project, name));
-              saved = saveBytes(project, name, buf, n, serr, who.ns);
-            }
-            free(buf);
-            if (!saved)
-              return nimbus::orch::ToolResult::fail("generated but couldn't save: " + refusalForHead(serr));
-
-            std::string out = "saved " + project + "/" + name + " (" +
-                              std::to_string((unsigned)n) + " bytes)";
-            const bool wantDesc = a["describe"].is<bool>() ? (bool)a["describe"] : false;
-            if (wantDesc && agent::vision::available()) {
-              String d = agent::vision::describeImage(absPath(project, name).c_str(),
-                                                      "image/png", &memory::dataFs(),
-                                                      String(prompt.c_str()));
-              if (d.length()) out += "\n" + std::string(d.c_str());
-            }
-            // CUM-523: name files.send only on a turn that was offered it.
-            out += agent::orchestrator::fileSendForTurn()
-                       ? "\nSend it to the owner with files.send."
-                       : "\nThe owner opens it from the Files list on the device web page.";
-            return nimbus::orch::ToolResult::ok(out);
-          },
+          imageTool,
           R"({"type":"object","properties":{"prompt":{"type":"string"},"project":{"type":"string"},"name":{"type":"string"},"size":{"type":"string"},"quality":{"type":"string","enum":["low","medium","high"]},"model":{"type":"string"},"describe":{"type":"boolean"}},"required":["prompt"]})");
 }
+#endif
 
 }  // namespace
 
+
+// ---- the handlers engine 2 binds too (lane E2-P-OUT2): files.stat, files.share, files.fetch and
+// image.generate, moved unchanged out of engine 1's registration so both engines run one copy
+// (src/agent/tools_plain_files.cpp maps engine 2's path arguments onto these).
+
+nimbus::orch::ToolResult statTool(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) {
+  memory::Lock g;
+  if (!available())
+    return nimbus::orch::ToolResult::fail("no SD card - artifact store absent");
+  const std::string project = argStr(a, "project"), name = argStr(a, "name");
+  // (find validates nothing itself; unknown names just miss.)
+  for (const auto* e : g_store.list(project))
+    if (std::string_view(e->name) == name) {
+      // Another principal's artifact is INVISIBLE, not "forbidden":
+      // a distinguishable refusal would confirm the file exists.
+      if (!g_store.readableBy(*e, who.ns, who.owner, who.perms().readShared)) break;
+      char b[160];
+      snprintf(b, sizeof b, "%s/%s: %u bytes, kind=%s, createdAt=%u%s%s",
+               e->project.c_str(), e->name.c_str(), unsigned(e->bytes),
+               nimbus::orch::fileKindName(e->kind), unsigned(e->createdAt),
+               e->providerFileId.empty() ? "" : ", provider file_id=",
+               e->providerFileId.c_str());
+      return nimbus::orch::ToolResult::ok(b);
+    }
+  return nimbus::orch::ToolResult::fail("not found");
+}
+
+nimbus::orch::ToolResult shareTool(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) {
+  if (!available())
+    return nimbus::orch::ToolResult::fail("no SD card - artifact store absent");
+  if (!who.perms().shareOwn)
+    return nimbus::orch::ToolResult::fail("this conversation can't share files");
+  const std::string project = argStr(a, "project"), name = argStr(a, "name");
+  const bool on = a["share"].is<bool>() ? (bool)a["share"] : true;
+  memory::Lock g;
+  const nimbus::orch::FileEntry* fe = g_store.find(project, name);
+  // Only the file's OWNER may change its sharing - an admin may too,
+  // but a reader of a shared file never can.
+  if (!fe || !g_store.ownedBy(*fe, who.ns, who.owner))
+    return nimbus::orch::ToolResult::fail("not found");
+  nimbus::orch::FileEntry e = *fe;
+  e.shared = on;
+  std::string err;
+  if (!g_store.add(e, err)) return nimbus::orch::ToolResult::fail(err);
+  persistIndex();
+  return nimbus::orch::ToolResult::ok(
+      project + "/" + name + (on ? " is now shared with everyone"
+                                 : " is no longer shared"));
+}
+
+nimbus::orch::ToolResult fetchTool(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) {
+  std::string url = a["url"].is<const char*>() ? a["url"].as<const char*>() : "";
+  std::string project = a["project"].is<const char*>() ? a["project"].as<const char*>() : "";
+  std::string name = a["name"].is<const char*>() ? a["name"].as<const char*>() : "";
+  if (!available())
+    return nimbus::orch::ToolResult::fail("no SD card - the file store is absent");
+  // Path safety BEFORE the queue (the same gate every save runs).
+  std::string perr;
+  if (g_store.relPath(project, name).empty())
+    return nimbus::orch::ToolResult::fail("invalid project or name");
+  if (!nimbus::orch::parseHttpsUrl(url).ok)
+    return nimbus::orch::ToolResult::fail(
+        "only https:// URLs can be downloaded (http is refused)");
+  // prism: the SAME write rails every other save path enforces, at
+  // REQUEST time - a fetch must not be a back door around ownership
+  // (silently replacing another principal's artifact) or quota.
+  {
+    memory::Lock g;
+    if (!g_store.writeAllowed(project, name, who.ns, who.owner)) {
+      return nimbus::orch::ToolResult::fail(
+          "that project/name belongs to someone else");
+    }
+  }
+  const auto pol = nimbus::orch::fetchPolicyFromInt(agent::store::fetchPolicy());
+  std::string err;
+  uint32_t id = 0;
+  bool pending = false;
+  {
+    std::lock_guard<std::mutex> lk(g_fetchMx);
+    id = g_fetchQ.request(pol, url, project, name,
+                          std::string(who.ns.c_str() ? who.ns.c_str() : ""), err);
+    if (id && pol == nimbus::orch::FetchPolicy::Approve) {
+      g_fetchAlert = true;
+      pending = true;
+    }
+  }
+  if (!id) return nimbus::orch::ToolResult::fail(err);
+  if (pending) {
+    // Honest about the CHANNEL: with no allowlisted Telegram chat the
+    // prompt cannot be sent - the web Downloads card is then the only
+    // approval surface, and the reply must say so instead of promising
+    // a prompt that will never arrive.
+    const bool tgOwner =
+        agent::orchestrator::firstAllowedChat().length() > 0;
+    return nimbus::orch::ToolResult::ok(
+        "queued for OWNER APPROVAL (request " + std::to_string(id) +
+        "). " +
+        (tgOwner
+             ? std::string("The owner gets a Telegram prompt; ")
+             : std::string("The owner approves it on the web page "
+                           "(Usage -> Downloads); ")) +
+        "the download runs only if they approve. Tell the owner it is "
+        "waiting on them - do not claim the file exists.");
+  }
+  return nimbus::orch::ToolResult::ok(
+      "queued for download (request " + std::to_string(id) + ", policy " +
+      nimbus::orch::fetchPolicyName(pol) +
+      "). It runs in the background - check files.list shortly; only "
+      "claim success once the file is listed.");
+}
+
+// image.generate's file name stem: a sanitized stem (from the caller or the prompt); the caller adds a
+// counter so repeated generations don't silently overwrite each other (add() REPLACES same project+name)
+// and .png so the store classifies it as an Image.
+// One character of a stem: a lowercase letter or digit, '-' for a gap (space, '-', '_'), 0 to drop.
+static char stemChar(char ch) {
+  if (ch >= 'A' && ch <= 'Z') return (char)(ch - 'A' + 'a');
+  if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9')) return ch;
+  return (ch == ' ' || ch == '-' || ch == '_') ? '-' : 0;
+}
+
+static std::string imageStem(std::string stem, const std::string& prompt) {
+  if (stem.size() > 4 && stem.substr(stem.size() - 4) == ".png")
+    stem = stem.substr(0, stem.size() - 4);
+  if (stem.empty()) stem = prompt;
+  std::string safe;
+  for (char ch : stem) {
+    if (safe.size() >= 40) break;
+    const char c = stemChar(ch);
+    if (c != '-') { if (c) safe += c; }
+    else if (!safe.empty() && safe.back() != '-') safe += '-';
+  }
+  while (!safe.empty() && safe.back() == '-') safe.pop_back();
+  return safe.empty() ? std::string("image") : safe;
+}
+
+// image.generate's answer for a saved image: its path and size, the optional vision read-back, and how
+// the owner gets it.
+static std::string imageSaved(const std::string& project, const std::string& name, size_t n, bool wantDesc,
+                              const std::string& prompt) {
+  std::string out = "saved " + project + "/" + name + " (" +
+                    std::to_string((unsigned)n) + " bytes)";
+  if (wantDesc && agent::vision::available()) {
+    String d = agent::vision::describeImage(absPath(project, name).c_str(),
+                                            "image/png", &memory::dataFs(),
+                                            String(prompt.c_str()));
+    if (d.length()) out += "\n" + std::string(d.c_str());
+  }
+  // CUM-523: name files.send only on a turn that was offered it.
+  out += agent::orchestrator::fileSendForTurn()
+             ? "\nSend it to the owner with files.send."
+             : "\nThe owner opens it from the Files list on the device web page.";
+  return out;
+}
+
+nimbus::orch::ToolResult imageTool(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) {
+  // Turn-only (like files.send): generation blocks on TLS up to ~2 min, so it
+  // must run on the turn task (tg_poll), NEVER the AsyncTCP /mcp path - a long
+  // block there starves the web server and drops the connection.
+  if (!agent::orchestrator::turnInFlight())
+    return nimbus::orch::ToolResult::fail("image.generate is only available during a turn");
+  const std::string prompt = argStr(a, "prompt");
+  if (prompt.empty()) return nimbus::orch::ToolResult::fail("need 'prompt'");
+  if (!available())
+    return nimbus::orch::ToolResult::fail("no SD card - image store absent");
+  if (!agent::imagegen::available())
+    return nimbus::orch::ToolResult::fail("no image provider - set an OpenAI key");
+  std::string project = argStr(a, "project");
+  if (project.empty()) project = "images";
+  // Name: a sanitized stem (from the caller or the prompt) + a boot-unique
+  // counter so repeated generations don't silently overwrite each other
+  // (add() REPLACES same project+name), always ending .png so the store
+  // classifies it as an Image.
+  const std::string safe = imageStem(argStr(a, "name"), prompt);
+
+  const std::string modl = argStr(a, "model"), size = argStr(a, "size"),
+                    qual = argStr(a, "quality");
+  // Decode the whole image into PSRAM during the long TLS read (image.generate
+  // dispatches OUTSIDE the engine Lock so the 90-120 s wait can't stall the
+  // main loop's watchdog). Touches no SD here - the buffer lands under a BRIEF
+  // Lock below, which is what serializes the non-re-entrant SD bus against a
+  // concurrent probe. Both were proven live: a lock-free SD stream corrupted
+  // every image; a Lock-held stream rebooted the device.
+  String err;
+  size_t n = 0;
+  uint8_t* buf = agent::imagegen::generateToBuffer(
+      String(prompt.c_str()),
+      modl.empty() ? nullptr : modl.c_str(),
+      size.empty() ? nullptr : size.c_str(),
+      qual.empty() ? nullptr : qual.c_str(), n, err);
+  if (!buf)
+    return nimbus::orch::ToolResult::fail(
+        "couldn't generate image: " + std::string(err.c_str()));
+  std::string serr, name;
+  bool saved;
+  {
+    memory::Lock g;
+    // Pick a name that isn't already taken: add() REPLACES same project+name,
+    // so without this a new generation could silently overwrite an earlier
+    // artifact (a boot-static counter would reset to 0 every reboot).
+    int seq = 0;
+    do {
+      name = safe + (seq ? "-" + std::to_string(seq) : "") + ".png";
+      ++seq;
+    } while (g_store.find(project, name));
+    saved = saveBytes(project, name, buf, n, serr, who.ns);
+  }
+  free(buf);
+  if (!saved)
+    return nimbus::orch::ToolResult::fail("generated but couldn't save: " + refusalForHead(serr));
+
+  const bool wantDesc = a["describe"].is<bool>() ? (bool)a["describe"] : false;
+  return nimbus::orch::ToolResult::ok(imageSaved(project, name, n, wantDesc, prompt));
+}
 
 // ---- W18 public seams (must sit OUTSIDE the big anonymous namespace above:
 // everything between it and here has internal linkage) ----
@@ -2357,6 +2478,157 @@ void testArmCut(TestCut where, uint32_t at) {   // CUTARM (files_subsystem.h)
   g_cutAt = at;
   g_cutOps = 0;
   g_cutWhere = uint8_t(where);
+}
+#endif
+
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+// ---- engine 2's plain file tools: the SD card under them (lane E2-TOOLS; nimbus/orch/file_card_io.h) ----
+// The library (lib/core orch_file_tools.cpp and orch_file_card_io.cpp) holds every rule and result text. This
+// is the card and the old engine's own parts: g_store (the one index the web upload and the Files panel share),
+// memory::Lock, persistIndex, checkRoomLocked (FSCAP reclaim) and kSwap's backup and note, so a replace a power
+// cut interrupted is repaired at boot by recoverInterruptedSwap as it always was. No repair of its own, no
+// truncate (ruling 112). The tools' part file is their own, never the web upload's kPartPath.
+namespace {
+
+constexpr const char* kToolsPart = "/mem/files/.tools-part";
+constexpr const char* kToolsNote = "/mem/files/.tools-note";   // the tools' journal note (ruling 112; E2-FSAFE)
+ToolsHolds g_toolsHolds;   // the file tools' card lock holds since the last reset (turn task only)
+
+class SdFileCard : public nimbus::orch::FileCard {
+ public:
+  bool exists(const std::string& p) override { return base_.exists(p); }
+  bool rename(const std::string& a, const std::string& b) override { return base_.rename(a, b); }
+  bool remove(const std::string& p) override { return base_.remove(p); }
+  bool writeText(const std::string& p, const std::string& t) override { return base_.writeText(p, t); }
+  std::string readText(const std::string& p) override { return base_.readText(p); }
+  long long size(const std::string& p) override { return base_.size(p); }
+  bool readAt(const std::string& p, uint64_t offset, size_t len, std::string& out) override {
+    out.clear();
+    if (!memory::dataFs().exists(p.c_str())) return false;
+    File f = memory::dataFs().open(p.c_str(), FILE_READ);
+    if (!f) return false;
+    if (offset && !f.seek(size_t(offset))) {
+      f.close();
+      return false;
+    }
+    out.resize(len);
+    const size_t got = len ? f.read(reinterpret_cast<uint8_t*>(&out[0]), len) : 0;
+    f.close();
+    out.resize(got);
+    return true;
+  }
+  // The old engine's append: open for append, so the bytes land at the size on the card.
+  bool append(const std::string& p, std::string_view bytes, size_t& landed) override {
+    landed = 0;
+    File f = memory::dataFs().open(p.c_str(), FILE_APPEND);
+    if (!f) return false;
+#ifdef NIMBUS_TEST
+    if (testCutArmed(TestCut::Append)) {   // CUTARM append: only the first `at` bytes reach the card (E2-FIX2A)
+      const size_t k = std::min<size_t>(g_cutAt, bytes.size());
+      f.write(reinterpret_cast<const uint8_t*>(bytes.data()), k);
+      f.close();
+      testCutNow("append", uint32_t(k));
+    }
+#endif
+    landed = bytes.empty() ? 0 : f.write(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size());
+    f.close();
+    return true;
+  }
+  bool write(const std::string& p, std::string_view bytes, bool first) override {
+    File f = memory::dataFs().open(p.c_str(), first ? FILE_WRITE : FILE_APPEND);
+    if (!f) return false;
+    const size_t n = bytes.empty() ? 0 : f.write(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size());
+    f.close();
+    return n == bytes.size();
+  }
+  bool mkdir(const std::string& d) override {
+    fs::FS& fs = memory::dataFs();
+    return fs.exists(d.c_str()) || fs.mkdir(d.c_str());
+  }
+  // POSIX truncate on the card's VFS path (FATFS f_truncate): only ever back to a size measured in
+  // the same hold before this call's own write (a short append undone), or the tools' own note to
+  // empty when the card would neither remove nor overwrite it (the boot never cuts a file; ruling 115).
+  bool truncate(const std::string& p, uint64_t size) override {
+    const char* mp = memory::dataFs().mountpoint();
+    if (!mp) return false;
+    const std::string vp = std::string(mp) + p;
+    return ::truncate(vp.c_str(), off_t(size)) == 0 && base_.size(p) == (long long)size;
+  }
+
+ private:
+  SdSwapFs base_;
+};
+
+// The old engine's persistIndex (void, unchanged), then whether the index on the card is the one just written.
+bool persistIndexLanded() {
+  persistIndex();
+  const long long onCard = SdSwapFs().size(kIndexPath);
+  return onCard >= 0 && size_t(onCard) == g_store.dump().size();
+}
+
+nimbus::orch::CardFilesIo& cardIo() {
+  static SdFileCard card;
+  static nimbus::orch::CardFilesIo io(
+      card, g_store,
+      nimbus::orch::CardFilesLayout{kRoot, kToolsPart, {kToolsPart, kSwap.bak, kSwap.note}, kToolsNote}, [] {
+        nimbus::orch::CardFilesHost h;
+        h.locked = [](const std::function<void()>& fn) {
+          if (!xPortCanYield()) return false;   // never from a context that cannot wait for the card lock
+          memory::Lock g;
+          if (!available()) return false;
+          const uint32_t t0 = micros();
+          fn();
+          const uint32_t us = micros() - t0;
+          ++g_toolsHolds.n;
+          g_toolsHolds.totalUs += us;
+          if (us > g_toolsHolds.maxUs) g_toolsHolds.maxUs = us;
+          return true;
+        };
+        h.persistIndex = [] { return persistIndexLanded(); };
+        h.now = [] { return nowEpoch(); };
+        h.utcOffsetMin = [](uint32_t epoch) { return orchestrator::utcOffsetAt(epoch); };
+        h.skillBody = agent::skillsdev::skillBody;   // lane E2-CHAT: the owner's skill files on the card
+        h.roomFor = [](const std::string& p, const std::string& n, uint64_t add, std::string& err) {
+          return !checkRoomLocked(p, n, add, err);
+        };
+        h.busy = [] { return uploadActiveLocked(); };   // the old engine's gate on its own writes (S4)
+        return h;
+      }());
+  return io;
+}
+
+}  // namespace
+
+nimbus::orch::FileToolsIo& toolsIo() { return cardIo(); }
+void recoverToolsNote() {
+  const std::string did = cardIo().recoverNote();
+  if (!did.empty()) alogf("files: %s", did.c_str());
+}
+ToolsHolds toolsHolds(bool reset) {
+  const ToolsHolds h = g_toolsHolds;
+  if (reset) g_toolsHolds = ToolsHolds{};
+  return h;
+}
+
+bool recentFiles(const nimbus::orch::Principal& who, std::vector<nimbus::orch::tx::RecentFile>& out) {
+  out.clear();
+  memory::Lock g;
+  if (!available()) return false;
+  const bool shared = who.owner || who.perms().readShared;
+  for (const nimbus::orch::FileEntry* e : g_store.list()) {
+    if (!g_store.readableBy(*e, who.ns, who.owner, shared)) continue;
+    out.push_back({nimbus::orch::plainCopy(e->project) + "/" + nimbus::orch::plainCopy(e->name), e->createdAt});
+  }
+  return true;
+}
+
+bool readsOthersFile(const nimbus::orch::Principal& who, const std::string& path) {
+  const nimbus::orch::StorePath sp = nimbus::orch::storePathFor(path);
+  if (!sp.ok()) return false;
+  memory::Lock g;
+  if (!available()) return false;
+  const nimbus::orch::FileEntry* e = g_store.find(sp.project, sp.name);
+  return e && (e->outside || !g_store.ownedBy(*e, who.ns, false));
 }
 #endif
 

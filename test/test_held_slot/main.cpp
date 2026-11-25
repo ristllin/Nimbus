@@ -229,9 +229,16 @@ static void test_no_code_a_turn_reaches_holds_the_work_slot_by_hand() {
 static void test_the_other_turn_holds_are_scope_guards() {
   const std::string errlog = readFile("src/sys/errlog_fs.cpp");
   TEST_ASSERT_TRUE(errlog.find("~Held() { agent::memory::unlock(); }") != std::string::npos);
-  const std::string orch = readFile("src/agent/orchestrator.cpp");
-  TEST_ASSERT_TRUE(orch.find("xSemaphoreTake(g_sessMux") == std::string::npos);
-  TEST_ASSERT_TRUE(orch.find("xSemaphoreTake(g_resultsMux") == std::string::npos);
+  // The device seam's files (RB-SEAM1b): the session snapshot and the results ring live in
+  // the engine-neutral half; no seam file takes either mutex by hand.
+  for (const char* f : {"src/agent/orchestrator_e1.cpp", "src/agent/orchestrator_common.cpp",
+                        "src/agent/orchestrator_common.h", "src/agent/engine_api.h"}) {
+    const std::string seam = readFile(f);
+    TEST_ASSERT_FALSE_MESSAGE(seam.empty(), f);
+    TEST_ASSERT_TRUE_MESSAGE(seam.find("xSemaphoreTake(g_sessMux") == std::string::npos, f);
+    TEST_ASSERT_TRUE_MESSAGE(seam.find("xSemaphoreTake(g_resultsMux") == std::string::npos, f);
+  }
+  const std::string orch = readFile("src/agent/orchestrator_common.cpp");
   TEST_ASSERT_TRUE(orch.find("MuxHold hold(g_resultsMux)") != std::string::npos);
   for (const char* f : {"src/agent/pdf_tool.cpp", "src/agent/adapters/provider_file_fetch.cpp"})
     TEST_ASSERT_TRUE_MESSAGE(readFile(f).find("files::OpenWrite session;") != std::string::npos, f);

@@ -1,0 +1,60 @@
+{
+ "provider": "mistral",
+ "written": "2026-11-24",
+ "by": "lane E2-R5",
+ "verified": "synthetic, from the source named on each case; replaced from recorded bodies by lane R10",
+ "cases": [
+  {
+   "row": "rate",
+   "status": 429,
+   "body": "{\"object\":\"error\",\"message\":\"Requests rate limit exceeded\",\"type\":\"rate_limited\",\"param\":null,\"code\":\"1300\"}",
+   "expect": "rate_limited",
+   "source": "https://docs.mistral.ai/api/endpoint/chat (read 2026-11-24)"
+  },
+  {
+   "row": "server",
+   "status": 503,
+   "body": "{\"object\":\"error\",\"message\":\"Service unavailable\",\"type\":\"internal_server_error\",\"param\":null,\"code\":\"3000\"}",
+   "expect": "server",
+   "source": "https://docs.mistral.ai/api/endpoint/chat (read 2026-11-24)"
+  },
+  {
+   "row": "billing",
+   "status": 402,
+   "body": "{\"object\":\"error\",\"message\":\"Payment Required\",\"type\":\"payment_required\",\"param\":null,\"code\":null}",
+   "expect": "billing",
+   "source": "lib/core/include/nimbus/orch/billing_refusal.h:24"
+  },
+  {
+   "row": "context",
+   "status": 400,
+   "body": "{\"object\":\"error\",\"message\":\"Prompt contains 140000 tokens, too large for model with 131072 maximum context length\",\"type\":\"invalid_request_prompt\",\"param\":null,\"code\":null}",
+   "expect": "context",
+   "source": "lib/core/src/orch_compact.cpp:30"
+  },
+  {
+   "row": "refused_field",
+   "status": 400,
+   "body": "{\"object\":\"error\",\"message\":\"reasoning_effort is not enabled for this model\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"3051\"}",
+   "expect": "refused_field",
+   "source": "lib/harness/src/providers/mistral.cpp:404-427",
+   "refused": [
+    "effort"
+   ]
+  },
+  {
+   "row": "malformed_request",
+   "status": 400,
+   "body": "{\"object\":\"error\",\"message\":{\"detail\":[{\"msg\":\"There was an error parsing the body\"}]},\"type\":\"invalid_request_error\"}",
+   "expect": "bad_request",
+   "source": "lib/core/src/orch_head_loop.cpp:105-111"
+  },
+  {
+   "row": "refusal_2xx",
+   "status": 200,
+   "body": "{\"id\":\"x\",\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"finish_reason\":\"content_filter\",\"message\":{\"role\":\"assistant\",\"content\":\"\"}}]}",
+   "expect": "none",
+   "source": "https://docs.mistral.ai/api/endpoint/chat (read 2026-11-24); the Chat codec reads content_filter"
+  }
+ ]
+}

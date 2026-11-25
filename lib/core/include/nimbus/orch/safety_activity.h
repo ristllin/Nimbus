@@ -204,6 +204,14 @@ bool isConcreteAllowValue(const std::string& value);
 // genuine narrow category. Frozen string (persisted in the activity log).
 inline constexpr char kCoarseModerationRule[] = "moderation";
 
+// The source of an entry the new engine's outside-content rails record (a call refused, or kept for approval).
+// Those rails never read the allowlist, so an allow rule minted from such an entry would change nothing.
+inline constexpr char kRailSource[] = "outside-content-rail";
+inline constexpr char kRailApprovalLine[] =
+    "The outside-content rule does not use allow rules, so approving here would change nothing. A note it held is "
+    "answered on the Rules page; Dismiss clears this entry.";
+inline bool allowRulesApply(const std::string& source) { return source != kRailSource; }
+
 // May an entry with this rule be approved by ContentClass scope? Only when the rule
 // is a genuine, narrow category: non-empty AND not the coarse moderation class. This
 // is what keeps ContentClass a scoped unblock instead of a per-gate off switch

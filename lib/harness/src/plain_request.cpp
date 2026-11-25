@@ -8,6 +8,7 @@
 #include <new>
 #include <set>
 
+#include "nimbus/orch/notes.h"         // parseLine: a pinned rule (E2-BFIX4)
 #include "nimbus/orch/tool_groups.h"
 #include "nimbus/orch/tool_registry.h"
 
@@ -125,6 +126,13 @@ struct Para {
   }
 };
 
+// A group's few words in the tools index (texts.h core::kGroupWords); null: the table's own.
+const char* groupWords(const char* group) {
+  for (const core::GroupWords& g : core::kGroupWords)
+    if (std::strcmp(g.group, group) == 0) return g.words;
+  return nullptr;
+}
+
 std::string coreText(const RequestFacts& f, const std::vector<ToolSpec>& tools) {
   std::string out;
   auto para = [&](std::initializer_list<std::string> sentences) {
@@ -141,8 +149,13 @@ std::string coreText(const RequestFacts& f, const std::vector<ToolSpec>& tools) 
   para({core::kOutside});
   para({core::kRecall});
   if (!f.turn->model.empty()) para({core::kModel + oneLine(f.turn->model, kModelNameMax) + "."});
-  const std::string idx = moreOffered(tools) ? nimbus::orch::toolsIndex(*f.reg, *f.turn->who) : "";
+  const std::string idx = moreOffered(tools) ? nimbus::orch::groupsIndex(*f.reg, *f.turn->who, groupWords) : "";
   if (!idx.empty()) addPara(out, std::string(core::kToolsIndex) + kLine + idx);
+  if (f.turn->who->owner && !f.toolServersWaiting.empty()) {   // the servers the owner has not approved yet
+    std::string names;
+    for (const std::string& n : f.toolServersWaiting) names += (names.empty() ? " " : ", ") + oneLine(n, 40);
+    addPara(out, std::string(core::kServersWaiting) + names + ". " + core::kServersApprove);
+  }
   return out;
 }
 
@@ -166,14 +179,32 @@ std::string skillsSection(const std::string& index, const RequestFacts& f, const
   return out;
 }
 
-// Pinned notes: whole lines in order while the notes stay within `budget` bytes.
+// A pinned note of kind rule ("key [rule]: value", notes::formatLine).
+bool ruleLine(const std::string& l) {
+  nimbus::orch::notes::Note n;
+  return nimbus::orch::notes::parseLine(l, n) && n.kind == nimbus::orch::notes::Kind::Rule;
+}
+
+// Pinned notes: whole lines in order while the notes stay within `budget` bytes. The rules come
+// first under their own header (E2-BFIX4), whose bytes come out of the budget.
 std::string notesSection(const std::string& notes, size_t budget) {
-  std::string body;
-  for (const std::string& l : linesOf(notes)) {
-    if (body.size() + (body.empty() ? 0 : 1) + l.size() > budget) continue;   // too long here: the rest still fit
-    body += (body.empty() ? "" : kLine) + l;
-  }
-  return body.empty() ? body : std::string(core::kNotes) + kLine + body;
+  std::vector<std::string> rules, rest;
+  for (const std::string& l : linesOf(notes)) (ruleLine(l) ? rules : rest).push_back(l);
+  const size_t head = std::strlen(core::kRules) + 2 * std::strlen(kLine);   // its header, its line, the join
+  if (!rules.empty()) budget = budget > head ? budget - head : 0;
+  std::string ruleBody, body;
+  size_t used = 0;
+  auto add = [&](std::string& to, const std::string& l) {
+    const size_t n = (to.empty() ? 0 : 1) + l.size();
+    if (used + n > budget) return;   // too long here: the rest still fit
+    to += (to.empty() ? "" : kLine) + l;
+    used += n;
+  };
+  for (const std::string& l : rules) add(ruleBody, l);
+  for (const std::string& l : rest) add(body, l);
+  std::string out = ruleBody.empty() ? ruleBody : std::string(core::kRules) + kLine + ruleBody;
+  if (!body.empty()) out += (out.empty() ? "" : kLine) + std::string(core::kNotes) + kLine + body;
+  return out;
 }
 
 bool validFacts(const RequestFacts& f) { return f.turn && f.turn->who && f.reg; }
@@ -354,6 +385,13 @@ std::vector<std::string> uncallableNames(const std::string& text, const std::vec
     if (bad.insert(word).second) out.push_back(word);
   }
   return out;
+}
+
+nimbus::orch::tx::BoundTools boundTools(const nimbus::orch::ToolRegistry* reg) {
+  nimbus::orch::tx::BoundTools b;
+  b.search = reg && reg->has("search");
+  b.view = reg && reg->has("view");
+  return b;
 }
 
 }  // namespace plain

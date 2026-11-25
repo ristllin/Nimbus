@@ -1,0 +1,4 @@
+synthetic: https://developers.openai.com/api/reference/resources/responses/methods/create, read 2026-11-24
+status: 200
+expect: stop=cut complete=false calls=1
+{"id":"resp_syn_04","object":"response","created_at":1763980000,"status":"incomplete","error":null,"incomplete_details":{"reason":"max_output_tokens"},"model":"gpt-5.6","output":[{"type":"reasoning","id":"rs_syn_01","summary":[],"encrypted_content":"gAAAAABsynthetic-encrypted-reasoning-01"},{"type":"function_call","id":"fc_syn_01","call_id":"call_syn01","name":"read_file","arguments":"{\"path\":\"notes/bo","status":"incomplete"}],"usage":{"input_tokens":1200,"input_tokens_details":{"cached_tokens":1024},"output_tokens":40,"output_tokens_details":{"reasoning_tokens":16},"total_tokens":1240}}

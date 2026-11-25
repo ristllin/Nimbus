@@ -488,7 +488,7 @@ static int countIn(const char* path, const std::string& needle) {
 // its store with the page info (an empty page past the store's read budget is not the
 // end), and a read after a cursor returns the rows newer than it, oldest first.
 static void test_an_after_cursor_is_served() {
-  for (const char* f : {"src/agent/orchestrator.cpp", "nimbusd/src/rig.h", "tools/harness-lab/src/lab_rig.h"}) {
+  for (const char* f : {"src/agent/orchestrator_e1.cpp", "nimbusd/src/rig.h", "tools/harness-lab/src/lab_rig.h"}) {
     TEST_ASSERT_EQUAL_MESSAGE(1, countIn(f, "q.after = hq.after;"), f);
     TEST_ASSERT_EQUAL_MESSAGE(1, countIn(f, "query(q, hq.info)"), f);
   }

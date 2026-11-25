@@ -7,6 +7,9 @@
 #include "errlog_routes.h"            // registerDeferredWebRoute (self-registration)
 #include "webui.h"                    // nimbus::net::webAuthOk (token gate)
 #include "../agent/orchestrator.h"    // stageManualFold, foldStatusJsonFor
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+#include "web_engine2.h"            // lane E2-P-SURF: engine 2's summary card
+#endif
 
 namespace nimbus::net {
 namespace {
@@ -30,6 +33,9 @@ void sendNoChat(AsyncWebServerRequest* r) {
 
 void handleStatus(AsyncWebServerRequest* r) {
   if (authBlocked(r)) return;
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+  return e2web::foldStatus(r);   // the conversation's current summary and when it was written
+#endif
   std::string body;
   if (!agent::orchestrator::foldStatusJsonFor(chatParam(r, false), body)) return sendNoChat(r);
   AsyncWebServerResponse* res = r->beginResponse(200, "application/json", String(body.c_str()));
@@ -39,6 +45,12 @@ void handleStatus(AsyncWebServerRequest* r) {
 
 void handleRun(AsyncWebServerRequest* r) {
   if (authBlocked(r)) return;
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+  // Engine 2 summarizes by itself when the conversation grows; there is nothing to run by hand here.
+  r->send(409, "application/json",
+          "{\"error\":\"The new engine writes the summary by itself when the conversation grows.\"}");
+  return;
+#endif
   std::string status;
   // Only a conversation the device knows (it has a fold state, or it is the owner's or
   // the web chat): a summary's notices go to that chat, never to a stranger's id.

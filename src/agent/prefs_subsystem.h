@@ -26,6 +26,10 @@ void begin();
 // The one store. Access it under memory::Lock (withStore does that for you).
 nimbus::orch::OwnerPrefs& store();
 
+// Successful saves of the rules file since boot (any task: the web page, /prefs, the tool). Engine 2
+// copies the rules into the owner's notes again when this moves (lane E2-P-SKILL).
+uint32_t saves();
+
 // Run fn with the store under the lock. false = the file area is not mounted:
 // nothing ran.
 bool withStore(const std::function<void(nimbus::orch::OwnerPrefs&)>& fn);

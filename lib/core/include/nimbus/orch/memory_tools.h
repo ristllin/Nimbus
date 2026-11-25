@@ -280,5 +280,10 @@ const char* embedDrainStepName(EmbedDrainStep s);
 // std::functions), so the engines it points at must outlive `reg`.
 void registerMemoryTools(ToolRegistry& reg, const MemoryContext& ctx);
 
+// memory.search's own handler for one query (read only: the nearest stored memories, or the keyword
+// match with the one line saying why embeddings could not serve it). Engine 2's search scope memories
+// binds it (lane E2-P-MEM); the tool above answers through the same code.
+ToolResult searchMemories(const MemoryContext& ctx, const std::string& query, const Principal& who);
+
 }  // namespace orch
 }  // namespace nimbus

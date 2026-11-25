@@ -1,0 +1,4 @@
+synthetic: https://docs.mistral.ai/resources/known-limitations, read 2026-11-24
+status: 429
+expect: class=rate_limited retry=yes
+{"message":"Requests rate limit exceeded"}

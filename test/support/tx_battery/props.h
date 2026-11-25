@@ -1,4 +1,5 @@
 #pragma once
+#include "nimbus/orch/tx/digest.h"
 #include <ArduinoJson.h>
 
 #include <algorithm>
@@ -12,6 +13,7 @@
 
 #include "../scripted_provider/request_view.h"
 #include "nimbus/orch/tx/item.h"
+#include "nimbus/orch/tx/rules.h"   // stubList (E2-VERB)
 
 // tx_battery/props.h - the battery's properties as pure checkers (lane RB-B0b; PRD
 // sections 2, 3, 7 and 11 L1). Each takes what was sent (a RequestView, the bytes) and
@@ -175,11 +177,14 @@ struct CoverInput {
   uint64_t thru = 0;        // the newest q a digest covers: older items are the digests' job
   uint32_t openTurn = 0;    // the turn the request belongs to (0 = none open)
   uint16_t dayStartMin = 240;   // the running day's start (TurnCtx::dayStartMin): the stamps' night clause
+  // E2-FIX5: the tools the registry held (view: a stub's way back). The toy fixtures (items.h) stand for
+  // a device with both bound; the engine battery sets its registry's (Battery::coverOf).
+  tx::BoundTools bound{true, true};
 };
 
 enum class Shown : uint8_t { Whole = 0, Stub = 1 };
 
-// What a result must render as (PRD section 2, the stub rule): stub when superseded, when
+// What a result must render as (PRD section 2, the stub rule): stub when a tool fold listed it, when
 // bulk or outside at or below the pointer, and when outside outside its own open turn;
 // receipts stay verbatim (tier 1) until compacted.
 inline Shown expectedShow(const tx::Item& r, const CoverInput& in, const std::set<uint64_t>& superseded) {
@@ -194,8 +199,37 @@ namespace detail {
 inline std::set<uint64_t> supersededSet(const std::vector<tx::Item>& items) {
   std::set<uint64_t> s;
   for (const tx::Item& it : items)
-    if (it.kind == tx::ItemKind::PointerMove) s.insert(it.sup.begin(), it.sup.end());
+    if (tx::stubList(it)) s.insert(it.sup.begin(), it.sup.end());   // E2-VERB: never a superseded-read list
   return s;
+}
+// Text mode (lane E2-REP5, sentinel RB-TXT): a request that offers no tool and holds no call or result
+// block carries each stored call with its result as one line in their place, "[device] earlier I ran
+// <tool>: <the result as it renders>" (lane E2-R4b, plain_plan.cpp resultPiece; texts.h kEarlierRan). The
+// checkers read that line as the call and its result.
+inline constexpr const char* kRanLine = "[device] earlier I ran ";
+inline bool textMode(const sp::RequestView& v) {
+  if (!v.tools.empty()) return false;
+  for (const sp::Message& m : v.messages)
+    for (const sp::Block& b : m.blocks)
+      if (b.kind == sp::BlockKind::ToolCall || b.kind == sp::BlockKind::ToolResult) return false;
+  return true;
+}
+inline std::string ranLine(const std::string& tool, const std::string& text) { return kRanLine + tool + ": " + text; }
+// The text blocks that are exactly `line`.
+inline size_t textBlocksEqual(const sp::RequestView& v, const std::string& line) {
+  size_t n = 0;
+  for (const sp::Message& m : v.messages)
+    for (const sp::Block& b : m.blocks) n += b.kind == sp::BlockKind::Text && b.text == line;
+  return n;
+}
+// The calls (and so the results) a request carries: its call blocks, or in text mode its ran lines.
+inline size_t ranCount(const sp::RequestView& v, sp::BlockKind k) {
+  size_t n = 0;
+  const bool text = textMode(v);
+  for (const sp::Message& m : v.messages)
+    for (const sp::Block& b : m.blocks)
+      n += text ? (b.kind == sp::BlockKind::Text && b.text.rfind(kRanLine, 0) == 0) : b.kind == k;
+  return n;
 }
 inline std::vector<const sp::Block*> blocksOf(const sp::RequestView& v, sp::BlockKind k, const std::string& id) {
   std::vector<const sp::Block*> out;
@@ -224,12 +258,14 @@ inline std::string resultWhole(const tx::Item& r, const CoverInput& in) {
   auto it = in.bulk->find(r.handle);
   return it == in.bulk->end() ? "<bulk " + r.handle + " not stored>" : it->second;
 }
-// "[N earlier turns, <dates>, not shown: search finds them]": N, or -1 when absent.
+// "[N earlier turns, <dates>, not shown: search finds them]" (search bound) or "[N earlier turns, <dates>,
+// not shown]" (E2-FIX5): N, or -1 when absent.
 inline long omittedTurnsNamed(const sp::RequestView& v) {
   for (const sp::Message& m : v.messages)
     for (const sp::Block& b : m.blocks) {
       const size_t at = b.text.find(" earlier turns, ");
-      if (b.kind != sp::BlockKind::Text || at == std::string::npos || b.text.find("search finds them]") == std::string::npos)
+      if (b.kind != sp::BlockKind::Text || at == std::string::npos ||
+          (b.text.find("search finds them]") == std::string::npos && b.text.find("not shown]") == std::string::npos))
         continue;
       size_t s = b.text.rfind('[', at);
       if (s != std::string::npos) return std::strtol(b.text.c_str() + s + 1, nullptr, 10);
@@ -239,10 +275,42 @@ inline long omittedTurnsNamed(const sp::RequestView& v) {
 }  // namespace detail
 
 namespace detail {
+// E2-REP5: in text mode the call and its result are one line, whole or as its stored stub.
+inline bool coverResultText(const sp::RequestView& v, const tx::Item& r, const CoverInput& in,
+                            const std::set<uint64_t>& sup, const std::string& tag, std::string& why) {
+  const bool stub = expectedShow(r, in, sup) == Shown::Stub;
+  const std::string want = stub ? r.st : resultWhole(r, in);
+  // The overflow ladder sends bulk as its stored stub on the rung before it omits turns: a request that
+  // names an omission may carry a bulk result as its stub.
+  const bool rungStub = !stub && r.cls == tx::ResultClass::Bulk && !r.st.empty() && omittedTurnsNamed(v) > 0 &&
+                        textBlocksEqual(v, ranLine(r.n, r.st)) > 0;
+  if (!rungStub && textBlocksEqual(v, ranLine(r.n, want)) == 0) {
+    why = "result " + tag + " should render in text mode as '" + ranLine(r.n, want).substr(0, 80) + "'";
+    return false;
+  }
+  return true;
+}
+// A stub's way back (E2-VERB): the view pointer, or for a file read the read_file call that reads it again.
+// E2-FIX5: the view pointer only while view is bound; unbound, a stub never names it.
+inline bool stubWayBack(const tx::Item& r, const CoverInput& in, const std::string& want, const std::string& tag,
+                        std::string& why) {
+  const bool viewNamed = want.find("view id=") != std::string::npos;
+  if (viewNamed && !in.bound.view) {
+    why = "stub of " + tag + " names view, which is not bound";
+    return false;
+  }
+  if (in.bound.view && want.find("view id=r" + std::to_string(r.q)) == std::string::npos &&
+      want.find("read_file path=") == std::string::npos) {
+    why = "stub of " + tag + " has no way back";
+    return false;
+  }
+  return true;
+}
 inline bool coverResult(const sp::RequestView& v, const tx::Item& r, const CoverInput& in, const std::set<uint64_t>& sup,
                         std::string& why) {
-  auto blocks = blocksOf(v, sp::BlockKind::ToolResult, r.id);
   const std::string tag = "r" + std::to_string(r.q) + " (" + r.n + ")";
+  if (textMode(v)) return coverResultText(v, r, in, sup, tag, why);
+  auto blocks = blocksOf(v, sp::BlockKind::ToolResult, r.id);
   if (blocks.size() != 1) {
     why = "result " + tag + " is rendered " + std::to_string(blocks.size()) + " times";
     return false;
@@ -254,11 +322,7 @@ inline bool coverResult(const sp::RequestView& v, const tx::Item& r, const Cover
           std::to_string(blocks[0]->text.size()) + " B starting '" + blocks[0]->text.substr(0, 60) + "'";
     return false;
   }
-  if (stub && want.find("view id=r" + std::to_string(r.q)) == std::string::npos) {
-    why = "stub of " + tag + " has no view hint";
-    return false;
-  }
-  return true;
+  return !stub || stubWayBack(r, in, want, tag, why);
 }
 inline bool coverItem(const sp::RequestView& v, const tx::Item& it, const CoverInput& in,
                       const std::set<uint64_t>& sup, std::string& why) {
@@ -274,6 +338,7 @@ inline bool coverItem(const sp::RequestView& v, const tx::Item& it, const CoverI
       if (!textIn(v, "", it.x)) why = "device note " + tag + " is missing";
       break;
     case tx::ItemKind::Call: {
+      if (textMode(v)) break;   // E2-REP5: its result's line says it
       auto calls = blocksOf(v, sp::BlockKind::ToolCall, it.id);
       if (calls.size() != 1 || calls[0]->name != it.n) why = "call " + tag + " (" + it.n + ") is not rendered once";
       break;
@@ -353,12 +418,19 @@ inline bool covers(const sp::RequestView& v, const CoverInput& in, std::string& 
 // After compaction: every digest still in the block is in the system text, and every item
 // after the newest digest's thru is covered as above. thru comes from the s items, not
 // from what the engine says.
+// Since lane RB-C3 the newest cumulative summary covers everything before it: it alone must be in the
+// system text (as the block shows it, without its last line end); older summaries and day digests are
+// superseded and archived.
 inline bool compactedCovers(const sp::RequestView& v, CoverInput in, std::string& why) {
-  uint64_t thru = 0;
+  uint64_t thru = 0, summaryQ = 0;
+  for (const tx::Item& it : *in.items)
+    if (it.kind == tx::ItemKind::Digest && tx::isSummaryText(it.x)) summaryQ = it.q;
   for (const tx::Item& it : *in.items)
     if (it.kind == tx::ItemKind::Digest) {
       thru = std::max(thru, it.thru);
-      if (!it.ext && v.system().find(it.x) == std::string::npos) {
+      if (it.q < summaryQ) continue;
+      const std::string shown = tx::isSummaryText(it.x) ? it.x.substr(0, it.x.size() - 1) : it.x;
+      if (!it.ext && v.system().find(shown) == std::string::npos) {
         why = "digest s" + std::to_string(it.q) + " (" + it.day + ") is not in the system text";
         return false;
       }
@@ -378,14 +450,15 @@ inline std::string stampOf(const tx::Item& u, uint16_t dayStartMin) {
 
 // What a request may carry beyond the stored text it shows (PRD section 2, test_tx_overhead:
 // 96 B per owner message with the plain stamp, that is 74 B of framing plus the message's own
-// stamp in whichever of RB-REC5's three forms it takes, and 64 B per photo label). The stored text is counted as the JSON
+// stamp in whichever of RB-REC5's three forms it takes, and 104 B per photo label: the PRD's 64 B
+// plus the 40 B lane E2-FIX4's true line adds over the old one). The stored text is counted as the JSON
 // string bytes of each rendered text (owner and assistant text, device notes, call ids,
 // names and arguments, the result text shown, open-turn meta), so a line format's own keys
 // never hide anything. Wire framing of a tool call, a result and an extra text block has its
 // own fixed allowance, and the envelope (model, max_tokens, thinking, tool_choice, cache
 // marks, the system and tools arrays) is 512 B once.
 inline constexpr size_t kOverheadPerOwnerMessage = 74;   // beside the stamp's own bytes (stampBytes)
-inline constexpr size_t kOverheadPerPhotoLabel = 64;
+inline constexpr size_t kOverheadPerPhotoLabel = 104;
 inline constexpr size_t kOverheadPerCall = 96;
 inline constexpr size_t kOverheadPerResult = 80;
 inline constexpr size_t kOverheadPerTextBlock = 48;   // an assistant text, a device note, open-turn meta
@@ -456,33 +529,55 @@ inline void takeOutOmission(std::string& from) {
   const size_t at = from.find(" earlier turns, ");
   if (at == std::string::npos) return;
   const size_t open = from.rfind('[', at);
-  const char* close = "search finds them]";
+  const char* close = from.find("search finds them]", at) != std::string::npos ? "search finds them]" : "not shown]";
   const size_t end = from.find(close, at);
   if (open != std::string::npos && end != std::string::npos)
     from.erase(open, end - open + std::char_traits<char>::length(close));
 }
 }  // namespace detail
 
+namespace detail {
+// What a request's text may hold: the owner's messages (text, stamp; longest first), the other stored texts
+// (longest first), and in text mode the line openings of stored results (E2-REP5).
+struct StoredTexts {
+  std::vector<std::pair<std::string, std::string>> owner;
+  std::vector<std::string> other;
+  std::set<std::string> ran;   // in text mode, a stored result's line opens "[device] earlier I ran <tool>: "
+};
+inline StoredTexts storedTexts(const sp::RequestView& v, const std::vector<tx::Item>& items, uint16_t dayStartMin) {
+  StoredTexts s;
+  for (const tx::Item& it : items) {
+    if (it.kind == tx::ItemKind::User) s.owner.emplace_back(it.x, stampOf(it, dayStartMin));
+    if (it.kind == tx::ItemKind::Assistant || it.kind == tx::ItemKind::DeviceNote || it.kind == tx::ItemKind::RoundMeta)
+      s.other.push_back(it.x);
+    if (it.kind == tx::ItemKind::Result && textMode(v)) s.ran.insert(ranLine(it.n, ""));
+  }
+  std::sort(s.owner.begin(), s.owner.end(), [](const auto& a, const auto& b) { return a.first.size() > b.first.size(); });
+  std::sort(s.other.begin(), s.other.end(), [](const std::string& a, const std::string& b) { return a.size() > b.size(); });
+  return s;
+}
+// A text block less everything a stored item holds.
+inline std::string unstoredRest(const std::string& text, const StoredTexts& s) {
+  std::string rest = text;
+  for (const auto& t : s.owner)
+    if (takeOut(rest, t.first)) takeOut(rest, t.second);
+  for (const std::string& t : s.other) takeOut(rest, t);
+  takeOutPattern(rest, "[photo p", "]");
+  takeOutOmission(rest);
+  return rest;
+}
+}  // namespace detail
+
 inline bool noUnstoredText(const sp::RequestView& v, const std::vector<tx::Item>& items, std::string& why,
                            uint16_t dayStartMin = 240) {
-  std::vector<std::pair<std::string, std::string>> owner;   // text, its stamp
-  std::vector<std::string> other;
-  for (const tx::Item& it : items) {
-    if (it.kind == tx::ItemKind::User) owner.emplace_back(it.x, stampOf(it, dayStartMin));
-    if (it.kind == tx::ItemKind::Assistant || it.kind == tx::ItemKind::DeviceNote || it.kind == tx::ItemKind::RoundMeta)
-      other.push_back(it.x);
-  }
-  std::sort(owner.begin(), owner.end(), [](const auto& a, const auto& b) { return a.first.size() > b.first.size(); });
-  std::sort(other.begin(), other.end(), [](const std::string& a, const std::string& b) { return a.size() > b.size(); });
+  const detail::StoredTexts stored = detail::storedTexts(v, items, dayStartMin);
   for (const sp::Message& m : v.messages)
     for (const sp::Block& b : m.blocks) {
       if (b.kind != sp::BlockKind::Text) continue;
-      std::string rest = b.text;
-      for (const auto& t : owner)
-        if (detail::takeOut(rest, t.first)) detail::takeOut(rest, t.second);
-      for (const std::string& t : other) detail::takeOut(rest, t);
-      detail::takeOutPattern(rest, "[photo p", "]");
-      detail::takeOutOmission(rest);
+      // A call and its result as one line: the result's text, which this checker reads in no result block either.
+      if (std::any_of(stored.ran.begin(), stored.ran.end(), [&b](const std::string& p) { return b.text.rfind(p, 0) == 0; }))
+        continue;
+      const std::string rest = detail::unstoredRest(b.text, stored);
       if (detail::visibleBytes(rest) > 0) {
         why = "a " + m.role + " text block carries " + std::to_string(detail::visibleBytes(rest)) +
               " B that no stored item holds: '" + rest.substr(0, 80) + "'";
@@ -559,6 +654,16 @@ inline size_t countKind(const sp::RequestView& v, sp::BlockKind k) {
 }
 }  // namespace detail
 
+// A guard's last round: tool choice none, or in text mode (no tool offered at all, E2-REP5) the request
+// that carries the guard's device note "[device] limit reached".
+inline bool lastRoundOf(const sp::RequestView& v) {
+  return v.toolChoice == "none" || (detail::textMode(v) && detail::textIn(v, "user", "[device] limit reached"));
+}
+// The tool choice of a loop round: "auto", or none sent in text mode.
+inline bool loopChoiceOk(const sp::RequestView& v) {
+  return v.toolChoice == "auto" || (v.toolChoice.empty() && detail::textMode(v));
+}
+
 // The plain loop: a step with no call ends the turn, so requests = rounds with calls + 1;
 // each request carries the previous request's calls and results plus the previous step's
 // new ones; text that came with a call is kept and the loop continues; the delivered text
@@ -576,10 +681,10 @@ inline bool loopShapeHolds(const std::vector<StepShape>& steps, const std::vecto
       return false;
     }
   for (size_t i = 1; i < reqs.size(); ++i) {
-    const size_t wantCalls = detail::countKind(*reqs[i - 1], sp::BlockKind::ToolCall) + steps[i - 1].calls;
-    const size_t wantResults = detail::countKind(*reqs[i - 1], sp::BlockKind::ToolResult) + steps[i - 1].calls;
-    const size_t gotCalls = detail::countKind(*reqs[i], sp::BlockKind::ToolCall);
-    const size_t gotResults = detail::countKind(*reqs[i], sp::BlockKind::ToolResult);
+    const size_t wantCalls = detail::ranCount(*reqs[i - 1], sp::BlockKind::ToolCall) + steps[i - 1].calls;
+    const size_t wantResults = detail::ranCount(*reqs[i - 1], sp::BlockKind::ToolResult) + steps[i - 1].calls;
+    const size_t gotCalls = detail::ranCount(*reqs[i], sp::BlockKind::ToolCall);
+    const size_t gotResults = detail::ranCount(*reqs[i], sp::BlockKind::ToolResult);
     if (gotCalls != wantCalls || gotResults != wantResults) {
       why = "request " + std::to_string(i) + " carries " + std::to_string(gotCalls) + " calls and " +
             std::to_string(gotResults) + " results; the round before it leaves " + std::to_string(wantCalls) +

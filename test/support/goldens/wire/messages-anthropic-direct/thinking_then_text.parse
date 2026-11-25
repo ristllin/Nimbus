@@ -1,0 +1,20 @@
+# route golden parse messages-anthropic-direct/thinking_then_text.json served at HTTP 200
+parse ok
+parse stop end
+parse text 108 B fnv64=00b67e491fdacc63 head="Both first lines say the same thing: \"Line one o"
+parse refusal ""
+parse calls 0
+parse meta 1
+parse   meta 0 beforeCall=0 1252 B fnv64=5ee57a1514fedea4 head="{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"CA"
+parse usage prompt=2 completion=121 cacheRead=7867 cacheWrite=278 cacheWrite1h=0 responses=1 maxRequestIn=8147 served="claude-haiku-5-5"
+exchange err=ok http=200 requests=1 retries=0 climbs=0 cutRetried=0 failOver=0 parkHost=0 maxTokens=6664 requestBytes=917 ms=0 waitedMs=0 statusLine=0
+exchange line ""
+exchange line stored ""
+exchange request 0 917 B fnv64=0a672e6e0a2d09ce
+exchange step stop end
+exchange step text 108 B fnv64=00b67e491fdacc63 head="Both first lines say the same thing: \"Line one o"
+exchange step refusal ""
+exchange step calls 0
+exchange step meta 1
+exchange step   meta 0 beforeCall=0 1252 B fnv64=5ee57a1514fedea4 head="{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"CA"
+exchange step usage prompt=2 completion=121 cacheRead=7867 cacheWrite=278 cacheWrite1h=0 responses=1 maxRequestIn=8147 served="claude-haiku-5-5"

@@ -1,0 +1,82 @@
+{
+  "about": "The engine-2 provider router's lanes (ruling 122; ROUTER-DESIGN.md section 14), kept in the repo beside owners.json: test_lane_files.py reads them as plan lanes like PLAN-pending.json, so each owners.json entry is checked against this text. Lane E2-R1 wrote them (R0's repository part).",
+  "lanes": [
+    {
+      "id": "E2-R1",
+      "stage": "E2",
+      "purpose": "Table: models.toml, gen_caps.py with the L0 lints, the row types, capsFor and the refused-field memory; R0's owners.json entries",
+      "files_owned": "tools/model_caps/**, lib/core/include/nimbus/orch/model_caps.h, lib/core/include/nimbus/orch/model_caps_data.h, lib/core/src/orch_model_caps.cpp, test/test_model_caps/**, tools/engine/engine2_only.txt, tools/engine/owners.json, tools/engine/plan_e2_router.json, tools/release_gate/test_lane_files.py, tools/release_gate/test_model_caps_gen.py, .pre-commit-config.yaml",
+      "source": "ROUTER-DESIGN.md section 14 (ruling 122)"
+    },
+    {
+      "id": "E2-R2a",
+      "stage": "E2",
+      "purpose": "Goldens first: the golden harness, the transcript fixtures, request and parse goldens of the unchanged Anthropic wire",
+      "files_owned": "test/support/goldens/wire/**, tools/router/refresh_goldens.py, test/test_route_goldens/**",
+      "source": "ROUTER-DESIGN.md section 14 (ruling 122)"
+    },
+    {
+      "id": "E2-R2b",
+      "stage": "E2",
+      "purpose": "Planner hoist: the generic logic and the JSON reader moved out of plain_wire_anthropic.cpp",
+      "files_owned": "lib/harness/src/providers/plain_plan.h, lib/harness/src/providers/plain_plan.cpp, lib/harness/src/providers/plain_json_reader.h, lib/harness/src/providers/plain_json_reader.cpp, lib/harness/src/providers/plain_wire_anthropic.cpp",
+      "source": "ROUTER-DESIGN.md section 14 (ruling 122)"
+    },
+    {
+      "id": "E2-R3",
+      "stage": "E2",
+      "purpose": "Battery v2: L2 checkers, the L3 suite over rows, scripted Mistral, Z.ai and text-mode answers, synthetic fixtures, L1p, the L5 scope gate, the release gate",
+      "files_owned": "test/test_router_conformance/**, test/support/tx_battery/**, test/support/scripted_provider/wire_answers.h, test/support/fixtures/*_wire_synthetic/**, tools/router/check_golden_scope.py",
+      "source": "ROUTER-DESIGN.md section 14 (ruling 122)"
+    },
+    {
+      "id": "E2-R4a",
+      "stage": "E2",
+      "purpose": "Seam, route, pre-flight: RenderInput.route and bodyCap, StopReason::Context, Route over HeadEndpoint, pre-flight on every render",
+      "files_owned": "lib/harness/include/nimbus/harness/plain/wire.h, lib/harness/include/nimbus/harness/plain/route.h, lib/harness/src/plain_route.cpp, lib/harness/src/plain_exchange.cpp, lib/harness/src/plain_wire.cpp, lib/harness/src/providers/plain_wire_anthropic.cpp, test/test_plain_wire_anthropic/**, test/test_router_conformance/**",
+      "source": "ROUTER-DESIGN.md section 14 (ruling 122)"
+    },
+    {
+      "id": "E2-R4b",
+      "stage": "E2",
+      "purpose": "Storage, planner cases, compaction: the k-item wr tag, replay scope, idRule mapping, text-mode history, the compaction marks, the summarizer cap ceiling",
+      "files_owned": "lib/harness/src/plain_engine.cpp, lib/core/src/orch_tx_item.cpp, lib/harness/src/providers/plain_plan.cpp, lib/harness/src/plain_compact.cpp, test/test_router_conformance/**, coverage/PROMPT-CHANGES.md, lib/harness/include/nimbus/harness/plain/texts.h, test/golden/model_text_catalog.txt",
+      "source": "ROUTER-DESIGN.md section 14 (ruling 122)"
+    },
+    {
+      "id": "E2-R5",
+      "stage": "E2",
+      "purpose": "Errors: the engine-2 classifier from the marker rows, the 2xx error check, the refused-field resend, the engine-2 router reasons",
+      "files_owned": "lib/core/include/nimbus/orch/wire_errors.h, lib/core/src/orch_wire_errors.cpp, lib/harness/src/plain_exchange.cpp, tools/router_contract/gen_contract_header.py, lib/core/include/nimbus/orch/router_reasons_e2.h, test/test_wire_errors/**",
+      "source": "ROUTER-DESIGN.md section 14 (ruling 122)"
+    },
+    {
+      "id": "E2-R6",
+      "stage": "E2",
+      "purpose": "Chat codec: emitter and parser, replay switch, text mode, Flat mapped, the Chat checker",
+      "files_owned": "lib/harness/src/providers/plain_wire_chat.cpp, lib/harness/src/plain_wire.cpp, test/test_plain_wire_chat/**, coverage/PROMPT-CHANGES.md, lib/harness/include/nimbus/harness/plain/texts.h, test/golden/model_text_catalog.txt",
+      "source": "ROUTER-DESIGN.md section 14 (ruling 122)"
+    },
+    {
+      "id": "E2-R7",
+      "stage": "E2",
+      "purpose": "Responses codec: emitter and parser, encrypted reasoning replay, the two ids, incomplete reasons, cache key and breakpoints by row",
+      "files_owned": "lib/harness/src/providers/plain_wire_openai.cpp, lib/harness/src/plain_wire.cpp, test/test_plain_wire_openai/**",
+      "source": "ROUTER-DESIGN.md section 14 (ruling 122)"
+    },
+    {
+      "id": "E2-R8",
+      "stage": "E2",
+      "purpose": "Bindings and routed: resolveRoute in every binding, spend and price per provider, the routed overlay, the vision field, the custom window read",
+      "files_owned": "lib/harness/include/nimbus/harness/plain/chat_binding.h, lib/harness/src/plain_compact.cpp, lib/harness/src/plain_unattended.cpp, src/agent/orchestrator_plain.cpp, nimbusd/src/engine2_host.h, lib/core/src/model_catalog.cpp, src/agent/provider_verify.cpp, test/test_plain_conformance/engine_tests.h, nimbusd/tests/test_plain_rig.cpp",
+      "source": "ROUTER-DESIGN.md section 14 (ruling 122)"
+    },
+    {
+      "id": "E2-R10",
+      "stage": "E2",
+      "purpose": "Paid end run: the recorded bodies replace the synthetic fixtures; unverified table values entered from them",
+      "files_owned": "tools/harness-lab/record_to_fixtures.py, test/support/fixtures/**, tools/model_caps/models.toml",
+      "source": "ROUTER-DESIGN.md section 14 (ruling 122)"
+    }
+  ]
+}

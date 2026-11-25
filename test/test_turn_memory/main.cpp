@@ -1014,11 +1014,12 @@ static void test_device_hand_overs_note_the_spoke() {
   const std::string main = readSource("src/main.cpp");
   TEST_ASSERT_TRUE_MESSAGE(main.find("if (o.notesSent > 0) agent::orchestrator::noteTurnSpoke();") != std::string::npos,
                            "the speak sink's Telegram fallback notes a note that arrived");
-  const std::string orch = readSource("src/agent/orchestrator.cpp");
-  const size_t played = orch.find("if (!::sfx::awaitReplyStart(");
-  const size_t heard = orch.find("noteTurnSpoke();", played);
-  TEST_ASSERT_TRUE(played != std::string::npos && heard < orch.find("if (capture) memory::captureMessage", played));
-  TEST_ASSERT_TRUE(orch.find("s_lastDeliveryNeedsRow = !queued || (chatId == \"web\" && loops::firing());") !=
+  const std::string orch = readSource("src/agent/orchestrator_e1.cpp");
+  const std::string common = readSource("src/agent/orchestrator_common.cpp");   // the reply sinks (RB-SEAM1b)
+  const size_t played = common.find("if (!::sfx::awaitReplyStart(");
+  const size_t heard = common.find("noteTurnSpoke();", played);
+  TEST_ASSERT_TRUE(played != std::string::npos && heard < common.find("if (capture) memory::captureMessage", played));
+  TEST_ASSERT_TRUE(common.find("s_lastDeliveryNeedsRow = !queued || (chatId == \"web\" && loops::firing());") !=
                    std::string::npos);
   TEST_ASSERT_TRUE(orch.find("d.deliveryNeedsRow = [](const std::string&) { return s_lastDeliveryNeedsRow; };") !=
                    std::string::npos);

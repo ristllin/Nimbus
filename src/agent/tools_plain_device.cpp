@@ -1,0 +1,86 @@
+// tools_plain_device.cpp - the device side of engine 2's device, people, models and docs groups
+// (lane E2-P-TOOLS; the registration is tools_plain_device.h). Binds engine 1's handlers where
+// engine 1 registers them (main.cpp, memory_subsystem.cpp, device_log_tool.cpp, models_tool.h)
+// and engine 1's device-action executors (orchestrator::fillDeviceApplyDeps over
+// device_apply.cpp), never engine 1's turn machinery.
+#include "tools_plain_device.h"
+
+#include <algorithm>
+#include <iterator>
+#include <memory>
+
+#include "device_log_tool.h"           // devicelog::run - device.log
+#include "nimbus/harness/plain/head_slot.h"   // kHeadSlots - the switch follows the slots (E2-R8a)
+#include "nimbus/orch/models_tool.h"   // registerModelsTool - models.list on a private registry
+#include "orchestrator.h"              // fillDeviceApplyDeps, inScheduledTurn, currentChat, turnInFlight
+#include "store.h"                     // ttsEnabled - the voice-replies switch, read at call time
+
+namespace agent {
+namespace tools {
+
+namespace {
+
+// The executors as engine 1 builds them, read when the call runs (the voice switch is live). A
+// head switch goes to any provider slot engine 2 runs on (lane E2-R8a, plain/head_slot.h).
+DeviceApplyDeps controlDeps() {
+  DeviceApplyDeps d;
+  orchestrator::fillDeviceApplyDeps(d);
+  d.ttsEnabled = store::ttsEnabled();
+  const auto valid = d.modelIsValid;
+  d.modelIsValid = [valid](const std::string& p, const std::string& m) {
+    const bool slot = std::find(std::begin(plain::kHeadSlots), std::end(plain::kHeadSlots), p) != std::end(plain::kHeadSlots);
+    return slot && valid && valid(p, m);
+  };
+  return d;
+}
+
+nimbus::orch::ToolResult deviceLog(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
+  return devicelog::run(a);
+}
+
+}  // namespace
+
+void registerPlainDevice(nimbus::orch::ToolRegistry& reg) {
+  plaindevice::Handlers h;
+  h.status = bound::deviceStatus;
+  h.log = deviceLog;
+  h.ota = bound::otaStatus;
+  h.selftest = bound::selfTest;
+  h.health = memory::bound::systemHealth;
+  h.docsList = memory::bound::docsList;
+  h.docsSearch = memory::bound::docsSearch;
+  h.docsRead = memory::bound::docsRead;
+  h.tenantList = memory::bound::tenantList;
+  h.tenantSetRole = memory::bound::tenantSetRole;
+  h.tenantSetQuota = memory::bound::tenantSetQuota;
+  plaindevice::ControlDeps c;
+  c.unattended = [] { return orchestrator::inScheduledTurn(); };
+  c.chat = [] {
+    if (!orchestrator::turnInFlight()) return std::string();
+    const String chat = orchestrator::currentChat();
+    return std::string(chat.c_str(), chat.length());
+  };
+  c.apply = controlDeps;
+  plaindevice::registerDeviceFamilies(reg, h, c);
+}
+
+// models.list: the shared tool on a private registry (its own declaration stays engine 1's), reached
+// under the same name with the engine-2 declaration.
+void registerPlainModels(nimbus::orch::ToolRegistry& reg, const nimbus::orch::ModelsToolHandlers& mh) {
+  static std::unique_ptr<nimbus::orch::ToolRegistry> inner;
+  if (!inner) inner.reset(new nimbus::orch::ToolRegistry());
+  nimbus::orch::registerModelsTool(*inner, mh);
+  nimbus::orch::ToolRegistry* r = inner.get();
+  plaindevice::bindDeclared(reg, "models.list", [r](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) {
+    return r->dispatch("models.list", a, who);
+  });
+}
+
+bool switchHead(const std::string& providerModel) {
+  DeviceApplyDeps d;
+  orchestrator::fillDeviceApplyDeps(d);
+  return plaindevice::switchHeadWith(providerModel, d);
+}
+
+}  // namespace tools
+}  // namespace agent

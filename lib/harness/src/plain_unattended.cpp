@@ -9,9 +9,11 @@
 #include <memory>
 #include <new>
 
+#include "nimbus/harness/jobs.h"   // fenceOutsideContent: the one fence (RB-Q2a)
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/platform.h"
 #include "nimbus/harness/plain/texts.h"
+#include "nimbus/orch/connector_grant.h"   // a routine's connector grant (lane E2-P-CONN2)
 #include "nimbus/orch/self_wakeup.h"
 #include "nimbus/orch/tool_groups.h"
 #include "nimbus/orch/tool_registry.h"
@@ -108,7 +110,7 @@ bool isRoutineChat(const std::string& chatKey) {
 
 orch::UnattendedFacts routineFacts(const RoutineFire& f, bool outside) {
   orch::UnattendedFacts facts;
-  facts.cls = orch::TurnClass::Routine;
+  facts.cls = f.def.wakeup ? orch::TurnClass::Wakeup : orch::TurnClass::Routine;
   facts.routineGrants = f.grants;
   facts.outside = outside;
   facts.listed = &f.def.paths;
@@ -215,10 +217,13 @@ std::string routineInputText(const RoutineFire& f, int16_t tzMinutes, uint16_t d
   return out;
 }
 
+// A reply written after the fire read outside content enters the owner's transcript whole inside the
+// one outside-content fence (jobs.h, RB-Q2a's), so his later turns read it as data (lane RB-RL).
 std::string heldNoteText(const HeldNote& n, int16_t tzMinutes, uint16_t dayStartMin) {
-  if (n.stop.empty()) return routineNoteText(n.name, n.at, tzMinutes, dayStartMin, n.text);
-  if (n.text.empty()) return routineNoteText(n.name, n.at, tzMinutes, dayStartMin, stopLine(n.stop));
-  return routineNoteText(n.name, n.at, tzMinutes, dayStartMin, n.text) + '\n' + stopLine(n.stop);
+  const std::string text = n.outside && !n.text.empty() ? fenceOutsideContent(n.text) : n.text;
+  if (n.stop.empty()) return routineNoteText(n.name, n.at, tzMinutes, dayStartMin, text);
+  if (text.empty()) return routineNoteText(n.name, n.at, tzMinutes, dayStartMin, stopLine(n.stop));
+  return routineNoteText(n.name, n.at, tzMinutes, dayStartMin, text) + '\n' + stopLine(n.stop);
 }
 
 bool inQuiet(const QuietHours& q, uint64_t now, int16_t tzMinutes) {
@@ -227,6 +232,15 @@ bool inQuiet(const QuietHours& q, uint64_t now, int16_t tzMinutes) {
   const int64_t local = static_cast<int64_t>(now) + static_cast<int64_t>(tzMinutes) * 60;
   const uint16_t minute = static_cast<uint16_t>(((local % 86400) + 86400) % 86400 / 60);
   return orch::inQuietHours(minute, q.endMinute);
+}
+
+uint64_t quietEndAfter(const QuietHours& q, uint64_t now, int16_t tzMinutes) {
+  if (!now || !inQuiet(q, now, tzMinutes)) return now;
+  const int64_t local = static_cast<int64_t>(now) + static_cast<int64_t>(tzMinutes) * 60;
+  const int64_t sec = ((local % 86400) + 86400) % 86400;
+  const int64_t end = static_cast<int64_t>(q.endMinute % 1440) * 60;
+  const int64_t wait = ((end - sec) % 86400 + 86400) % 86400;
+  return now + static_cast<uint64_t>(wait ? wait : 86400);
 }
 
 // ---- the outbox -------------------------------------------------------------------------
@@ -367,7 +381,8 @@ Status noteBody(tx::TxLog& log, tx::Item& it, const std::string& note) {
   }
   Status st = log.appendBulk(it.turn, note, it.handle);
   if (!st.ok()) return st;
-  return tx::longTextHead(note, tx::kInlineMessageCap, tx::viewPointer(it.q), it.x);
+  // E2-FIX5: no turn (and so no registry) here: the head names no view call until one is bound.
+  return tx::longTextHead(note, tx::kInlineMessageCap, tx::viewPointer(it.q, tx::BoundTools()), it.x, true);
 }
 
 }  // namespace
@@ -418,12 +433,19 @@ Status deliverHeld(HeldStore& held, const OwnerSink& owner, const std::string& i
       in.status = StatusLine::LimitReached;
       in.statusText = &line;
     }
+    // P14 (lane E2-FIX2B): Sent is stored before the send, so a cut right after it never sends the
+    // note twice; what is owed then is only the append (the note still reaches his transcript).
+    HeldNote sending = n;
+    sending.state = HeldState::Sent;
+    (void)held.put(sending);
     DeliverOutcome o;
     (void)owner.deliver(in, o);
     // The text is the note: it must have gone (a stop line alone, when there is no text). Stays; tried again.
-    if (n.text.empty() ? !o.statusSent : !o.sent) return Status::fail(Err::Io, "plain::deliverHeld.send");
-    n.state = HeldState::Sent;   // never sent twice: what is owed now is the append
-    (void)held.put(n);
+    if (n.text.empty() ? !o.statusSent : !o.sent) {
+      (void)held.put(n);   // back to its state before: tried again
+      return Status::fail(Err::Io, "plain::deliverHeld.send");
+    }
+    n.state = HeldState::Sent;
   }
   const Status st = owner.append(heldNoteText(n, tzMinutes, dayStartMin), n.at);
   if (!st.ok() && st.err != Err::TooLarge) return st;   // owed: the idle step appends it later
@@ -463,6 +485,7 @@ struct Fire {
   std::unique_ptr<PlainEngine> engine;
   HeldNote note;
   bool captured = false;
+  TurnInput input;   // the fire's turn, here and not on the tg_poll stack (lane E2-FIX2B)
 
   std::string noteId() const { return fire.def.id + "-" + std::to_string(fire.fireAt); }
 
@@ -531,6 +554,7 @@ struct Fire {
     };
     e.deliver = [this](const DeliverInput& in, DeliverOutcome& out) { return capture(in, out); };
     e.noCompaction = "routine-fires-start-from-their-state";   // nothing older is resident to compact
+    e.failover = deps.failover;   // R8: a held head's fire starts on its stand-in
     return e;
   }
 
@@ -568,6 +592,9 @@ FireResult finish(Fire& f, const TurnOutcome& o, uint64_t now, FireReport& out) 
   if (tripped) f.note.stop = guardTripSlug(o.trip);
   f.note.outside = std::find(o.end.events.begin(), o.end.events.end(), "change:outside") != o.end.events.end();
   f.note.state = HeldState::Ready;
+  // P8: held for quiet hours, it lives its whole hold after they end.
+  const uint64_t hold = f.fire.def.holdS ? f.fire.def.holdS : kHeldNoteExpiryS;
+  f.note.expires = std::max(f.note.expires, quietEndAfter(f.deps.quiet, now, f.deps.tzMinutes) + hold);
   out.noteId = f.note.id;
   (void)f.deps.held->dropExpired(now);   // room for this one before the outbox counts as full
   const Status put = f.deps.held->put(f.note);
@@ -604,7 +631,7 @@ Status runRoutine(const RoutineDeps& deps, const RoutineFire& fire, FireReport& 
       out.result = FireResult::Failed;
       return out.status = st;
     }
-    TurnInput in;
+    TurnInput& in = f->input;
     in.ctx = deps.head;
     in.ctx.chatKey = f->key;
     in.ctx.chatId = deps.owner.chatId;
@@ -612,6 +639,12 @@ Status runRoutine(const RoutineDeps& deps, const RoutineFire& fire, FireReport& 
     in.ctx.turn = turn;
     in.tzMinutes = deps.tzMinutes;
     in.text = routineInputText(f->fire, deps.tzMinutes, deps.head.dayStartMin);
+    in.startPast = deps.startPast;   // R8
+    // Lane E2-P-CONN2: engine 1's connector grant for a turn nobody is writing (engine.cpp runTurn,
+    // RB-Q2a): the owner's connectors only with his routine switch on, nothing at all otherwise.
+    const orch::ConnectorGrantScope grant(orch::unattendedGranted(routineFacts(fire), orch::ToolUse::Spend)
+                                              ? orch::ConnectorGrant::Owner
+                                              : orch::ConnectorGrant::None);
     st = f->engine->runTurn(in, out.outcome);
     out.output = RoutineOutput{fire.fireAt, f->captured ? f->note.text : std::string()};
     const uint64_t now = deps.platform->nowEpoch ? deps.platform->nowEpoch() : fire.fireAt;

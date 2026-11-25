@@ -18,7 +18,7 @@
 // JSON format (every field optional; an unknown key or a wrongly typed field is refused):
 //   {"dialect": "anthropic" | "responses" | "chat",
 //    "steps": [{"text": "...", "calls": [{"name": "read_file", "args": {...}, "id": "..."}],
-//               "thinking": "...", "finish": "auto" | "end" | "tool" | "cut" | "refusal",
+//               "thinking": "...", "finish": "auto" | "end" | "tool" | "cut" | "refusal" | "context",
 //               "usage": {"input": 100, "output": 20, "cache_read": 0, "cache_write": 0, "cache_write_1h": 0},
 //               "model": "...", "status": 200, "error_body": "...", "raw_body": "...",
 //               "transport_cut": false, "takes_ms": 0}]}
@@ -85,6 +85,7 @@ enum class Finish : uint8_t {
   ToolUse = 2,
   MaxTokens = 3,  // a cut answer (stop_reason max_tokens, finish_reason length, incomplete)
   Refusal = 4,
+  Context = 5,    // the window ran out mid-answer (model_context_window_exceeded, model_length)
 };
 
 struct Step {
@@ -157,7 +158,8 @@ inline Step raw(int status, std::string body) {
 inline bool finishFromName(const std::string& s, Finish& out) {
   static const std::pair<const char*, Finish> names[] = {{"auto", Finish::Auto},       {"end", Finish::End},
                                                          {"tool", Finish::ToolUse},    {"cut", Finish::MaxTokens},
-                                                         {"refusal", Finish::Refusal}};
+                                                         {"refusal", Finish::Refusal},
+                                                         {"context", Finish::Context}};
   for (const auto& n : names)
     if (s == n.first) {
       out = n.second;

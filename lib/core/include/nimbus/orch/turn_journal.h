@@ -88,4 +88,10 @@ bool lostTurnRunsAgain(const TurnJournal& j, const StallReplay& r);
 std::string stallNotice(const std::string& deviceName, const TurnJournal* j, const std::string& hhmm,
                         const StallReplay& r);
 
+// Lane E2-REP4: the line for a person's request a software restart (no crash notice) cut before the
+// engine stored it, so nothing is resumed: "" when it runs again on its own (lostTurnRunsAgain: its
+// Telegram page is served again and answered) or the journal names no person's request.
+std::string restartCutNotice(const std::string& deviceName, const TurnJournal& j, const std::string& hhmm,
+                             const StallReplay& r);
+
 }  // namespace nimbus::orch

@@ -1,0 +1,4 @@
+synthetic: https://docs.z.ai/api-reference/api-code, read 2026-11-24
+status: 429
+expect: class=billing retry=no
+{"error":{"code":"1113","message":"Insufficient balance or no resource package. Please recharge."}}

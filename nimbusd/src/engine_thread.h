@@ -52,9 +52,20 @@ struct StateSnapshot {
   uint64_t startedEpoch = 0;
 };
 
+// Engine 2's owner chat (lane E2-HOST, main.cpp builds it when NIMBUSD_ENGINE=2): which message
+// it takes, the turn itself, and its idle step. Unset (the default): every turn runs on engine 1.
+struct Engine2Route {
+  std::function<bool(const std::string& chat, const std::string& text, bool photos)> takes;
+  // The message's photos ride the turn (lane E2-P-HOST1: engine 2 takes a photo message too).
+  std::function<void(const std::string& chat, const std::string& text, const std::vector<PhotoIn>& photos)> say;
+  std::function<bool(bool ownerWaiting)> idle;   // true when it did work
+};
+
 class EngineThread {
  public:
   explicit EngineThread(NimbusdRig* rig) : rig_(rig) {}
+  // Set once, before start().
+  void setEngine2(Engine2Route r) { e2_ = std::move(r); }
   ~EngineThread() { stop(); }
 
   void start() {
@@ -234,6 +245,7 @@ class EngineThread {
     idleSteps_.fetch_add(1);
     if (running_.load()) pumpJobs();   // never start a sub dispatch while stopping
     if (running_.load()) foldTick();   // the conversation fold, between turns
+    if (running_.load()) engine2Idle();   // engine 2's compaction, between turns
     if (running_.load()) routinesTick();   // at most one due routine or wake-up
     if (running_.load()) rig_->drainTick();   // memory writes queued during an embedding outage
     if (running_.load()) rig_->spendTick();   // lane DEF: the month rollover and owed notices
@@ -265,6 +277,21 @@ class EngineThread {
     };
     try { rig_->foldTick(mark); } catch (...) { mark(false); }
     rig_->noteFoldPumpEnd();
+  }
+
+  // Engine 2's idle step (its compaction): a paid call may run, so it is marked in flight.
+  void engine2Idle() {
+    if (!e2_.idle) return;
+    bool waiting = false;
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      waiting = !queue_.empty();
+    }
+    busy_.store(true);
+    snapInFlight(true);
+    try { (void)e2_.idle(waiting); } catch (...) {}
+    snapInFlight(false);
+    busy_.store(false);
   }
 
   // Routines (device: loops::checkDue on the job pump). A fire is a turn on this thread.
@@ -310,7 +337,8 @@ class EngineThread {
       return;
     }
     curWebTurn_.store(m.webTurn, std::memory_order_release);
-    rig_->sayWithPhotos(m.chat, m.text, m.photos);
+    if (e2_.say && e2_.takes && e2_.takes(m.chat, m.text, !m.photos.empty())) e2_.say(m.chat, m.text, m.photos);
+    else rig_->sayWithPhotos(m.chat, m.text, m.photos);
     curWebTurn_.store(0, std::memory_order_release);
     if (m.ended) m.ended();
   }
@@ -375,6 +403,7 @@ class EngineThread {
   std::atomic<bool> busy_{false};          // any task / pump step executing now
   std::atomic<uint64_t> idleSteps_{0};     // pumpPeriodic passes (the test clock route)
   HeldQueue held_;                  // turns waiting on another namespace (engine thread)
+  Engine2Route e2_;                 // engine 2's owner chat (unset: engine 1 only)
   nimbus::orch::OwnerFirstGate ownerFirst_;   // engine thread only: the idle re-check waits for a quiet moment)
 
   mutable std::mutex snapMu_;

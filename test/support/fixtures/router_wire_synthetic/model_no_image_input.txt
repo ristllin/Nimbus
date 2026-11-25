@@ -1,0 +1,4 @@
+synthetic: cumulo-nimbus docs/llm-router.md and packages/shared/src/router-refusals.ts (the cloud repo; no public page), read 2026-11-24
+status: 400
+expect: class=bad_request retry=no
+{"error":{"type":"model_no_image_input","message":"This model does not take images."},"reason":"model_no_image_input","message":"This model does not take images.","charged":false,"retryable":false}

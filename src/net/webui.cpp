@@ -82,8 +82,13 @@
 #include "../sys/crash_report.h"        // /api/state boot object (reset reason, crash summary)
 #include "../agent/health.h"            // /api/health - device self-diagnosis (P5)
 #include "../agent/fs_atomic.h"         // flashMounted - /api/state fsMounted
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: the dream turn and the old skill store (tools/engine/guard_files.txt)
 #include "../agent/dream_subsystem.h"   // the last night - /api/state dream
+#endif
 #include "../agent/degraded_device.h"   // lane DEGRADE: /api/state degraded
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+#include "web_engine2.h"               // lane E2-P-SURF: the turn inspector, the turn log
+#endif
 #include "../agent/spend_ceiling_store.h"   // lane DEF: the monthly spend ceiling (state + setting)
 #include "nimbus/orch/budget_command.h"      // lane BUD: runsWhilePaused (the paused web chat)
 #include "../agent/budget_command.h"         // lane BUD: the /budget changes the Usage page lists
@@ -115,7 +120,10 @@
 #include "../agent/connectors.h"           // /api/connectors - known catalog + host
 #include "web_memory.h"
 #include "web_files.h"                   // E1: /api/files* artifact-store routes
-#include "web_skills.h"
+#include "web_skills.h"                  // the Skills page routes (both engines since lane E2-P-SKILL)
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+#include "nimbus/harness/plain/chat_commands.h"   // E2-FIX14: kNoAssistantMemoryLine
+#endif
 #include "web_prefs.h"   // lane J: the standing-rules routes                  // P2: /api/skills* dynamic-skill CRUD
 #include "errlog_routes.h"               // CUM-401: /api/errlog via the deferred-route registry
 #include "../agent/files_subsystem.h"      // E1: files::stats for /api/state
@@ -752,6 +760,7 @@ static void buildState(String& out) {
   // Whether that file area is mounted at all (settings, routines and the dream state
   // live there): a bench run reads it before and after a DREAM drill.
   d["fsMounted"]  = fsUp && agent::flashMounted();
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
   {
     const agent::dream::Status ds = agent::dream::status();   // the last night this boot
     JsonObject dj = d["dream"].to<JsonObject>();
@@ -765,6 +774,7 @@ static void buildState(String& out) {
       dj["stateWhy"] = (const char*)ds.stateWhy;
     }
   }
+#endif
   bool cardBusy = false;
   const CardFacts card = readCardFacts(cardBusy);
   d["cardBusy"]   = cardBusy;   // true: the card figures below are the last ones read
@@ -1371,6 +1381,21 @@ static void buildOrchState(String& out) {
   // status line (the PdfRoute slugs in connectors_wire.h).
   d["pdfRoute"] = agent::connectors::pdfRouteSlug();
   d["orchTrace"] = agent::store::orchTrace();   // glass-box trace capture (A4)
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+  // Lane E2-P-SURF: the settings engine 2 does not read; the page hides each and says so in one line
+  // ([control id, the line, how many label and hint rows above it go too]).
+  d["engine"] = 2;
+  {
+    JsonArray inert = d["inert"].to<JsonArray>();
+    auto add = [&](const char* id, const char* line, int up) {
+      JsonArray a = inert.add<JsonArray>();
+      a.add(id); a.add(line); a.add(up);
+    };
+    // Fail-over, both fallback orders, the connectors and the sandbox switch (OpenAI head) act on the new
+    // engine since E2-P-FO and E2-P-CONN2, so none is hidden.
+    add("orchTrace", "The new engine always keeps the record of each turn; this switch does nothing there.", 0);
+  }
+#endif
   d["ttsOn"]    = agent::store::ttsEnabled();   // "Voice replies" toggle (P2.5)
   d["tgLive"]   = agent::telegram::enabled();   // poll task actually running with a
                                                 // token (false + hasTg => reboot needed)
@@ -1815,7 +1840,12 @@ static bool applyOrchField(const String& n, const String& v, bool& cfgDirty, Str
 
   // directive + memory + telegram + tts
   if (n == "sysPrompt") { agent::store::setSysPrompt(v); cfgDirty = true; return true; }
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+  // E2-FIX14: engine 2 keeps no assistant memory to erase; the page says so instead of "Saved".
+  if (n == "clearMem")  { if (v == "1") err = agent::plain::kNoAssistantMemoryLine; return true; }
+#else
   if (n == "clearMem")  { if (v == "1") agent::orchestrator::requestMemoryClear(); return true; }
+#endif
   if (n == "tgToken")   {
     if (v.length() && agent::store::setTelegramToken(v)) {
       // Verify-on-save (owner: "first run a tiny verification"): reset the verdict and
@@ -2357,7 +2387,11 @@ void beginWeb(const WebConfig& wc) {
     }
     String out; serializeJson(d, out);
     agent::loops::stageWebMutation(out);
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2   // E2-FIX5: staged, applied by tg_poll's next tick
+    r->send(200, "application/json", "{\"ok\":true,\"queued\":true}");
+#else
     r->send(200, "application/json", "{\"ok\":true}");
+#endif
   });
 
   // --- Wake-ups (CUM-27; the Once-loop view, contract shared with lane N1) ---
@@ -2729,6 +2763,9 @@ void beginWeb(const WebConfig& wc) {
   // can be tens of KB - same rule as the usage history below).
   s_server.on("/api/lastturn", HTTP_GET, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+    return nimbus::net::e2web::lastTurn(r);   // engine 2: the request rendered again from the stored turn
+#endif
     size_t len = 0;
     char* raw = agent::orchestrator::lastTurnDebugPs(len);
     if (!raw) { r->send(404, "text/plain", "no turn has run yet"); return; }
@@ -2752,6 +2789,9 @@ void beginWeb(const WebConfig& wc) {
   // chat can be honest instead of showing a blank panel.
   s_server.on("/api/trace", HTTP_GET, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+    return nimbus::net::e2web::trace(r);   // engine 2: the turn log of the stored turn
+#endif
     agent::memory::WebLock card;   // the trace file is on the card: tried (web_guard.h)
     if (!card) return admission::sendCardBusy(r);
     if (!r->hasParam("turn")) { r->send(400, "text/plain", "turn required"); return; }
@@ -3174,7 +3214,7 @@ void beginWeb(const WebConfig& wc) {
     // and a provider stuck low-memory-"deferred" had no manual way back (CUM-451).
     // They are already in kRetryProv and provider_verify handles them, so accept them.
     if (p != "openai" && p != "anthropic" && p != "mistral" && p != "cumulo" &&
-        p != "zai" && p != "telegram" && p != "tavily") {
+        p != "zai" && p != "telegram" && p != "tavily" && p != "custom") {   // custom: E2-R8a
       r->send(400, "application/json", "{\"error\":\"unknown provider\"}");
       return;
     }
@@ -3293,8 +3333,13 @@ void beginWeb(const WebConfig& wc) {
     if (!s_wc.chatSend) { r->send(501, "application/json", "{\"error\":\"unsupported\"}"); return; }
     const String turn = s_wc.chatSend(text);
     if (!turn.length()) {
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2   // E2-FIX5: before the turn task's queue opens, nothing is busy
+      r->send(503, "application/json",
+              agent::chatRefusalJson(agent::telegram::inboxOpen() ? agent::ChatRefusal::Busy : agent::ChatRefusal::Starting));
+#else
       r->send(503, "application/json",
               "{\"error\":\"busy - the device is finishing a reply; send that again in a moment\"}");
+#endif
       return;
     }
     // CUM-482: the client polls GET /api/chat?turn=<turn> for THIS message's reply.

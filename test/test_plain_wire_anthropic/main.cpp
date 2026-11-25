@@ -39,9 +39,14 @@
 #include "../support/tx_battery/pending.h"
 #include "../support/tx_battery/props.h"
 #include "../support/tx_battery/render.h"
+#include "nimbus/harness/log.h"
 #include "nimbus/harness/plain/request.h"
+#include "nimbus/harness/plain/route.h"
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/harness/plain/wire.h"
+#include "nimbus/orch/connector_grant.h"   // lane E2-P-CONN2
+#include "nimbus/orch/connectors_wire.h"
+#include "nimbus/orch/tool_registry.h"
 #include "nimbus/orch/tx/rules.h"
 #include "nimbus/orch/wire_limits.h"
 #include "nimbus/utf8.h"
@@ -96,6 +101,8 @@ struct Opts {
   uint32_t maxTokens = 4096;
   bool inlinePhotos = false;
   std::string mime = "image/jpeg";
+  const char* answerSchema = nullptr;   // lane E2-CMP: the summarizer's structured form
+  const plain::Route* route = nullptr;  // lane E2-REP7: the head's route (the table row the wire reads)
 };
 
 struct Out {
@@ -137,7 +144,9 @@ struct Rig {
     in.stubPointer = o.pointer;
     in.ladder = &o.ladder;
     in.toolChoiceNone = o.none;
+    in.answerSchema = o.answerSchema;
     in.maxTokens = o.maxTokens;
+    in.route = o.route;
     const auto* bulk = &c.bulk;
     in.bulk = [bulk](const std::string& handle, std::string& s) {
       auto it = bulk->find(handle);
@@ -255,6 +264,7 @@ struct Seen {
   int marks = 0;
   bool fileSource = false;
   bool anyToolBlock = false;
+  std::set<std::string> servers;   // lane E2-P-CONN2: mcp_servers names, each taken by one toolset
 };
 
 bool textBlock(JsonObjectConst b, C& c, const std::string& w, Seen& s) {
@@ -438,13 +448,43 @@ bool toolChoice(JsonObjectConst tc, const std::set<std::string>& names, C& c) {
   return onlyKeys(tc, {"type", "name", "disable_parallel_tool_use"}, c, "tool_choice");
 }
 
-bool tools(JsonObjectConst root, C& c, Seen& s) {
-  JsonVariantConst ts = root["tools"];
-  if (ts.isNull()) return root["tool_choice"].isNull() ? true : c.fail("tool_choice without tools");
-  std::set<std::string> names;
+// Lane E2-P-CONN2: the MCP connector (beta mcp-client-2025-11-20), read 24 Nov 2026 at
+// https://platform.claude.com/docs/en/agents-and-tools/mcp-connector: each mcp_servers entry
+// {"type":"url","url":https,"name" unique,"authorization_token"?}; each server taken by exactly one
+// {"type":"mcp_toolset","mcp_server_name"} tool, and a toolset names a server that exists.
+bool mcpServers(JsonVariantConst ms, C& c, Seen& s) {
+  if (ms.isNull()) return true;
+  if (!ms.is<JsonArrayConst>() || ms.size() == 0) return c.fail("mcp_servers is not a non-empty list");
   size_t i = 0;
-  for (JsonObjectConst t : ts.as<JsonArrayConst>())
-    if (!toolEntry(t, "tools[" + std::to_string(i++) + "]", c, s, names)) return false;
+  for (JsonObjectConst m : ms.as<JsonArrayConst>()) {
+    const std::string w = "mcp_servers[" + std::to_string(i++) + "]";
+    if (std::string(m["type"] | "") != "url") return c.fail(w + ": type is not url");
+    if (std::string(m["url"] | "").rfind("https://", 0) != 0) return c.fail(w + ": url is not https");
+    if (!pattern(m["name"] | "", 64) || !s.servers.insert(m["name"] | "").second) return c.fail(w + ": name pattern or repeated");
+    if (!m["authorization_token"].isNull() && !*(m["authorization_token"] | "")) return c.fail(w + ": empty authorization_token");
+    if (!onlyKeys(m, {"type", "url", "name", "authorization_token"}, c, w)) return false;
+  }
+  return true;
+}
+bool toolset(JsonObjectConst t, const std::string& w, C& c, std::set<std::string>& taken, const Seen& s) {
+  const std::string name = t["mcp_server_name"] | "";
+  if (!s.servers.count(name)) return c.fail(w + ": a toolset names no server");
+  if (!taken.insert(name).second) return c.fail(w + ": two toolsets for one server");
+  return onlyKeys(t, {"type", "mcp_server_name"}, c, w);
+}
+
+bool tools(JsonObjectConst root, C& c, Seen& s) {
+  if (!mcpServers(root["mcp_servers"], c, s)) return false;
+  JsonVariantConst ts = root["tools"];
+  if (ts.isNull())
+    return root["tool_choice"].isNull() && s.servers.empty() ? true : c.fail("tool_choice or mcp_servers without tools");
+  std::set<std::string> names, taken;
+  size_t i = 0;
+  for (JsonObjectConst t : ts.as<JsonArrayConst>()) {
+    const std::string w = "tools[" + std::to_string(i++) + "]";
+    if (!t["type"].isNull() ? !toolset(t, w, c, taken, s) : !toolEntry(t, w, c, s, names)) return false;
+  }
+  if (taken != s.servers) return c.fail("a server no toolset takes");
   return toolChoice(root["tool_choice"], names, c);
 }
 
@@ -457,7 +497,7 @@ bool headerMap(const agent::HttpRequest& r, std::map<std::string, std::string>& 
   return true;
 }
 
-bool headers(const agent::HttpRequest& r, bool fileSource, C& c) {
+bool headers(const agent::HttpRequest& r, bool fileSource, bool mcp, C& c) {
   if (r.method != "POST") return c.fail("method " + r.method);
   if (r.path.size() < 9 || r.path.compare(r.path.size() - 9, 9, "/messages") != 0) return c.fail("path " + r.path);
   std::map<std::string, std::string> h;
@@ -466,6 +506,8 @@ bool headers(const agent::HttpRequest& r, bool fileSource, C& c) {
     return c.fail("content-type or anthropic-version");
   const bool beta = h["anthropic-beta"].find("files-api-2025-04-14") != std::string::npos;
   if (fileSource != beta) return c.fail(fileSource ? "a file source without the files beta" : "the files beta without a file source");
+  if (mcp != (h["anthropic-beta"].find("mcp-client-2025-11-20") != std::string::npos))
+    return c.fail(mcp ? "mcp_servers without the mcp-client beta" : "the mcp-client beta without mcp_servers");
   const size_t keys = h.count("x-api-key") + h.count("authorization");
   if (r.tls ? keys != 1 : keys != 0) return c.fail(r.tls ? "not exactly one key header" : "a key on a cleartext socket");
   return true;
@@ -481,16 +523,37 @@ bool bytesOk(const agent::HttpRequest& r, const std::string& body, C& c) {
   return true;
 }
 
+// output_config: an effort the API knows and/or (lane E2-CMP) a structured form
+// {"type":"json_schema","schema":{...}}, nothing else.
+bool outputConfigOk(JsonObjectConst oc, C& c) {
+  if (oc["effort"].isNull() && oc["format"].isNull()) return c.fail("output_config holds neither effort nor format");
+  const std::string e = oc["effort"] | "";
+  if (!oc["effort"].isNull() && e != "low" && e != "medium" && e != "high" && e != "max") return c.fail("effort '" + e + "'");
+  if (!oc["format"].isNull()) {
+    if (std::string(oc["format"]["type"] | "") != "json_schema" || !oc["format"]["schema"].is<JsonObjectConst>())
+      return c.fail("output_config.format is not a json_schema");
+    if (!onlyKeys(oc["format"], {"type", "schema"}, c, "output_config.format")) return false;
+  }
+  return onlyKeys(oc, {"effort", "format"}, c, "output_config");
+}
+
+// Lane E2-REP7: thinking off on the guard round, {"type":"disabled"} or {"type":"between_tools"} alone.
+bool thinkingOk(JsonVariantConst t, C& c) {
+  if (t.isNull()) return true;
+  const std::string type = t["type"] | "";
+  if (type != "disabled" && type != "between_tools") return c.fail("thinking type '" + type + "'");
+  return onlyKeys(t.as<JsonObjectConst>(), {"type"}, c, "thinking");
+}
+
 bool envelope(JsonObjectConst root, C& c) {
   if (root.isNull()) return c.fail("the body is not an object");
-  if (!onlyKeys(root, {"model", "max_tokens", "system", "tools", "tool_choice", "messages", "output_config"}, c, "body"))
+  if (!onlyKeys(root, {"model", "max_tokens", "system", "tools", "tool_choice", "mcp_servers", "messages", "output_config", "thinking"},
+                c, "body"))
     return false;
+  if (!thinkingOk(root["thinking"], c)) return false;
   if (std::string(root["model"] | "").empty()) return c.fail("model missing");
   if (!root["max_tokens"].is<unsigned>() || (root["max_tokens"] | 0u) < 1) return c.fail("max_tokens missing or 0");
-  if (root["output_config"].isNull()) return true;
-  const std::string e = root["output_config"]["effort"] | "";
-  if (e != "low" && e != "medium" && e != "high" && e != "max") return c.fail("effort '" + e + "'");
-  return onlyKeys(root["output_config"], {"effort"}, c, "output_config");
+  return root["output_config"].isNull() || outputConfigOk(root["output_config"], c);
 }
 
 // The whole request. `body` is the materialized body (photos spliced in).
@@ -504,7 +567,7 @@ bool request(const agent::HttpRequest& r, const std::string& body, std::string& 
   ok = ok && envelope(root, c) && system(root["system"], c, s) && tools(root, c, s) && messages(root["messages"], c, s);
   ok = ok && (s.marks <= 4 || c.fail(std::to_string(s.marks) + " cache points (at most 4)"));
   ok = ok && (!s.anyToolBlock || !root["tools"].isNull() || c.fail("tool blocks without tools"));
-  ok = ok && headers(r, s.fileSource, c);
+  ok = ok && headers(r, s.fileSource, !s.servers.empty(), c);
   why = c.why;
   return ok;
 }
@@ -1418,10 +1481,11 @@ void photoTurns(Rig& rig, bool inl) {
     }
     tx::PhotoFacts pf;
     pf.mode = inl ? tx::PhotoMode::Inline : tx::PhotoMode::FileRef;
-    pf.now = c.t;
-    pf.lastOwnerTurnAt = c.t - 120;
     pf.candidates = candidates;
     pf.ownerTurnsSince = since;
+    // Stored sizes over half the head's byte cap (lane E2-FIX4): once both photos are in, the older
+    // falls out, so the run renders both pixels and the line.
+    pf.bytes.assign(candidates.size(), (uint32_t)(tx::photoBytesInViewMax(pf.mode) / 2 + 1));
     std::vector<std::string> vis;
     TXB_OK(tx::visiblePhotos(pf, vis));
     c.items.back().photos = vis;
@@ -1578,12 +1642,27 @@ void test_the_envelope_carries_the_facts_and_no_orch_turn() {
   TEST_ASSERT_EQUAL_STRING("none", last.view.toolChoice.c_str());
   TEST_ASSERT_TRUE(last.view.toolsJson == out.view.toolsJson && last.view.systemBlocks == out.view.systemBlocks);
   TEST_ASSERT_EQUAL(777, (int)last.view.maxTokens);
+  // Lane E2-CMP: the summarizer's structured form rides beside the effort, the same bytes at every render,
+  // and nothing else of the request changes.
+  Opts form;
+  form.answerSchema = plain::texts::summarizer::kChangesSchema;
+  Out a, b;
+  RENDER_OK(rig, c, a, form);
+  RENDER_OK(rig, c, b, form);
+  EXPECT_API_OK(a, "the structured form");
+  TEST_ASSERT_EQUAL_STRING(a.body.c_str(), b.body.c_str());
+  TEST_ASSERT_TRUE(a.body.find(std::string(R"("output_config":{"effort":"medium","format":{"type":"json_schema","schema":)") +
+                               plain::texts::summarizer::kChangesSchema + "}}") != std::string::npos);
+  TEST_ASSERT_TRUE(a.view.systemBlocks == out.view.systemBlocks && a.view.toolsJson == out.view.toolsJson);
   // No effort when the head sets none; no tools array when there are no tools.
   rig.fx.head.effort.clear();
   rig.fx.tools.clear();
   RENDER_OK(rig, c, out);
   EXPECT_API_OK(out, "no tools");
   TEST_ASSERT_TRUE(out.body.find("output_config") == std::string::npos && out.body.find("\"tools\"") == std::string::npos);
+  RENDER_OK(rig, c, a, form);   // the form alone
+  EXPECT_API_OK(a, "the structured form without effort");
+  TEST_ASSERT_TRUE(a.body.find(R"("output_config":{"format":{"type":"json_schema")") != std::string::npos);
   // The key: x-api-key direct, a bearer token routed, none on a cleartext socket.
   auto header = [](const agent::HttpRequest& r, const char* k) {
     for (const auto& h : r.headers)
@@ -1691,7 +1770,16 @@ void test_pointer_moves_superseded_reads_and_thru_come_from_the_stored_items() {
   c.advance(600);
   c.openTurn();
   c.move(c.q - 1, "cold");                  // the pointer moves to the last closed turn
-  c.move(c.q - 2, "superseded", {readQ});   // and the receipt was superseded
+  // A superseded-read list is a change point, not a stub list (E2-VERB): the stale receipt stays whole.
+  {
+    txb::Convo sup = c;
+    sup.move(sup.q - 2, "superseded", {readQ});
+    sup.owner("ask 2: again");
+    Out whole;
+    RENDER_OK(rig, sup, whole);
+    TEST_ASSERT_TRUE_MESSAGE(whole.body.find("STALE-RECEIPT\"") != std::string::npos, "a superseded read became a stub");
+  }
+  c.move(c.q - 2, "tools", {readQ});   // a compaction tool fold listed the receipt
   c.owner("ask 2: again");
   Out out;
   Out rung1;
@@ -1799,6 +1887,41 @@ void test_outside_content_without_a_stub_is_never_sent_whole() {
   RENDER_OK(rig, c, out);
   EXPECT_API_OK(out, "outside no stub");
   TEST_ASSERT_TRUE(out.body.find("OUTSIDE-SECRET") == std::string::npos);
+}
+
+// Lane E2-FIX2A, finding P11: a result shown whole whose bulk file is gone or short never goes out as less
+// without a word. Its place holds the marker and then its stub, and the device log says so once per turn.
+std::vector<std::string> g_wireLog;
+void recordWireLog(const char* line) { g_wireLog.push_back(line); }
+
+void test_a_missing_bulk_file_sends_a_marker_and_logs_once_per_turn() {
+  Rig rig;
+  txb::Convo c;
+  c.openTurn();
+  c.owner("ask 1: read the log");
+  const std::string id = c.call("read_file", R"({"path":"logs/a.csv"})");
+  c.bulkResult(id, "read_file", txb::payload("ROWS", 3000));
+  const tx::Item stored = c.items.back();
+  c.bulk.erase(stored.handle);   // the bulk file is gone (or short: the reader answers the same)
+  c.nextRound();
+  c.say("read it");
+  c.close();
+  c.openTurn();
+  c.owner("ask 2: and the total?");
+  g_wireLog.clear();
+  agent::hlog::setSink(recordWireLog);
+  Out out, again;
+  Opts o;
+  RENDER_OK(rig, c, out, o);
+  RENDER_OK(rig, c, again, o);   // the next round of the same turn
+  agent::hlog::setSink(nullptr);
+  EXPECT_API_OK(out, "bulk missing");
+  const auto blocks = txb::detail::blocksOf(out.view, sp::BlockKind::ToolResult, id);
+  TEST_ASSERT_EQUAL(1, (int)blocks.size());
+  const std::string want = std::string(plain::texts::stubs::kResultUnread) + "\n" + stored.st;
+  TEST_ASSERT_EQUAL_STRING(want.c_str(), blocks[0]->text.c_str());
+  TEST_ASSERT_EQUAL_MESSAGE(1, (int)g_wireLog.size(), "logged once per turn");
+  TEST_ASSERT_TRUE(g_wireLog[0].find(stored.handle) != std::string::npos);
 }
 
 // What the API refuses is never sent, whatever was stored.
@@ -2095,6 +2218,130 @@ void test_the_measured_framing_per_block_is_inside_the_battery_allowances() {
   }
 }
 
+// ---- lane E2-P-CONN2: the owner's tool servers ride the owner's request ----------------------------
+namespace {
+std::vector<nimbus::orch::ConnectorInfo> conn2List() {
+  auto one = [](const char* name, const char* prov, const char* url, bool on) {
+    nimbus::orch::ConnectorInfo c;
+    c.name = name;
+    c.prov = prov;
+    c.kind = "mcp";
+    c.url = url;
+    c.enabled = on;
+    return c;
+  };
+  std::vector<nimbus::orch::ConnectorInfo> cs = {one("docs", "anthropic", "https://mcp.docs.example.test/mcp", true),
+                                                 one("nas", "anthropic", "http://192.168.1.20/mcp", true),
+                                                 one("off", "anthropic", "https://off.example.test/mcp", false),
+                                                 one("github", "openai", "https://mcp.github.example.test/", true)};
+  nimbus::orch::applyCodeSandbox(cs, true);
+  return cs;
+}
+}  // namespace
+
+// The owner's turn carries his enabled, cloud-reachable Anthropic servers (engine 1's attach rules: a LAN
+// address, a disabled server and another provider's are left off; the sandbox is not Anthropic's) as
+// mcp_servers with one toolset each and the beta header, a body the checker accepts; the checker refuses
+// each fault of that shape. A member's turn, a routed head, a request with no tools and a task scoped to
+// nothing send the bytes of a request without connectors.
+void test_the_owners_tool_servers_ride_the_owners_request_and_no_one_elses() {
+  Rig rig;
+  txb::Convo c;
+  c.ownerTurn("hi", "hello");
+  c.openTurn();
+  c.owner("what is in my docs?");
+  Out plainOut;
+  RENDER_OK(rig, c, plainOut);
+  const nimbus::orch::Principal owner = nimbus::orch::principalForRole("1", nimbus::orch::Role::Admin);
+  const nimbus::orch::Principal member = nimbus::orch::principalForRole("2", nimbus::orch::Role::User);
+  rig.fx.head.connectors = conn2List;
+  rig.fx.head.bearer = [](const nimbus::orch::ConnectorInfo& k) { return k.name == "docs" ? std::string("tok-docs") : std::string(); };
+  rig.fx.turn.who = &owner;
+  Out out;
+  RENDER_OK(rig, c, out);
+  EXPECT_API_OK(out, "owner with tool servers");
+  TEST_ASSERT_TRUE(out.body.find(R"({"type":"mcp_toolset","mcp_server_name":"docs"}],"tool_choice")") != std::string::npos);
+  TEST_ASSERT_TRUE(out.body.find(R"("mcp_servers":[{"type":"url","url":"https://mcp.docs.example.test/mcp","name":"docs","authorization_token":"tok-docs"}])") != std::string::npos);
+  TEST_ASSERT_TRUE(out.body.find("192.168") == std::string::npos && out.body.find("github") == std::string::npos &&
+                   out.body.find("code_interpreter") == std::string::npos && out.body.find("\"off\"") == std::string::npos);
+  struct Bad {
+    const char* from;
+    const char* to;
+  };
+  const Bad bad[] = {
+      {R"("mcp_server_name":"docs")", R"("mcp_server_name":"other")"},                     // names no server
+      {R"(,{"type":"mcp_toolset","mcp_server_name":"docs"})", ""},                          // a server no toolset takes
+      {R"("url":"https://mcp.docs)", R"("url":"http://mcp.docs)"},                          // not https
+      {R"("authorization_token":"tok-docs")", R"("authorization_token":"")"},             // empty token
+      {R"("name":"docs","authorization)", R"("name":"docs","headers":{},"authorization)"},  // unknown key
+      {R"({"type":"url","url")", R"({"type":"sse","url")"},                                // type
+  };
+  for (const Bad& b : bad) {
+    std::string body = out.body;
+    const size_t at = body.find(b.from);
+    TEST_ASSERT_TRUE_MESSAGE(at != std::string::npos, b.from);
+    body.replace(at, std::strlen(b.from), b.to);
+    std::string why;
+    TEST_ASSERT_FALSE_MESSAGE(chk::request(out.req, body, why), (std::string("accepted: ") + b.from).c_str());
+  }
+  agent::HttpRequest noBeta = out.req;
+  noBeta.headers.erase(std::remove_if(noBeta.headers.begin(), noBeta.headers.end(),
+                                      [](const std::pair<std::string, std::string>& h) { return h.first == "anthropic-beta"; }),
+                       noBeta.headers.end());
+  std::string why;
+  TEST_ASSERT_FALSE_MESSAGE(chk::request(noBeta, out.body, why), "mcp_servers without the beta");
+  TEST_ASSERT_FALSE_MESSAGE(chk::request(out.req, plainOut.body, why), "the beta without mcp_servers");
+  // No one else's request moves: a member, a routed head, no tools, a task scoped to nothing.
+  rig.fx.turn.who = &member;
+  RENDER_OK(rig, c, out);
+  TEST_ASSERT_TRUE_MESSAGE(out.req.body == plainOut.req.body && out.req.headers == plainOut.req.headers, "member");
+  rig.fx.turn.who = &owner;
+  {
+    const nimbus::orch::ConnectorGrantScope none(nimbus::orch::ConnectorGrant::None);
+    RENDER_OK(rig, c, out);
+    TEST_ASSERT_TRUE_MESSAGE(out.req.body == plainOut.req.body, "a task scoped to nothing");
+  }
+  rig.fx.head.routed = true;
+  Out routedPlain;
+  rig.fx.head.connectors = nullptr;
+  RENDER_OK(rig, c, routedPlain);
+  rig.fx.head.connectors = conn2List;
+  RENDER_OK(rig, c, out);
+  TEST_ASSERT_TRUE_MESSAGE(out.req.body == routedPlain.req.body, "routed");
+  rig.fx.head.routed = false;
+  rig.fx.tools.clear();
+  rig.fx.head.connectors = nullptr;
+  Out noToolsPlain;
+  RENDER_OK(rig, c, noToolsPlain);
+  rig.fx.head.connectors = conn2List;
+  RENDER_OK(rig, c, out);
+  TEST_ASSERT_TRUE_MESSAGE(out.req.body == noToolsPlain.req.body && out.req.headers == noToolsPlain.req.headers, "no tools");
+}
+
+// The answer of a turn whose connector ran: the mcp blocks are not stored, the text after them is, and
+// the step is outside content; an answer with no mcp_tool_result is not.
+void test_a_tool_server_result_in_the_answer_marks_the_step_outside() {
+  const plain::WireCodec* wire = nullptr;
+  TEST_ASSERT_TRUE(plain::wireFor(plain::Dialect::AnthropicMessages, wire).ok());
+  agent::HttpResponse r;
+  r.status = 200;
+  r.body = R"({"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-5-5","content":[)"
+           R"({"type":"mcp_tool_use","id":"mcptoolu_1","name":"search","server_name":"docs","input":{"q":"beds"}},)"
+           R"({"type":"mcp_tool_result","tool_use_id":"mcptoolu_1","is_error":false,"content":[{"type":"text","text":"bed 3: chard"}]},)"
+           R"({"type":"text","text":"Bed 3 has chard."}],"stop_reason":"end_turn","stop_sequence":null,)"
+           R"("usage":{"input_tokens":10,"output_tokens":5}})";
+  plain::ParsedStep step;
+  TEST_ASSERT_TRUE(wire->parse(r, step).ok());
+  TEST_ASSERT_TRUE(step.outside);
+  TEST_ASSERT_EQUAL_STRING("Bed 3 has chard.", step.text.c_str());
+  TEST_ASSERT_EQUAL(0, (int)step.calls.size());
+  TEST_ASSERT_EQUAL((int)plain::StopReason::EndTurn, (int)step.stop);
+  const size_t at = r.body.find(R"({"type":"mcp_tool_result")");
+  r.body.erase(at, r.body.find(R"({"type":"text","text":"Bed 3)") - at);
+  TEST_ASSERT_TRUE(wire->parse(r, step).ok());
+  TEST_ASSERT_FALSE(step.outside);
+}
+
 }  // namespace
 
 #include "parse_tests.h"
@@ -2121,9 +2368,12 @@ int main(int, char**) {
   RUN_TEST(test_a_new_turn_never_rewrites_the_message_a_turn_ended_with);
   RUN_TEST(test_an_owner_message_is_its_stamp_and_its_text);
   RUN_TEST(test_outside_content_without_a_stub_is_never_sent_whole);
+  RUN_TEST(test_a_missing_bulk_file_sends_a_marker_and_logs_once_per_turn);
   RUN_TEST(test_stored_states_the_api_refuses_are_rendered_into_ones_it_takes);
   RUN_TEST(test_a_ladder_rung_between_rounds_of_a_turn_with_signed_thinking_is_accepted_by_the_provider);
   RUN_TEST(test_the_measured_framing_per_block_is_inside_the_battery_allowances);
+  RUN_TEST(test_the_owners_tool_servers_ride_the_owners_request_and_no_one_elses);
+  RUN_TEST(test_a_tool_server_result_in_the_answer_marks_the_step_outside);
   parse_tests::run();
   return UNITY_END();
 }

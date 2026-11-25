@@ -11,6 +11,7 @@
 
 #include "nimbus/harness/channel.h"
 #include "nimbus/harness/plain/exchange.h"
+#include "nimbus/harness/plain/route.h"
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/orch/deliver_text.h"
 
@@ -353,7 +354,15 @@ Status rebuildRequest(const RebuildInput& in, HttpRequest& out) {
   r.maxTokens = ref.maxTokens;
   r.bulk = in.bulk;
   r.photo = in.photo;
+  r.bound = in.bound;
+  r.longCache = in.longCache;
+  r.refusedPhotos = in.refusedPhotos;
   r.ladder = &ladder;
+  // The head's route, as the exchange gave it to the wire (lane E2-BFIX5): the wire reads the row from it
+  // (the guard round's thinking field, E2-REP7; a routed head's path and bare model). The pre-flight is not
+  // run again: the cap and the effort it chose are the reference's.
+  Route route;
+  if (resolveRoute(head, turn, route).ok()) r.route = &route;
   out = HttpRequest{};
   if (!(st = in.wire->render(r, out)).ok()) return st;
   if (requestHashOf(out) != ref.bodyHash) return Status::fail(Err::Torn, "plain::rebuildRequest.hash");
@@ -387,6 +396,7 @@ std::string ProgressReporter::text(const ProgressEvent& e, uint32_t elapsedMs, u
     case ProgressKind::ToolRound: line += d.empty() ? std::string(texts::device_notes::kProgressRanTool) : texts::device_notes::kProgressRan + d + "."; break;
     case ProgressKind::ProviderWait: line += texts::device_notes::kProgressWaiting; break;
     case ProgressKind::SoftGuard: line += texts::device_notes::kProgressLong; break;
+    case ProgressKind::Summary: line += texts::device_notes::kProgressSummary; break;
   }
   return line;
 }
@@ -413,8 +423,12 @@ bool ProgressReporter::tick(const ProgressEvent& e) {
   if (e.kind == ProgressKind::ToolRound) ++steps_;
   const uint32_t since = e.nowMs - lastVisibleMs_;
   bool due = false;
-  if (!lines_) due = since >= kProgressFirstMs;
-  else if (haveMsg_) due = since >= kProgressEditMs;
+  // A soft guard a progressing turn passed is always shown where the line edits in place (ruling
+  // 84 items 2 and 3; lane RB-X3); otherwise it keeps the first-line threshold and the 60 s rule.
+  // A wait for the summary is shown at once too (ruling 98 item 1: the turn says it waits for it).
+  const bool soft = e.kind == ProgressKind::SoftGuard || e.kind == ProgressKind::Summary;
+  if (!lines_) due = e.kind == ProgressKind::Summary || since >= kProgressFirstMs;
+  else if (haveMsg_) due = soft || since >= kProgressEditMs;
   else due = lines_ < kProgressMaxLines && since >= kProgressNewLineMs;
   if (!due) return false;
   try {

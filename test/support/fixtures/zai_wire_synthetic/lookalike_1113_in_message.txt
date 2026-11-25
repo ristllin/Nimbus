@@ -1,0 +1,4 @@
+synthetic: https://docs.z.ai/api-reference/api-code, read 2026-11-24
+status: 500
+expect: class=server retry=yes
+{"error":{"code":"1234","message":"Network error, error id: 1113a7, please contact customer service"}}

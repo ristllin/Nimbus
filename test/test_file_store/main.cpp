@@ -271,6 +271,39 @@ static void test_sharing_is_read_only_and_survives_roundtrip() {
   TEST_ASSERT_EQUAL_STRING("chat:alice", back.find("docs", "private.md")->owner.c_str());
 }
 
+// Lane E2-REP4: a fetched file's outside mark survives the index round trip as a tenth field written
+// only when set (other rows keep their bytes) and keeps the owner and shared fields; a row written
+// before the mark existed loads unmarked. (The image before reads nine fields and drops the tenth.)
+static void test_a_fetched_files_outside_mark_survives_the_index() {
+  FileStore st;
+  std::string err;
+  FileEntry got; got.project = "recipes"; got.name = "page.html";
+  got.owner = "chat:alice"; got.bytes = 900; got.outside = true; got.shared = true;
+  TEST_ASSERT_TRUE(st.add(got, err));
+  FileEntry own; own.project = "recipes"; own.name = "mine.md"; own.owner = "chat:alice"; own.bytes = 9;
+  TEST_ASSERT_TRUE(st.add(own, err));
+  const std::string dump = st.dump();
+  TEST_ASSERT_TRUE(dump.find("chat:alice|shared\toutside\n") != std::string::npos);
+  TEST_ASSERT_TRUE(dump.find("mine.md\t9\t") != std::string::npos);
+  FileStore back;
+  TEST_ASSERT_TRUE(back.load(dump));
+  TEST_ASSERT_TRUE(back.find("recipes", "page.html")->outside);
+  TEST_ASSERT_TRUE(back.find("recipes", "page.html")->shared);
+  TEST_ASSERT_EQUAL_STRING("chat:alice", back.find("recipes", "page.html")->owner.c_str());
+  TEST_ASSERT_FALSE(back.find("recipes", "mine.md")->outside);
+  // A nine-field row (written before the mark existed) loads unmarked.
+  std::string old = dump;
+  old.erase(old.find("\toutside"), 8);
+  FileStore prior;
+  TEST_ASSERT_TRUE(prior.load(old));
+  TEST_ASSERT_FALSE(prior.find("recipes", "page.html")->outside);
+  TEST_ASSERT_TRUE(prior.find("recipes", "page.html")->shared);
+  // A later write of the same path replaces the entry: the mark goes with it.
+  FileEntry rewrite = own; rewrite.name = "page.html";
+  TEST_ASSERT_TRUE(st.add(rewrite, err));
+  TEST_ASSERT_FALSE(st.find("recipes", "page.html")->outside);
+}
+
 static void test_bytes_are_counted_per_namespace() {
   FileStore st;
   std::string err;
@@ -605,5 +638,6 @@ int main() {
   RUN_TEST(test_text_readable_rule);
   RUN_TEST(test_same_content_finds_only_the_senders_own_copy);
   RUN_TEST(test_a_resent_album_costs_nothing_against_the_limit);
+  RUN_TEST(test_a_fetched_files_outside_mark_survives_the_index);
   return UNITY_END();
 }

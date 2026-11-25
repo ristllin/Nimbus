@@ -85,6 +85,11 @@ struct FileEntry {
   // prompt (which is why vector memory has no equivalent). Encoded INSIDE the
   // owner field as "<ns>|shared" so the index gains no further column.
   bool shared = false;
+  // Lane E2-REP4: its bytes came from outside (fetch_url downloaded them), so a read of it is outside
+  // content for the rails wherever it is kept. A TENTH index field, "outside", written only when set
+  // (with the owner field before it): a loader that reads nine drops it, so a rollback keeps every file
+  // and loses only this mark. A later write of the same path by anyone replaces the entry and clears it.
+  bool outside = false;
 };
 
 class FileStore {

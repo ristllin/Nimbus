@@ -138,7 +138,7 @@ void test_wire_coverage_chat() {
   wireCoverage(plain::Dialect::ChatCompletions);
 }
 void test_wire_coverage_flat() {
-  TXB_WAITS_FOR("PENDING RB-W4", "RB-T1");
+  TXB_WAITS_FOR("PENDING RB-W4", "RB-T1", "RB-TXT");   // text-mode history in the checkers (E2-R6)
   wireCoverage(plain::Dialect::Flat);
 }
 
@@ -190,9 +190,12 @@ void test_a_direct_head_never_omits() {
 // An 85,000 B head (chat completions, unqualified): when the ladder omits, the request
 // names exactly what it left out and keeps the newest 6 owner turns.
 void test_a_floor_head_names_what_the_ladder_omits() {
-  TXB_WAITS_FOR("PENDING RB-W3", "RB-E1a");
+  TXB_WAITS_FOR("PENDING RB-W3", "RB-E1a", "RB-TXT");   // a custom head is text mode until its verify (E2-R6)
   txb::Battery b(plain::Dialect::ChatCompletions);
   b.hostOverride = "custom";   // a floor head by its class (tx::budgetFor), never by a default (RB-T4)
+  // E2-REP5: with the real chat codec the summarizer keeps every request under the cap (17 summaries, at most
+  // 55,389 B), so the ladder is never asked; its summaries fail here, which leaves the ladder the only way.
+  b.summarizer.respondWith([](const sp::Recorded&, size_t) { return sp::httpError(400); });
   TXB_OK(txb::runTurns(b, longChat(40, 4000)));
   bool omitted = false;
   for (const auto& r : b.model.requests()) omitted |= txb::detail::omittedTurnsNamed(r.view) > 0;
@@ -202,7 +205,7 @@ void test_a_floor_head_names_what_the_ladder_omits() {
 
 // ---- compaction ------------------------------------------------------------------------
 void answerSummariesWith(txb::Battery& b, std::function<sp::Step()> step) {
-  b.model.respondWith([step](const sp::Recorded&, size_t) { return step(); });
+  b.summarizer.respondWith([step](const sp::Recorded&, size_t) { return step(); });   // its own provider (RB-C3)
 }
 
 // Three days of turns whose stored lines pass the battery head's due mark H at its profile (full
@@ -226,6 +229,7 @@ std::vector<txb::TurnScript> threeDays(const txb::Battery& b) {
 void test_compaction_covers_every_row() {
   TXB_WAITS_FOR("PENDING RB-C2", "RB-E1a");
   txb::Battery b;
+  b.compactFirst = false;   // the idle step's compaction (the engine's own asks: test_plain_compact, lane RB-C3)
   b.world.files["notes/boat.md"] = "Nereid II";
   TXB_OK(txb::runTurns(b, threeDays(b)));
   answerSummariesWith(b, [] { return sp::say(txb::kDigest); });
@@ -239,17 +243,15 @@ void test_compaction_covers_every_row() {
   size_t digests = 0;
   for (const tx::Item& it : items) digests += it.kind == tx::ItemKind::Digest;
   TEST_ASSERT_TRUE_MESSAGE(digests > 0, "the compaction stored no digest");
-  // At full every compaction leaves at least the head's v5.1.2 keep of owner and assistant text.
+  // At full every compaction leaves at least the recent part (rulings 105 and 106, lane RB-C3: L, what a
+  // request renders of the newest whole turns; v5.1.2's text keep binds only an owner's larger recent part).
   uint64_t thru = 0;
   for (const tx::Item& it : items)
     if (it.kind == tx::ItemKind::Digest) thru = std::max(thru, it.thru);
-  size_t text = 0;
-  for (const tx::Item& it : items)
-    if (it.q > thru && (it.kind == tx::ItemKind::User || it.kind == tx::ItemKind::Assistant)) text += it.x.size();
   tx::HeadBudget head;
   TXB_OK(tx::budgetFor(b.headKey(), b.profile, head));
   TEST_ASSERT_EQUAL((int)tx::Profile::Full, (int)b.profile);
-  TEST_ASSERT_TRUE_MESSAGE(text >= head.releasedKeep, "a compaction at full left less text than v5.1.2's keep");
+  TEST_ASSERT_TRUE_MESSAGE(plain::residentBytes(*b.arena, thru) >= head.marks.low, "a compaction left less than the recent part");
   std::string why;
   TEST_ASSERT_TRUE_MESSAGE(txb::itemsPaired(items, why), why.c_str());
   expectLastRequestCovers(b);
@@ -261,6 +263,7 @@ void test_a_failed_compaction_leaves_every_row_covered() {
   TXB_WAITS_FOR("PENDING RB-C2", "RB-E1a");
   for (int mode = 0; mode < 4; ++mode) {
     txb::Battery b;
+    b.compactFirst = false;   // the idle step's compaction (lane RB-C3)
     b.world.files["notes/boat.md"] = "Nereid II";
     TXB_OK(txb::runTurns(b, threeDays(b)));
     if (mode == 0) answerSummariesWith(b, [] { return sp::transportCut(45000); });
@@ -270,11 +273,11 @@ void test_a_failed_compaction_leaves_every_row_covered() {
       answerSummariesWith(b, [] { return sp::say(txb::kDigest); });
       b.files.killAtRename = (long)b.files.renames;
     }
-    const size_t asked = b.model.requests().size();
+    const size_t asked = b.summarizer.requests().size();
     plain::IdleOutcome out;
     const tx::Status st = b.idle(out);
     if (st.notImplemented()) TXB_OK(st);
-    TEST_ASSERT_TRUE_MESSAGE(b.model.requests().size() > asked, "no compaction was attempted");
+    TEST_ASSERT_TRUE_MESSAGE(b.summarizer.requests().size() > asked, "no compaction was attempted");
     if (mode == 3) TEST_ASSERT_TRUE_MESSAGE(b.killed, "the compaction never renamed head.json (temp and rename)");
     if (b.killed) TXB_OK(b.restartAfterCut());
     b.model.respondWith(nullptr);

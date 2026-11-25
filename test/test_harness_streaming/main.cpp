@@ -87,11 +87,12 @@ static std::string nestedObj(int depth) {
 // of the shallow retained field (outputs[].message.output.content). ArduinoJson
 // counts nesting for skipped subtrees too, so the shared kResponseNestingLimit
 // must clear real connector-response depth. (Regression guard: at the old limit 16
-// this lost the reply the streaming path exists to deliver.)
+// this lost the reply the streaming path exists to deliver.) The skipped subtree sits
+// 3 levels down, so 28 more levels reach 31, inside the limit of 32.
 static void test_deep_filtered_subtree_still_yields_reply() {
   std::string body =
       "{\"conversation_id\":\"c\",\"outputs\":["
-      "{\"type\":\"tool.execution\",\"result\":" + nestedObj(40) + "},"
+      "{\"type\":\"tool.execution\",\"result\":" + nestedObj(28) + "},"
       "{\"type\":\"message.output\",\"content\":\"KEEP-ME\"}]}";
   std::istringstream iss(body);
   JsonDocument filter = conversationFilter();
@@ -105,6 +106,30 @@ static void test_deep_filtered_subtree_still_yields_reply() {
     if (std::string(o["type"] | "") == "message.output") content = o["content"];
   TEST_ASSERT_NOT_NULL(content);
   TEST_ASSERT_EQUAL_STRING("KEEP-ME", content);
+}
+
+// The nesting limit is 32 (lane E2-STACK, from 64): a reply nested 32 deep parses whole,
+// one nested 33 deep ends in the true parse line, never a crash or a silent fragment.
+static void test_execjson_nesting_limit_is_32() {
+  TEST_ASSERT_EQUAL(32, agent::kResponseNestingLimit);
+  JsonDocument keepAll;
+  keepAll.set(true);
+  for (int depth : {32, 33}) {
+    harness_test::FakeHttpTransport http;
+    http.script.push_back({"", "", 200, nestedObj(depth)});
+    HttpRequest req;
+    JsonDocument doc;
+    std::string err;
+    TEST_ASSERT_EQUAL(200, http.execJson(req, doc, keepAll, err));
+    if (depth == 32) {
+      TEST_ASSERT_EQUAL_STRING("", err.c_str());
+      JsonVariantConst v = doc.as<JsonVariantConst>();
+      for (int i = 0; i < 32; i++) v = v["a"];
+      TEST_ASSERT_EQUAL(1, v.as<int>());
+    } else {
+      TEST_ASSERT_EQUAL_STRING("response parse failed: TooDeep", err.c_str());
+    }
+  }
 }
 
 // HttpTransport::execJson default (host/fake path) filter-parses the scripted body.
@@ -140,6 +165,7 @@ int main() {
   RUN_TEST(test_stream_filter_drops_fat_payload);
   RUN_TEST(test_retained_set_is_bounded);
   RUN_TEST(test_deep_filtered_subtree_still_yields_reply);
+  RUN_TEST(test_execjson_nesting_limit_is_32);
   RUN_TEST(test_execjson_default_filters);
   RUN_TEST(test_execjson_transport_error);
   return UNITY_END();

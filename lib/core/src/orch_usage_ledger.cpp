@@ -74,6 +74,14 @@ static void rollTo(ProviderBudget* e, uint32_t periodKey) {
   e->tokensOut = 0;
   e->cacheRead = 0;
   e->cacheWrite = 0;
+  e->cacheWrite1h = 0;   // E2-FIX6: kept past a roll it outgrew cacheWrite (estCents wrapped)
+}
+
+// The 1-hour part of a provider's writes, added and kept within its writes (E2-FIX6).
+static void addLongWrites(ProviderBudget* e, uint64_t n) {
+  if (!e || !n) return;
+  const uint64_t sum = e->cacheWrite1h + n < e->cacheWrite1h ? UINT64_MAX : e->cacheWrite1h + n;
+  e->cacheWrite1h = sum < e->cacheWrite ? sum : e->cacheWrite;
 }
 
 void UsageLedger::recordTokens(const std::string& name, uint64_t n, uint32_t periodKey) {
@@ -181,10 +189,7 @@ void UsageLedger::recordTokens(const std::string& name, const TokenDelta& d,
   if (model && *model && !models_.tracking()) startTracking();
   const char* key = models_.spendKey(model);
   recordTokens(name, d.in, d.out, d.cacheR, d.cacheW, periodKey, tag);
-  if (d.cacheW1h) {   // R3: the 1-hour-TTL part, priced at 2x at estimate time
-    ProviderBudget* e = ensure(name);
-    if (e) e->cacheWrite1h += d.cacheW1h;
-  }
+  if (d.cacheW1h) addLongWrites(ensure(name), d.cacheW1h);   // R3: the 1-hour-TTL part, priced at 2x
   // Every row follows its own provider's period: a provider that rolled zeroes its
   // rows' period counters, one that first synced carries its pre-sync rows along.
   models_.syncPeriods(&UsageLedger::periodOf, this);
@@ -375,6 +380,7 @@ TokenDelta periodTokens(const ProviderBudget& e) {
   t.out = e.tokensOut;
   t.cacheR = e.cacheRead;
   t.cacheW = e.cacheWrite;
+  t.cacheW1h = e.cacheWrite1h < e.cacheWrite ? e.cacheWrite1h : e.cacheWrite;   // E2-FIX6: priced at 2x
   return t;
 }
 
@@ -387,6 +393,7 @@ TokenDelta minus(const TokenDelta& a, const TokenDelta& b) {
   t.out = a.out > b.out ? a.out - b.out : 0;
   t.cacheR = a.cacheR > b.cacheR ? a.cacheR - b.cacheR : 0;
   t.cacheW = a.cacheW > b.cacheW ? a.cacheW - b.cacheW : 0;
+  t.cacheW1h = minU(a.cacheW1h > b.cacheW1h ? a.cacheW1h - b.cacheW1h : 0, t.cacheW);
   return t;
 }
 
@@ -401,10 +408,12 @@ TokenDelta claim(const ModelSpend& r, TokenDelta& rem) {
   t.out = minU(r.tokOut, rem.out);
   t.cacheR = minU(r.cacheR, rem.cacheR);
   t.cacheW = minU(r.cacheW, rem.cacheW);
+  t.cacheW1h = minU(minU(r.cacheW1h, rem.cacheW1h), t.cacheW);   // E2-FIX6: the row's 1-hour part
   rem.in -= t.in;
   rem.out -= t.out;
   rem.cacheR -= t.cacheR;
   rem.cacheW -= t.cacheW;
+  rem.cacheW1h = minU(rem.cacheW1h - t.cacheW1h, rem.cacheW);   // never more than the writes left
   return t;
 }
 
@@ -571,6 +580,7 @@ TokenDelta UsageLedger::earlierUsage(const ProviderBudget& e) const {
   pre.out = minU(t->pre.out, all.out);
   pre.cacheR = minU(t->pre.cacheR, all.cacheR);
   pre.cacheW = minU(t->pre.cacheW, all.cacheW);
+  pre.cacheW1h = minU(minU(t->pre.cacheW1h, all.cacheW1h), pre.cacheW);
   return pre;
 }
 
@@ -751,6 +761,7 @@ void addBucket(const UsageLedger& L, MicroSum& m, const DayUsage& e) {
   t.out = e.tokOut;
   t.cacheR = e.cacheR;
   t.cacheW = e.cacheW;
+  t.cacheW1h = minU(e.cacheW1h, e.cacheW);   // E2-FIX6
   m.addTokens(t, e.model[0] ? L.rowRate(e.prov, e.model) : L.residualRate(e.prov));
   if (e.calls) m.addCalls(e.calls, L.callRate(e.prov));
 }
@@ -1009,6 +1020,7 @@ void UsageLedger::addLost(const ProviderBudget& e, const TokenDelta& gap) {
   t->lost.out = addSat(t->lost.out, gap.out, sat);
   t->lost.cacheR = addSat(t->lost.cacheR, gap.cacheR, sat);
   t->lost.cacheW = addSat(t->lost.cacheW, gap.cacheW, sat);
+  t->lost.cacheW1h = minU(addSat(t->lost.cacheW1h, gap.cacheW1h, sat), t->lost.cacheW);   // E2-FIX6
 }
 
 // The usgLedger blob carries a folded provider's period input with its cache tokens
@@ -1108,6 +1120,7 @@ HistTotals historyFor(const UsageHistory& h, const std::string& prov, uint8_t re
     t.d.out = addSat(t.d.out, b.tokOut, sat);
     t.d.cacheR = addSat(t.d.cacheR, b.cacheR, sat);
     t.d.cacheW = addSat(t.d.cacheW, b.cacheW, sat);
+    t.d.cacheW1h = addSat(t.d.cacheW1h, b.cacheW1h, sat);
     t.calls = addSat(t.calls, b.calls, sat);
   }
   return t;
@@ -1118,6 +1131,7 @@ void UsageLedger::addSpend(const std::string& name, const TokenDelta& d, uint32_
                            uint32_t periodKey) {
   if (!d.empty()) {
     recordTokens(name, d.in, d.out, d.cacheR, d.cacheW, periodKey, std::string());
+    if (d.cacheW1h) addLongWrites(ensure(name), d.cacheW1h);   // E2-FIX6
     const ProviderBudget* e = find(name);
     if (e && models_.tracking()) addLost(*e, d);
   }
@@ -1144,6 +1158,8 @@ UsageLedger::HistoryGap gapFor(const std::string& prov, const ProviderBudget* e,
     g.d.in = gapOf(t.d.in, current ? e->tokensIn : 0);
     g.d.cacheR = gapOf(t.d.cacheR, current ? e->cacheRead : 0);
     g.d.cacheW = gapOf(t.d.cacheW, current ? e->cacheWrite : 0);
+    const uint64_t longGap = gapOf(t.d.cacheW1h, current ? e->cacheWrite1h : 0);
+    g.d.cacheW1h = longGap < g.d.cacheW ? longGap : g.d.cacheW;   // E2-FIX6
   }
   g.d.out = gapOf(t.d.out, current ? e->tokensOut : 0);
   g.calls = (uint32_t)gapOf(t.calls, current ? e->calls : 0);
@@ -1192,6 +1208,7 @@ void UsageLedger::mergeSpendSince(const UsageLedger& base, const UsageLedger& no
       d.in = gapOf(e.tokensIn, same ? b->tokensIn : 0);
       d.cacheR = gapOf(e.cacheRead, same ? b->cacheRead : 0);
       d.cacheW = gapOf(e.cacheWrite, same ? b->cacheWrite : 0);
+      d.cacheW1h = minU(gapOf(e.cacheWrite1h, same ? b->cacheWrite1h : 0), d.cacheW);   // E2-FIX6
     }
     d.out = gapOf(e.tokensOut, same ? b->tokensOut : 0);
     const uint32_t calls = (uint32_t)gapOf(e.calls, same ? b->calls : 0);
@@ -1338,8 +1355,10 @@ void UsageLedger::deserialize(const std::string& s) {
       tags_.push_back(std::move(t));
       continue;
     }
-    std::string parts[18];
-    int np = splitBars(group, parts, 18);
+    // 19 fields since R3's 1-hour tail (field 18): an array of 18 never read it, so the 1-hour part
+    // was lost at every load and priced at the 5-minute rate after a restart (lane E2-FIX6).
+    std::string parts[19];
+    int np = splitBars(group, parts, 19);
     if (np < 7 || parts[0].empty()) continue;   // malformed group -> skip
     if (entries_.size() >= kMaxProviders) break;
     ProviderBudget e;
@@ -1389,6 +1408,7 @@ void mergeInto(DayUsage& dst, const DayUsage& src) {
   dst.calls += src.calls;
   dst.cacheR += src.cacheR;
   dst.cacheW += src.cacheW;
+  dst.cacheW1h += src.cacheW1h;
 }
 void setModel(DayUsage& e, const char* m) {
   const size_t n = std::strlen(m);
@@ -1514,6 +1534,7 @@ void UsageHistory::record(const std::string& prov, const char* model, uint32_t d
   e->calls += calls;
   e->cacheR += d.cacheR;
   e->cacheW += d.cacheW;
+  e->cacheW1h += d.cacheW1h < d.cacheW ? d.cacheW1h : d.cacheW;
 }
 
 int UsageHistory::prune(uint32_t todayKey, uint32_t keepDays) {
@@ -1538,11 +1559,13 @@ std::string UsageHistory::serialize() const {
     out.push_back('|'); appendU64(out, e.tokIn);
     out.push_back('|'); appendU64(out, e.tokOut);
     out.push_back('|'); appendU64(out, e.calls);
-    // 2026-10 tail (fields 6-8), each present only when it or a later one is set.
-    const int tail = e.cacheW ? 3 : e.cacheR ? 2 : e.model[0] ? 1 : 0;
+    // 2026-10 tail (fields 6-8), each present only when it or a later one is set; field 9 the
+    // 1-hour part of the writes (E2-FIX6).
+    const int tail = e.cacheW1h ? 4 : e.cacheW ? 3 : e.cacheR ? 2 : e.model[0] ? 1 : 0;
     if (tail >= 1) { out.push_back('|'); out += e.model; }
     if (tail >= 2) { out.push_back('|'); appendU64(out, e.cacheR); }
     if (tail >= 3) { out.push_back('|'); appendU64(out, e.cacheW); }
+    if (tail >= 4) { out.push_back('|'); appendU64(out, e.cacheW1h); }
   }
   return out;
 }
@@ -1557,8 +1580,8 @@ void UsageHistory::deserialize(const std::string& s) {
     std::string group = s.substr(i, semi - i);
     i = semi + 1;
     if (group.empty()) continue;
-    std::string parts[8];
-    int np = splitBars(group, parts, 8);
+    std::string parts[9];
+    int np = splitBars(group, parts, 9);
     if (np < 5 || parts[1].empty()) continue;   // malformed group -> skip
     if (entries_.size() >= kMaxEntries) break;
     DayUsage d;
@@ -1570,6 +1593,8 @@ void UsageHistory::deserialize(const std::string& s) {
     if (np > 5 && histModelOk(parts[5].c_str())) setModel(d, parts[5].c_str());
     if (np > 6) d.cacheR = (uint64_t)strtoull(parts[6].c_str(), nullptr, 10);
     if (np > 7) d.cacheW = (uint64_t)strtoull(parts[7].c_str(), nullptr, 10);
+    if (np > 8) d.cacheW1h = (uint64_t)strtoull(parts[8].c_str(), nullptr, 10);
+    if (d.cacheW1h > d.cacheW) d.cacheW1h = d.cacheW;
     if (d.dayKey == 0) continue;
     entries_.push_back(std::move(d));
   }

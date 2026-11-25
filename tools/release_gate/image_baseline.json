@@ -1,6 +1,6 @@
 {
-  "about": "Image bytes per built env at sha, measured by check_image_size.py --record-baseline: image_bytes is firmware.bin, docs_pack_bytes is the docs pack read from firmware.elf (the tables named in docs_pack_tables plus every string they point at, merged literals once), code_bytes is the difference. A lane's code delta against this row must be at most its allowance in image_budget.d/<lane>.json. Re-recorded after each merge into the integration branch, on the merge commit, so the next lane is measured against the line it joins.",
-  "sha": "ca1ab53c4321a35f2504449485697951af01d2b4",
+  "about": "Image bytes per built env at sha, measured by check_image_size.py --record-baseline: image_bytes is firmware.bin, docs_pack_bytes is the docs pack read from firmware.elf (the tables named in docs_pack_tables plus every string they point at, merged literals once), code_bytes is the difference. A lane's code delta against this row must be at most its allowance in image_budget.d/<lane>.json. Re-recorded after each merge into the integration branch, on the merge commit, so the next lane is measured against the line it joins. required_envs: the envs every lane builds (the battery's six); check_image_size.py --lane needs them built and judges the other baseline envs when they are built. Re-recorded at dacf308ad (rb-main 5f8c2d739 plus lane E2-INT1) by lane E2-INT1 (24 Nov 2026); before that at rb-main 902391f7f by lane E2-GATE for the 13 device envs tools/build_all.sh builds that carry a build id (provision, a separate sketch, carries none and has no row).",
+  "sha": "dacf308adb23667ac730db63a3a0dad36f3b541a",
   "docs_pack_tables": [
     {
       "symbol": "_ZN6nimbus4docs13kDocsSectionsE",
@@ -22,24 +22,77 @@
   ],
   "envs": {
     "esp32s3": {
-      "image_bytes": 6328480,
-      "docs_pack_bytes": 414029,
-      "code_bytes": 5914451
+      "image_bytes": 6332592,
+      "docs_pack_bytes": 415888,
+      "code_bytes": 5916704
     },
     "esp32s3-cyd": {
-      "image_bytes": 6363424,
-      "docs_pack_bytes": 414029,
-      "code_bytes": 5949395
+      "image_bytes": 6367568,
+      "docs_pack_bytes": 415888,
+      "code_bytes": 5951680
+    },
+    "esp32s3-cyd-35": {
+      "image_bytes": 6367648,
+      "docs_pack_bytes": 415888,
+      "code_bytes": 5951760
+    },
+    "esp32s3-cyd-35-e2": {
+      "image_bytes": 6281376,
+      "docs_pack_bytes": 415888,
+      "code_bytes": 5865488
+    },
+    "esp32s3-cyd-40": {
+      "image_bytes": 6367648,
+      "docs_pack_bytes": 415888,
+      "code_bytes": 5951760
+    },
+    "esp32s3-cyd-40-e2": {
+      "image_bytes": 6281360,
+      "docs_pack_bytes": 415888,
+      "code_bytes": 5865472
+    },
+    "esp32s3-cyd-e2": {
+      "image_bytes": 6281296,
+      "docs_pack_bytes": 415888,
+      "code_bytes": 5865408
+    },
+    "esp32s3-e2": {
+      "image_bytes": 6246624,
+      "docs_pack_bytes": 415888,
+      "code_bytes": 5830736
+    },
+    "notifierdbg": {
+      "image_bytes": 6329248,
+      "docs_pack_bytes": 415888,
+      "code_bytes": 5913360
     },
     "test": {
-      "image_bytes": 6484608,
-      "docs_pack_bytes": 414029,
-      "code_bytes": 6070579
+      "image_bytes": 6491024,
+      "docs_pack_bytes": 415888,
+      "code_bytes": 6075136
     },
     "test-cyd": {
-      "image_bytes": 6519520,
-      "docs_pack_bytes": 414029,
-      "code_bytes": 6105491
+      "image_bytes": 6525952,
+      "docs_pack_bytes": 415888,
+      "code_bytes": 6110064
+    },
+    "test-cyd-e2": {
+      "image_bytes": 6448048,
+      "docs_pack_bytes": 415888,
+      "code_bytes": 6032160
+    },
+    "test-e2": {
+      "image_bytes": 6413440,
+      "docs_pack_bytes": 415888,
+      "code_bytes": 5997552
     }
-  }
+  },
+  "required_envs": [
+    "esp32s3",
+    "esp32s3-cyd",
+    "test",
+    "test-cyd",
+    "esp32s3-cyd-e2",
+    "test-cyd-e2"
+  ]
 }

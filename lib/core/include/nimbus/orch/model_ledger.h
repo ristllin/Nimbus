@@ -59,6 +59,7 @@ struct ModelSpend {
   uint32_t periodKey = 0;            // the provider period these counters belong to
   uint64_t tokIn = 0, tokOut = 0;    // this period
   uint64_t cacheR = 0, cacheW = 0;   // this period (excluded-from-input providers only)
+  uint64_t cacheW1h = 0;             // the 1-hour-TTL part of cacheW this period (2x input; E2-FIX6)
   uint64_t totIn = 0, totOut = 0;    // all time (never rolls)
   uint32_t lastDay = 0;              // UTC day of the last record (eviction order)
 };

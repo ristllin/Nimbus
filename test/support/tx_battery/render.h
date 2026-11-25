@@ -11,6 +11,7 @@
 #include "nimbus/harness/plain/wire.h"
 #include "nimbus/orch/tx/arena.h"
 #include "props.h"
+#include "rows.h"
 
 // tx_battery/render.h - one request rendered from a stored transcript through a dialect's
 // real WireCodec (lane RB-B0b), read back into a RequestView. The wire-level properties
@@ -53,7 +54,25 @@ struct RenderFixture {
              {"ledger_write", "Change the ledger.", R"({"type":"object","properties":{"day":{"type":"string"}}})"},
              {"web_search", "Search the web.", R"({"type":"object","properties":{"q":{"type":"string"}}})"}};
     photoBytes["pab12cd34"] = std::string("\xFF\xD8\xFF\xE0", 4) + std::string(996, 'j');
+    // Lane E2-R6: a chat dialect renders as a head of that dialect, through its route and pre-flight:
+    // Z.ai for chat (its ids pass through, so the checkers find the stored ids), a custom endpoint for text mode.
+    if (d == plain::Dialect::ChatCompletions || d == plain::Dialect::Flat) {
+      const bool chat = d == plain::Dialect::ChatCompletions;
+      turn.host = head.host = chat ? "api.z.ai" : "custom.example.test";
+      turn.model = chat ? "glm-5.3" : "battery-model";
+      routeAndPreflight = true;
+    }
   }
+  // The same inputs for one provider table row (lane E2-R3a): its dialect, endpoint, model and route.
+  explicit RenderFixture(const Row& r) : RenderFixture(r.dialect) {
+    turn.host = r.host;
+    turn.model = turnModel(r);
+    head.host = r.host;
+    head.routed = r.routed;
+    routeAndPreflight = r.dialect == plain::Dialect::ChatCompletions || r.dialect == plain::Dialect::Flat;
+  }
+  // Lane E2-R6: a chat row renders as the exchange sends it, through its route and pre-flight.
+  bool routeAndPreflight = false;
 };
 
 struct Rendered {
@@ -64,7 +83,7 @@ struct Rendered {
 
 // Load `items` into a fresh arena (RB-T1) and render one request (the dialect's lane).
 inline tx::Status renderItems(const RenderFixture& fx, const Convo& c, uint64_t pointer, Rendered& out,
-                              uint32_t openTurn = 0) {
+                              uint32_t openTurn = 0, bool toolChoiceNone = false) {
   tx::TxArena arena;
   tx::Status st = arena.init(tx::kActiveChatArenaBytes, [](size_t n) { return std::malloc(n); }, [](void* p) { std::free(p); });
   if (!st.ok()) return st;
@@ -83,6 +102,7 @@ inline tx::Status renderItems(const RenderFixture& fx, const Convo& c, uint64_t 
   in.items = &arena;
   in.stubPointer = pointer;
   in.maxTokens = 4096;
+  in.toolChoiceNone = toolChoiceNone;   // the guard's last round (lane E2-R3a, property 2)
   const auto* bulk = &c.bulk;
   in.bulk = [bulk](const std::string& handle, std::string& o) {
     auto it = bulk->find(handle);
@@ -100,6 +120,12 @@ inline tx::Status renderItems(const RenderFixture& fx, const Convo& c, uint64_t 
     o.fileId = "file_" + ref;
     return tx::Status::success();
   };
+  plain::Route route;
+  plain::PreflightState own;
+  if (fx.routeAndPreflight) {
+    if (!(st = plain::resolveRoute(fx.head, turn, route)).ok()) return st;
+    (void)plain::preflight(route, 0, own, in);
+  }
   if (!(st = wire->render(in, out.req)).ok()) return st;
   out.body = agent::materializeBody(out.req);
   sp::parseRequest(viewDialect(fx.dialect, out.req.path), out.body, out.view);

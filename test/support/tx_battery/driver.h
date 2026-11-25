@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm>
 #include <cstdlib>
+#include <map>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -17,10 +18,12 @@
 #include "nimbus/harness/plain/rails.h"
 #include "nimbus/harness/plain/resume.h"
 #include "nimbus/harness/platform.h"
+#include "nimbus/net/tg_inbox.h"
 #include "nimbus/orch/tx/arena.h"
 #include "nimbus/orch/tool_registry.h"
 #include "nimbus/orch/tx/log.h"
 #include "props.h"
+#include "rows.h"
 #include "stub_wire.h"
 #include "world.h"
 
@@ -37,6 +40,13 @@ namespace txb {
 
 namespace plain = agent::plain;
 
+// What the battery's summarizer answers unless a case says otherwise: changes to the cumulative
+// summary (lane RB-C3, tx::parseSummaryEdits).
+inline constexpr const char* kSummaryAnswer =
+    "+F The owner asked about the boat, read files and searched the web.\n"
+    "+F He prefers short answers.\n"
+    "+Q The boat Nereid II is 9.5 m long.";
+
 class Battery {
  public:
   explicit Battery(plain::Dialect d = plain::Dialect::AnthropicMessages) : dialect(d) {
@@ -50,12 +60,27 @@ class Battery {
     channel.isAllowed = [](const std::string&) { return true; };
     channel.firstAllowedChat = [this] { return chatKey; };
     model.clock = &ms;
+    summarizer.clock = &ms;
+    summarizer.respondWith([](const sp::Recorded&, size_t) { return sp::say(kSummaryAnswer); });
     registerTools();
+  }
+  // A battery on one provider table row (lane E2-R3a): its dialect, endpoint, model, route, and the
+  // scripted provider answering in that provider's own chat shape.
+  explicit Battery(const Row& r) : Battery(r.dialect) {
+    hostOverride = r.host;
+    modelOverride = turnModel(r);   // a routed chat row names its upstream (lane E2-R6)
+    routed = r.routed;
+    model.chatShape = r.slot == caps::Slot::Mistral ? sp::ChatShape::Mistral
+                      : r.slot == caps::Slot::Zai   ? sp::ChatShape::Zai
+                                                    : sp::ChatShape::OpenAI;
   }
 
   plain::Dialect dialect;
   std::string chatKey = "1001";
   sp::ScriptedProvider model;
+  // The summarizer's own provider (lane RB-C3): compaction runs at turn open and inside a turn too, so its
+  // requests never take a step the head's script holds. A case that answers summaries sets its responder.
+  sp::ScriptedProvider summarizer;
   MemFiles files;
   World world;
   std::vector<SentMessage> sent;
@@ -78,7 +103,26 @@ class Battery {
   // dialect's), a head through the router, and a delivery of its own (null: deliverTurn).
   std::string hostOverride, modelOverride;
   bool routed = false;
+  bool toolsVerified = false;      // a custom endpoint whose verify accepted a tool call (lane E2-R8a)
   bool noHead = false;             // the setup names no model (a binding fault; ruling 89 item 3)
+  // Compaction installed (default). A case that measures the arena or the ladder alone turns it off: since
+  // lane RB-C3 the engine compacts first at turn open and before every rung, so the ladder would never act.
+  bool compaction = true;
+  // Compaction answers the engine's own asks at turn open and inside a turn (default). A case written for
+  // the idle step alone turns this off: the driver then runs only from idle steps, as before lane RB-C3.
+  bool compactFirst = true;
+  std::unique_ptr<plain::CompactDriver> idleDriver;
+  void installIdleOnlyCompaction() {
+    idleDriver.reset(new plain::CompactDriver(compactDeps()));
+    plain::CompactDriver* d = idleDriver.get();
+    (void)hooks->idleStep(plain::HookSlot::Compaction, [d](const plain::IdleCtx& ctx) {
+      plain::IdleOutcome o;
+      if (ctx.urgency != plain::Urgency::None) return o;
+      plain::CompactOutcome out;
+      o.worked = d->step(ctx, out).ok() && out.ran;
+      return o;
+    });
+  }
   // The profile every turn asks for: the default, full (ruling 91, blockers/F8). A case that tests an
   // owner's smaller choice names it here.
   tx::Profile profile = tx::kDefaultProfile;
@@ -86,6 +130,9 @@ class Battery {
   plain::DeliverFn deliverFn;
   plain::HeadCost cost;            // what the guards scale from (TurnSetup::cost)
   int storedRounds = 0;            // the stored orchLoopRnds (TurnSetup::storedRounds)
+  std::function<void(const plain::ProgressEvent&)> progressFn;   // EngineDeps::progress (RB-X3)
+  plain::TurnCeiling routineCeiling;   // TurnSetup::ceiling for a Routine turn (RB-U1a); none by default
+  uint32_t bodyCapLimit = 0;       // TurnSetup::bodyCapLimit (lane E2-FIX9): a smaller body cap; 0: the head's
 
   // Process state: gone at a power cut, rebuilt by boot().
   agent::Platform platform;
@@ -104,7 +151,15 @@ class Battery {
   bool refuseSends = false;            // the channel refuses every send (no network at boot; RB-X1)
   size_t arenaBytes = tx::kActiveChatArenaBytes;   // the chat's arena at each boot (RB-X1: a small one)
   std::function<void(plain::PlainHooks&)> moreHooks;   // a test's own handlers, installed at each boot
+  bool registryDispatch = false;   // E2-P-OUT2: calls run on `reg` as the device binding runs them (dispatchCall)
   size_t dispatches = 0;
+  bool inboxRefuses = false;       // no card for the inbox: a long owner text passes whole (RB-TG1)
+  plain::RailsDeps railsDeps;      // the rails' approval store (RB-RL); none: a pending change is refused
+  // The binding's photo hook (TurnSetup::photo; lane E2-FIX4): the stored bytes of a photo by ref, as the
+  // device reads them back from the card. Empty: no hook (every photo renders as its line).
+  std::map<std::string, std::string> photoStore;
+  // After the photo hook found a photo's bytes: the binding's file id step (lane E2-REP4). Null: none.
+  std::function<void(const std::string& ref, plain::PhotoBytes&)> photoFileId;
 
   // The head a turn of this battery names (host and model), for a test that builds its own TurnInput.
   plain::TurnCtx headCtx() const { return turnCtx(0, plain::Trigger::Owner); }
@@ -143,10 +198,38 @@ class Battery {
     }
     lastInput = plain::TurnInput{};
     lastInput.ctx = turnCtx(++turnNo, plain::Trigger::Owner);
-    lastInput.text = text;
-    lastInput.parts = std::move(parts);
     lastInput.src = {9000u + turnNo};
+    lastInput.text = intake(lastInput.src.front(), text);
+    lastInput.parts = std::move(parts);
     return deliverInput(lastInput, out);
+  }
+
+  // One owner message with the Telegram update ids it came in (RB-TG1: the seen index keys on
+  // them), as the Telegram intake hands it to the engine.
+  tx::Status ownerFrom(std::vector<uint64_t> src, const std::string& text, plain::TurnOutcome& out,
+                       std::vector<tx::Part> parts = {}) {
+    if (!engine) {
+      tx::Status st = boot();
+      if (!st.ok()) return st;
+    }
+    lastInput = plain::TurnInput{};
+    lastInput.ctx = turnCtx(++turnNo, plain::Trigger::Owner);
+    lastInput.text = intake(src.empty() ? 0 : src.front(), text);
+    lastInput.parts = std::move(parts);
+    lastInput.src = std::move(src);
+    return deliverInput(lastInput, out);
+  }
+
+  // A power cycle and the boot after it, with nothing redelivered by the battery itself (the
+  // caller's intake decides what Telegram serves again).
+  tx::Status powerCycle() {
+    engine.reset();
+    hooks.reset();
+    log.reset();
+    arena.reset();
+    files.clearFaults();
+    killAtSend = killBeforeSend = killAtDispatch = -1;
+    return boot(true);
   }
 
   // A turn no person started (a routine fire, an agent report): its text is the turn's device
@@ -229,6 +312,7 @@ class Battery {
     CoverInput in;
     in.items = &items;
     in.openTurn = turnNo;
+    in.bound = plain::boundTools(&reg);   // E2-FIX5: as the engine reads it
     for (const tx::Item& it : items)
       if (it.kind == tx::ItemKind::PointerMove) in.pointer = std::max(in.pointer, it.stub);
     in.readBulk = [this](const tx::Item& r, std::string& o) {
@@ -304,10 +388,24 @@ class Battery {
     out.dayStartMin = dayStartMin;
     out.head.host = t.host;
     out.head.routed = routed;
+    out.head.toolsVerified = toolsVerified;
     out.cost = cost;
     out.storedRounds = storedRounds;
+    out.bodyCapLimit = bodyCapLimit;
+    if (t.trigger == plain::Trigger::Routine) out.ceiling = routineCeiling;
     out.head.key = [] { return std::string("sk-fake-battery"); };
     out.wire = batteryWire(dialect);
+    if (!photoStore.empty())
+      out.photo = [this](const std::string& ref, plain::PhotoBytes& o) {
+        o = plain::PhotoBytes{};
+        auto it = photoStore.find(ref);
+        if (it == photoStore.end()) return tx::Status::fail(tx::Err::NotFound, "txb photo");
+        o.bytes = reinterpret_cast<const uint8_t*>(it->second.data());
+        o.len = it->second.size();
+        o.mime = "image/jpeg";
+        if (photoFileId) photoFileId(ref, o);
+        return tx::Status::success();
+      };
     return tx::Status::success();
   }
   static const char* hostFor(plain::Dialect d) {
@@ -336,6 +434,10 @@ class Battery {
     // Compaction is installed (install()); with no head named it cannot be (RB-T4's refusal), and the
     // battery names that case rather than let boot refuse it (ruling 91 blockers/F6, RB-H81).
     if (noHead) d.noCompaction = "battery: a turn setup that names no head";
+    if (!compaction) d.noCompaction = "battery: a case that measures the engine with no compaction (RB-C3)";
+    d.progress = [this](const plain::ProgressEvent& e) {
+      if (progressFn) progressFn(e);
+    };
     d.deliver = [this](const plain::DeliverInput& in, plain::DeliverOutcome& out) {
       return deliverFn ? deliverFn(in, out) : plain::deliverTurn(plain::DeliverDeps{&channel, hooks.get(), log.get()}, in, out);
     };
@@ -348,8 +450,9 @@ class Battery {
   void install() {
     (void)plain::installSuppression(*hooks);
     (void)plain::installResume(*hooks, resumeDeps());
-    (void)plain::installCompaction(*hooks, compactDeps());
-    (void)plain::installRails(*hooks, plain::RailsDeps{});
+    if (compaction && compactFirst) (void)plain::installCompaction(*hooks, compactDeps());
+    if (compaction && !compactFirst) installIdleOnlyCompaction();
+    (void)plain::installRails(*hooks, railsDeps);
     if (moreHooks) moreHooks(*hooks);
   }
 
@@ -378,6 +481,17 @@ class Battery {
   // world file, and throw_tool throws (a handler's own exception).
   plain::ToolOutput dispatch(const plain::ToolCall& c, const plain::TurnCtx& t) {
     if ((long)dispatches++ == killAtDispatch) throw Killed{"dispatch " + std::to_string(dispatches - 1) + " " + c.name};
+    if (registryDispatch) {
+      JsonDocument a;
+      (void)deserializeJson(a, c.argsJson);
+      const nimbus::orch::ToolResult r = reg.dispatch(c.name, a.as<JsonObjectConst>(), t.who ? *t.who : who);
+      plain::ToolOutput o;
+      o.id = c.id;
+      o.name = c.name;
+      o.isError = !r.success;
+      o.text = r.success ? r.output : r.error;
+      return o;
+    }
     if (c.name == "more") {
       JsonDocument a;
       if (deserializeJson(a, c.argsJson) || !a["name"].is<const char*>()) return world.dispatch(c, t);
@@ -410,7 +524,7 @@ class Battery {
   // runs; one rung, the dialect's wire on the head host; its control record and the chatsum
   // mirror in RAM (they outlive a power cut like storage does).
   plain::CompactDeps compactDeps() {
-    plain::CompactDeps d{&platform, &model, log.get(), arena.get()};
+    plain::CompactDeps d{&platform, &summarizer, log.get(), arena.get()};
     d.files = &files;
     d.chatKey = chatKey;
     d.chatId = chatKey;
@@ -473,6 +587,17 @@ class Battery {
       at = nl + 1;
     }
     return tx::Status::success();
+  }
+
+  // The Telegram intake of an owner text (RB-TG1, nimbus/net/tg_inbox.h): over the inline cap it
+  // is saved whole as inbox/<update id>.txt in the file store and the u text points at it.
+  std::string intake(uint64_t updateId, const std::string& text) {
+    const nimbus::net::InboxSave save = [this](const std::string& name, const std::string& whole) {
+      if (inboxRefuses) return false;
+      world.files["inbox/" + name] = whole;
+      return true;
+    };
+    return nimbus::net::ownerTextIntake(text, updateId, tx::kInlineMessageCap, save).text;
   }
 
   tx::Status deliverInput(const plain::TurnInput& in, plain::TurnOutcome& out) {

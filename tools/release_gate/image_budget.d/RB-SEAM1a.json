@@ -1,0 +1,11 @@
+{
+  "lane": "RB-SEAM1a",
+  "allowance_bytes": 512,
+  "envs": {
+    "esp32s3": 512,
+    "esp32s3-cyd": 512,
+    "test": 512,
+    "test-cyd": 512
+  },
+  "why": "PRD section 10: while S2 runs an engine-1 image moves by at most 512 B per lane. Same-tree builds on rb-main 5639d4dc9 (lanes/RB-SEAM1a/scratch/base) against the lane tip: esp32s3-cyd 6,334,896 -> 6,335,184 B (+288), esp32s3 +288, test +272, test-cyd +272 (tip 9c9e659ff, lanes/RB-SEAM1a/evidence/image-delta.txt); docs pack unchanged. No behavior change: the engine-neutral half of the device seam moves to src/agent/orchestrator_common.cpp, and a second object file pays its own literal pools and eh_frame entries, the out-of-line emitAsk and three engine-seam calls."
+}

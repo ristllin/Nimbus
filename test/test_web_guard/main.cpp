@@ -477,7 +477,8 @@ static std::vector<std::string> universePaths() {
   std::vector<std::string> out = {
       "src/agent/memory_subsystem.cpp", "src/agent/files_subsystem.cpp", "src/agent/skills.cpp",
       "src/agent/prefs_subsystem.cpp", "src/agent/safety_activity_store.cpp", "src/agent/tg_archive.cpp",
-      "src/agent/loops_subsystem.cpp", "src/agent/orchestrator.cpp", "src/agent/telegram.cpp",
+      "src/agent/loops_subsystem.cpp", "src/agent/orchestrator_e1.cpp", "src/agent/orchestrator_common.cpp",
+      "src/agent/telegram.cpp",
       "src/agent/store.cpp", "src/agent/health.cpp", "src/agent/dream_subsystem.cpp",
       "src/agent/connectors.cpp", "src/agent/spend_ceiling_store.cpp", "src/agent/provider_verify.cpp",
       "src/agent/model_refresh.cpp", "src/agent/device_log_tool.cpp", "src/agent/adapters/embeddings.cpp",
@@ -616,9 +617,29 @@ static std::string networkSeamIn(const std::string& text) {
   return std::string();
 }
 
+// A handler that is a named function of the same file (image.generate's imageTool since
+// E2-P-OUT2, so both engines run one copy): its body, appended to the registration's text.
+static std::string withNamedHandlers(const std::string& text, std::string reg) {
+  static const std::string kDef = "nimbus::orch::ToolResult ";
+  for (size_t d = text.find(kDef); d != std::string::npos; d = text.find(kDef, d + 1)) {
+    const size_t n = d + kDef.size();
+    size_t e = n;
+    while (e < text.size() && (isalnum((unsigned char)text[e]) || text[e] == '_')) ++e;
+    if (e == n || e >= text.size() || text[e] != '(') continue;
+    const std::string name = text.substr(n, e - n);
+    const size_t use = reg.find(name);
+    if (use == std::string::npos || use == 0 || isalnum((unsigned char)reg[use - 1]) || reg[use - 1] == '_') continue;
+    const char after = reg[use + name.size()];
+    if (after != ',' && after != ')' && after != '\n') continue;
+    reg += text.substr(d, text.find("\n}\n", d) - d);
+  }
+  return reg;
+}
+
 static void test_every_network_tool_runs_outside_the_dispatch_lock() {
   const char* const kToolFiles[] = {"src/agent/memory_subsystem.cpp", "src/agent/files_subsystem.cpp",
-                                    "src/agent/pdf_tool.cpp",         "src/agent/orchestrator.cpp",
+                                    "src/agent/pdf_tool.cpp",         "src/agent/orchestrator_e1.cpp",
+                                    "src/agent/orchestrator_common.cpp",
                                     "src/agent/loops_subsystem.cpp",  "src/agent/skills.cpp",
                                     "src/agent/model_refresh.cpp",    "src/agent/device_log_tool.cpp",
                                     "src/main.cpp",                   "src/sfx/music.cpp",
@@ -629,7 +650,7 @@ static void test_every_network_tool_runs_outside_the_dispatch_lock() {
     TEST_ASSERT_FALSE_MESSAGE(text.empty(), p);
     for (const auto& reg : registrations(text)) {
       ++tools;
-      const std::string seam = networkSeamIn(reg.second);
+      const std::string seam = networkSeamIn(withNamedHandlers(text, reg.second));
       if (seam.empty()) continue;
       ++network;
       TEST_ASSERT_TRUE_MESSAGE(toolWaitsOnNetwork(reg.first),

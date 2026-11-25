@@ -1224,11 +1224,14 @@ static void test_a_capped_index_still_folds_the_serial_backlog() {
   }
 }
 
-// The body of the function in src/agent/orchestrator.cpp that starts with `head`.
+// The body of the function in the device seam (src/agent/orchestrator_e1.cpp, then the
+// engine-neutral half src/agent/orchestrator_common.cpp, RB-SEAM1b) that starts with `head`.
 static std::string deviceFunctionBody(const char* head) {
-  std::ifstream f("src/agent/orchestrator.cpp");
   std::stringstream ss;
-  ss << f.rdbuf();
+  for (const char* path : {"src/agent/orchestrator_e1.cpp", "src/agent/orchestrator_common.cpp"}) {
+    std::ifstream f(path);
+    ss << f.rdbuf() << "\n";
+  }
   const std::string src = ss.str();
   const size_t at = src.find(head);
   TEST_ASSERT_TRUE_MESSAGE(at != std::string::npos, head);

@@ -41,6 +41,12 @@
 // never sit on internal SRAM). The transport writes that buffer as 4,096 B slices
 // (the record size the TLS client cuts a big write into anyway), with the photos
 // base64-encoded into each slice at send time (http.h BodySplice).
+namespace nimbus {
+namespace orch {
+class TurnImages;
+}  // namespace orch
+}  // namespace nimbus
+
 namespace agent {
 namespace providers {
 
@@ -273,6 +279,20 @@ int deletePendingUploads(const ProviderDeps& pd, int max = 1);
 bool keptUploadsDue(uint32_t nowMs);
 // Queue the deletion of every kept upload unused for an hour; returns how many.
 int tendKeptUploads(uint32_t nowMs);
+// Lane E2-REP4, engine 2 on a direct Anthropic head: uploadTurnPhotos uploads a turn's photos once
+// (the Files API; a failed one stays inline) and returns the count. photoFileId is the photo hook's
+// file id for photo `ref` of chat `chatKey`: the arriving message's photos (`arriving`) are uploaded
+// together through `upload` once, at the first request that shows one of them (the set's uploadTried),
+// before that request is rendered, and each id is kept under "p" + its ref. The answer is the kept id
+// while the provider holds it, else "": a photo whose upload failed, an earlier photo with no kept id
+// (sent inline before, or after a restart) and a forgotten id. So a photo's form is fixed at its first
+// request (an id while held, else bytes) and an earlier photo is never uploaded: its bytes never turn
+// into an id inside a cached part of the request.
+int uploadTurnPhotos(const ProviderDeps& pd, nimbus::orch::TurnImages& imgs);
+// Does uploadTurnPhotos serve a head on `provider` (its own slot, a direct key: not through the router)?
+bool uploadsPhotosFor(const std::string& provider, bool routed);
+std::string photoFileId(const std::string& chatKey, nimbus::orch::TurnImages* arriving, const std::string& ref,
+                        const std::function<int(nimbus::orch::TurnImages&)>& upload, uint32_t nowMs);
 
 // ---- head-orchestrator turns (std::string space) ----------------------------
 // Same contract as the engine's ProviderTurnFn: send system(instructions) +

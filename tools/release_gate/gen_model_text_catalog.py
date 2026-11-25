@@ -76,6 +76,8 @@ E1_SOURCES = {
         "lib/harness/include/nimbus/harness/jobs.h",
         "lib/harness/include/nimbus/harness/router_refusal.h",
         "lib/harness/src/apply.cpp",
+        "lib/harness/include/nimbus/harness/device_apply.h",  # E2-P-TOOLS: lifted out of apply.cpp
+        "lib/harness/src/device_apply.cpp",  # E2-P-TOOLS: lifted out of apply.cpp, byte-identical
         "lib/harness/src/conversation.cpp",
         "lib/harness/src/engine.cpp",
         "lib/harness/src/engine_fold.cpp",
@@ -88,7 +90,8 @@ E1_SOURCES = {
         "lib/harness/src/turn_contract.cpp",
         "lib/harness/src/turn_memory.cpp",
         "nimbusd/src/rig.h",
-        "src/agent/orchestrator.cpp",
+        "src/agent/orchestrator_common.cpp",  # RB-SEAM1b: the engine-neutral half of the device seam
+        "src/agent/orchestrator_e1.cpp",
         "src/main.cpp",
     ),
     "tool_results": (
@@ -111,6 +114,7 @@ E1_SOURCES = {
         "lib/core/src/orch_unattended_policy.cpp",
         "lib/harness/src/skill_store.cpp",
         "lib/harness/src/websearch.cpp",
+        "nimbusd/src/hosted_file_tools.h",  # E2-HOST: the reserved-name refusal of the hosted file tools (ruling 112)
         "nimbusd/src/hosted_loops.h",
         "nimbusd/src/hosted_photos.h",
         "nimbusd/src/hosted_skills.h",
@@ -138,12 +142,25 @@ E1_SOURCES = {
 # added under SCAN_DIRS with prose literals outside a log call must be in a catalog or here
 # (check_no_prompt_patch.py, with a git base).
 NON_MODEL_FILES: dict = {
+    "lib/harness/include/nimbus/harness/plain/surface.h": "E2-P-SURF: the summary card's note and the busy lines of "
+    "the engine-2 web pages, text for the person at the page, never sent to a model",
+    "src/net/web_engine2.cpp": "E2-P-SURF: the one busy line of the engine-2 web pages, for the person at the page, "
+    "never sent to a model",
+    "lib/harness/src/plain_surface.cpp": "E2-P-SURF (PC-0250, PC-0251): the web pages of an engine-2 chat (the turn "
+    "inspector, the turn log, the summary card): text and JSON for the person at the page, never sent to a model",
+    "src/agent/tools_plain_device.cpp": "E2-P-TOOLS: the device binding of the bound groups; its literals are the "
+    "provider slug a head switch is held to and the registry name models.list is reached by, never prose",
+    "nimbusd/src/engine2_host.h": "E2-HOST: the startup switch's refusal line (the daemon log) and two owner-facing "
+    "lines of the hosted engine-2 chat (a non-Claude model picked, a chat that could not start), sent to the owner's "
+    "chat, never to a model",
     "lib/core/include/nimbus/orch/day_start.h": "RB-REC5: the day start setting's error sentence for the web page and "
     "/api/config, never sent to a model (the stamp's own words are in lib/core/src/orch_day_start.cpp, catalogued)",
     "lib/core/src/ota_channel.cpp": "RB-OTA2: the owner's /ota answers and the /api/ota/channel JSON lines, sent to the "
     "owner's chat or a web client as device copy, never to a model",
     "src/net/ota_channel_routes.cpp": "RB-OTA2: the route's 401 body for a web client (the same literal every owner "
     "route sends), never sent to a model",
+    "lib/core/include/nimbus/ota/way_back.h": "E2-P-REL: the owner's /update back answers (the way back to the "
+    "stable release), sent to the owner's chat as device copy, never to a model",
     # RB-Q1c: the send seam. Its one literal is the owner-facing overflow line of a reply over
     # kTelegramMaxParts parts (moved byte for byte from src/agent/telegram.cpp send()); it goes
     # to the chat, never into a request (history keeps the engine's reply, not the parts).
@@ -156,6 +173,54 @@ NON_MODEL_FILES: dict = {
     "governor's owner notice, never system text, a tool or a tool result",
     "src/agent/budget_profile_store.cpp": "RB-BG: the /budget profile reply when the file does not store, owner "
     "copy, never sent to a model",
+    # E2-DEV: the engine-2 device seam. Every model-facing byte is the engine's (plain/texts.h); the seam's
+    # own literals are owner-facing device copy delivered with system provenance before any model turn
+    # (a head that is not Claude, no key, the monthly limit, a chat that could not start), its fold status
+    # line, a routine's refusal reason and log lines.
+    "lib/harness/include/nimbus/harness/plain/chat_binding.h": "E2-DEV: the device chat binding's log lines (through "
+    "its log callback), never sent to a model or an owner; E2-STORE: kNotLoadedLine, the owner's line on each turn while "
+    "the stored conversation could not be loaded, sent to the owner's chat after the turn, never stored or shown to a "
+    "model",
+    "src/agent/orchestrator_plain.cpp": "E2-DEV: the engine-2 seam's owner-facing refusal lines (not Claude, no key, "
+    "monthly limit, could not start, still reading the earlier conversation), its fold status line and its "
+    "no-routines reason, device copy; the model's text is the engine's. E2-CHAT: the too-large skill line and the /budget view (coverage/PROMPT-CHANGES.md PC-0177, "
+    "PC-0178), owner-facing device copy",
+    # RB-U1b, E2-SCHED: the schedule tool's storage words (the loops2 keys, the state file's extensions, the
+    # outside event slug and a routine's lastErr "no card" shown on /loops), never sent to a model; the tool's
+    # model text is lib/core/src/orch_schedule_tool.cpp (E2_EXTRA_SOURCES).
+    "lib/core/include/nimbus/orch/schedule_tool.h": "RB-U1b, E2-SCHED: the schedule tool's storage words (loops2 "
+    "keys, state file extensions, the outside event slug, the no-card lastErr on /loops), never sent to a model",
+    # E2-CHAT: the owner's slash commands on engine 2 answer with device copy before any model turn.
+    "src/agent/commands_plain.cpp": "E2-CHAT: the owner's command replies on engine 2 (engine 1's own replies reused, "
+    "the not-yet line and /clear's question and answer: PC-0177), delivered with system provenance, never sent to a "
+    "model",
+    # E2-P-CONN1: the owner's /mcp approve and deny replies, moved unchanged out of engine 1's dispatcher.
+    "src/agent/connectors_approval.cpp": "E2-P-CONN1: the owner's /mcp approve and deny replies (CUM-33), shared by "
+    "both engines' /mcp, delivered as device copy, never sent to a model (PC-0252)",
+    # E2-R1: the router's table of wire-shape facts (generated by tools/model_caps/gen_caps.py).
+    "lib/core/include/nimbus/orch/model_caps_data.h": "E2-R1: the router's wire-shape table: model ids, hosts, base "
+    "paths, the anthropic-version value and error-marker words matched against provider answers, never sent to a "
+    "model; its one wire placeholder, Mistral's '(empty)' for an empty history text, is engine 1's existing byte "
+    "(mistral.cpp) and nothing reads it until the Chat codec (lane E2-R6), which catalogues it then",
+    "lib/harness/include/nimbus/harness/plain/head_gate.h": "E2-FIX14: engine 1's own lines for a turn its gates "
+    "stop (the provider's monthly limit, a parked or paused provider), sent to the person's chat with system "
+    "provenance by the engine-2 device seam before any turn, never stored in a transcript or shown to a model",
+    "src/agent/tools_plain_skills.cpp": "E2-P-SKILL: the Rules page's rows for the held notes and their answers, "
+    "owner copy on the web page and the owner's chat, and log lines; the skill tools' model text is "
+    "plain/chat_skill_tools.h (E2_EXTRA_SOURCES)",
+    "src/agent/migrate_device.cpp": "E2-MIG: the earlier engine's import; its literals are log lines and the test "
+    "console's TXASIDE answers (test builds), never sent to a model",
+    "nimbusd/src/engine2_parity.h": "E2-P-HOST2: the hosted daemon's engine-2 parts: the owner-facing binding lines "
+    "in the instance's words (sent to the owner's chat, never stored or shown to a model) and the JobEngine's "
+    "persist outcome markers '[saved: ...]' and '[persist FAILED: ...]', byte for byte the device's "
+    "(src/agent/orchestrator_plain.cpp jobFileDeps), parsed by jobs.cpp savedPathOf",
+    "src/agent/tools_plain_send.cpp": "E2-P-OUT1: the device binding of send and speak; its literals are the local "
+    "chat ids, the stored photo folder and extensions and the media kind, never sent to a model (the tool's text is "
+    "texts.h and tools_plain_send.h)",
+    "lib/core/src/orch_wire_errors.cpp": "E2-R5: the engine-2 error classifier; its literals are field names and "
+    "refusal words matched against provider error bodies, never sent to a model or a person",
+    "src/sys/log_console.cpp": "E2-STACK2: the ESP-IDF log's console writer; its one literal is the marker on a log "
+    "line cut for want of memory, written to the serial console, never sent to a model",
 }
 
 # The engine-1 baseline: each class's bytes and sha8 when the gate was introduced. It is the
@@ -181,7 +246,13 @@ E2_CEILINGS = {
     "core": 3072,
     "device_notes": 2048,
     "stubs": 512,
-    "tool_results": 6144,
+    # Ruling 111 item 2: raised from 6,144 B to 6,656 B for the schedule tool's own result and error
+    # lines only (lanes RB-U1b and E2-SCHED: 510 B of schedule text on 6,142 B, 6,652 B used).
+    # Ruling 117: 7,168 B from lane E2-SRCH on, for search's and view's own result and error lines only
+    # (PC-0195; the class had 4 B left). No other lane may use the room.
+    # Ruling 124: 9,216 B from lanes E2-P-MEM and E2-P-SUB on, for the parity tools' result lines (read only
+    # when their tool runs, never part of a request's cached start). device_notes stays 2,048 B.
+    "tool_results": 9216,
     "probe": 1536,  # ruling 33: the qualified probe prompt (1,296 B) is used byte for byte
     "summarizer": 1024,
     "tool_descriptions": 10240,
@@ -204,6 +275,31 @@ E2_EXTRA_SOURCES: tuple = (
     ("lib/core/include/nimbus/orch/tx/migrate.h", "device_notes"),
     # RB-G1: the truth probe engine 2 sends (RB-G0's measured prompt and its model), shared with engine 1.
     ("lib/core/include/nimbus/orch/truth.h", "probe"),
+    # RB-N1: the note tool's results and errors (lib/core, beside its rules, as the file tools').
+    ("lib/core/src/orch_notes.cpp", "tool_results"),
+    # RB-U1b: the schedule tool's results and errors, its argument words and the loops2 sidecar keys.
+    ("lib/core/src/orch_schedule_tool.cpp", "tool_results"),
+    # RB-TG1: what a stored PDF's line in the owner message says after its inbox path.
+    ("lib/core/include/nimbus/net/tg_inbox.h", "stubs"),
+    # E2-FIX4: the words of a photo's line when it is not attached to a request (tx::photoStub).
+    ("lib/core/include/nimbus/orch/tx/photo_text.h", "stubs"),
+    # E2-FIX9: the words that end an internal result's stub (tx::stubText): shown earlier, not attached, the way back.
+    ("lib/core/include/nimbus/orch/tx/result_text.h", "stubs"),
+    # E2-TOOLS: the engine-2 device registrations (web_search over the old web.search: its names and argument).
+    ("src/agent/tools_plain.cpp", "tool_results"),
+    # E2-P-HOST1: the hosted engine-2 registration of the same web_search over the old web.search (names, argument).
+    ("nimbusd/src/hosted_web_search.h", "tool_results"),
+    # E2-REP3: the hosted docs group and device_status on engine 2 (registry names, JSON keys; no prose).
+    ("nimbusd/src/hosted_e2_device.h", "tool_results"),
+    # E2-P-OUT1: send and speak (their argument and kind words; the result lines are texts.h).
+    ("src/agent/tools_plain_send.h", "tool_results"),
+    # E2-P-OUT2: the files_admin and media tools over engine 1's handlers: their descriptions (namespace
+    # tool_descriptions), their path lines and engine-2 tool names, and the argument names they map.
+    ("src/agent/tools_plain_files.cpp", "tool_results"),
+    # E2-P-SKILL: skill_list, skill_save, skill_delete over the shared skill store (PC-0247 to PC-0249).
+    ("lib/harness/include/nimbus/harness/plain/chat_skill_tools.h", "tool_results"),
+    # E2-P-TOOLS: the device, people, models and docs groups on engine 2 (registry names, argument keys).
+    ("src/agent/tools_plain_device.h", "tool_results"),
 )
 # The engine-2 files that may hold no model text of their own once texts.h exists.
 E2_ENGINE_GLOBS = (r"lib/harness/src/plain_[^/]*\.(cpp|h)$", r"lib/harness/src/providers/plain_wire_[^/]*\.(cpp|h)$")
@@ -598,7 +694,8 @@ def _scan_files(root: str):
 
 
 def _is_e2_engine_file(rel: str) -> bool:
-    return any(re.match(g, rel) for g in E2_ENGINE_GLOBS)
+    # A plain file that says in NON_MODEL_FILES that its prose is for a person, not a model, is not scanned.
+    return rel not in NON_MODEL_FILES and any(re.match(g, rel) for g in E2_ENGINE_GLOBS)
 
 
 def uncatalogued_tool_files(root: str) -> list:

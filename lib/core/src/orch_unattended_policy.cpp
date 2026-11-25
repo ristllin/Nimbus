@@ -79,6 +79,7 @@ const UseRow kUses[] = {
     {"files.send", U::Send},
     {"files.send.other_chat", U::Send},
     {"send", U::Send},
+    {"send.other_chat", U::Send},   // E2-REP1: send's narrowed key (action_rules.cpp) stays a send
     // paid work beyond the turn
     {"session.spawn", U::Spend},
     {"session.tell", U::Spend},
@@ -103,6 +104,10 @@ const UseRow kUses[] = {
     {"media.play", U::Ambient},
     {"media.pause", U::Ambient},
     {"media.stop", U::Ambient},
+    {"media_play", U::Ambient},   // engine 2's names (E2-P-OUT2), the same class
+    {"media_pause", U::Ambient},
+    {"media_stop", U::Ambient},
+    {"media_list", U::Read},
     {"device.selftest.audible", U::Ambient},
     // settings, skills, people, the head
     {"device.reboot", U::Control},

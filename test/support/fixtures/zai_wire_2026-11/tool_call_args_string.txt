@@ -1,0 +1,4 @@
+recorded: lane E2-R10 tools/harness-lab r10 (02-S2-tool), read 2026-11-24
+status: 200
+expect: stop=tool complete=true calls=1
+{"choices":[{"finish_reason":"tool_calls","index":0,"message":{"content":"","role":"assistant","tool_calls":[{"function":{"arguments":"{\"path\": \"notes/seeds.txt\"}","name":"read_file"},"id":"call_-7044502245324350327","index":0,"type":"function"}]}}],"created":1795548544,"id":"scrubbed","model":"glm-5.3","object":"chat.completion","request_id":"scrubbed","usage":{"completion_tokens":14,"completion_tokens_details":{"reasoning_tokens":0},"prompt_tokens":1907,"prompt_tokens_details":{"cached_tokens":1792},"total_tokens":1921}}

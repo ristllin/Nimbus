@@ -1,0 +1,27 @@
+{
+  "about": "Lane E2-DEV: engine 2 bound on the device seam (orchestrator_plain.cpp, plain/chat_binding.h). The engine's library is now reachable from tg_poll, so its recursions are declared here with their bounds, and its impossible cycles with why. The path rows of RB-E2.json measure the bound seam (handleMessage now runs the engine's turn).",
+  "recursion": [
+    {
+      "function": "^agent::plain::body::BodyWriter::raw(Value|Object|Array)\\(",
+      "depth": 32,
+      "why": "plain_body.h: the raw copy of a JSON value stops at kMaxDepth (32) levels"
+    }
+  ],
+  "impossible_cycles": [
+    {
+      "caller": "^agent::plain::\\(anonymous namespace\\)::CappedWire::(render|parse)\\(",
+      "callee": "^agent::plain::\\(anonymous namespace\\)::CappedWire::(render|parse)\\(",
+      "why": "plain_compact.cpp: a CappedWire wraps the dialect's real wire (wireFor), never another CappedWire"
+    },
+    {
+      "caller": "^std::_Function_handler<bool \\(agent::plain::ClimbAsk const&\\)",
+      "callee": "^agent::plain::\\(anonymous namespace\\)::TurnRun::compactFirst\\(",
+      "why": "the turn's climb asks compaction once per urgency (compactAsks); the summarizer's own exchange carries no climb of the turn, so compaction never re-enters it"
+    },
+    {
+      "caller": "^std::_Function_handler<bool \\(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&\\)",
+      "callee": "^std::function<bool \\(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&\\)>::operator\\(\\)",
+      "why": "chat_binding.h: the channel's send and the compaction tell call the device's sendPart (orchestrator_plain.cpp sendOnePart), which calls no std::function of that signature"
+    }
+  ]
+}

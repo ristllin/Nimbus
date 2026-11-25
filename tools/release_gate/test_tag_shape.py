@@ -353,3 +353,22 @@ def test_describe_match_admits_every_firmware_tag_and_no_virtual_tag():
 )
 def test_wiring_check_catches_a_broken_gate(old, new):
     assert check_workflow(mutate(release_yml(), old, new)) != []
+
+
+# --- the engine-2 version line (lane E2-MIG) ---------------------------------
+def _semver(v):
+    m = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", v)
+    assert m, v
+    return tuple(int(x) for x in m.groups())
+
+
+def test_version_h_engine_two_line_is_not_read_as_the_release_version():
+    text = (REPO / "include" / "version.h").read_text(encoding="utf-8")
+    # release.yml's smoke step: sed -n 's/#define NIMBUS_FW_VERSION "\(.*\)"/\1/p' (every line).
+    sed_hits = re.findall(r'#define NIMBUS_FW_VERSION "(.*)"', text)
+    assert sed_hits == [ts.read_version(text)], "exactly one quoted NIMBUS_FW_VERSION line"
+    engine2 = re.findall(r'^\s*#define\s+NIMBUS_FW_VERSION_ENGINE2\s+"([^"]*)"', text, re.MULTILINE)
+    assert len(engine2) == 1
+    # An engine-2 image is never offered an engine-1 release as newer.
+    assert _semver(engine2[0]) > _semver(ts.read_version(text))
+    assert channel(engine2[0], ts.read_version(text)) is None

@@ -55,7 +55,19 @@
 namespace nimbus::net {
 
 constexpr uint32_t kSettleQuietMediaMs = 3000;
-constexpr uint32_t kSettleQuietTextMs = 6000;
+// The text window per engine. Engine 1 keeps 6 s (above). Engine 2 holds a text 2 s (lane RB-TG1,
+// from RB-M0b's measurement of Lumi's 162 dispatches: of the 23 joined pages 21 were joined
+// because a turn was running, which engine 2's round-boundary join covers (RB-TG2), and the hold
+// itself joined 2, at 2.1 s and 4.3 s; a 2 s hold plus the join keeps what the 6 s hold bought
+// except about 1 dispatch in 80, and answers every plain text 4 s sooner). The burst scenario on
+// the bench stays the deciding test (RB-TG2), with 4 s as the fallback.
+constexpr uint32_t settleQuietTextMsFor(int engine) { return engine == 2 ? 2000 : 6000; }
+#if defined(NIMBUS_ENGINE)
+constexpr int kSettleEngine = NIMBUS_ENGINE;
+#else
+constexpr int kSettleEngine = 1;   // no engine named: engine 1 (tools/engine)
+#endif
+constexpr uint32_t kSettleQuietTextMs = settleQuietTextMsFor(kSettleEngine);
 constexpr uint32_t kSettleMaxHoldMs = 15000;
 constexpr uint32_t kSettleDateMarginS = 2;
 constexpr uint32_t kSettleRepollMs = 1000;

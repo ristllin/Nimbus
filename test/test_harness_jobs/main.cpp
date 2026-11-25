@@ -647,6 +647,28 @@ static void test_an_unreadable_answer_may_have_run() {
   TEST_ASSERT_EQUAL(1, r.eng->maybeRunningCount());
 }
 
+// E2-REP2 (E2-P-TOOLS D2): the head turn's ring arc is the "head" key, Running while the turn works and Offline
+// after; engine 2's turn brackets b.turn with it (orchestrator_plain.cpp turnFor) and both engines build it here.
+static void test_the_head_turn_arc_is_running_then_offline_on_the_head_key() {
+  const nimbus::attn::Event on = agent::headArcEvent(true), off = agent::headArcEvent(false);
+  TEST_ASSERT_TRUE(on.type == nimbus::attn::Event::Type::JobState && off.type == nimbus::attn::Event::Type::JobState);
+  TEST_ASSERT_EQUAL_UINT32(agent::keyFromTag("head"), on.key);
+  TEST_ASSERT_EQUAL_UINT32(on.key, off.key);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)solide::ring::Status::Running, on.status);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)solide::ring::Status::Offline, off.status);
+  FILE* fp = std::fopen("src/agent/orchestrator_plain.cpp", "rb");
+  TEST_ASSERT_NOT_NULL(fp);
+  std::string src;
+  char buf[4096];
+  for (size_t n; (n = std::fread(buf, 1, sizeof buf, fp)) > 0;) src.append(buf, n);
+  std::fclose(fp);
+  const size_t lit = src.find("engineSetHeadArc(true);"), turn = src.find("st = b.turn(msg, out);"),
+               dark = src.find("engineSetHeadArc(false);");
+  TEST_ASSERT_TRUE_MESSAGE(lit != std::string::npos && turn != std::string::npos && dark != std::string::npos &&
+                               lit < turn && turn < dark, "the turn is bracketed by the arc");
+  TEST_ASSERT_TRUE(src.find("g_sinks.event(headArcEvent(on))") != std::string::npos);
+}
+
 // CUM-538 gate: a "may have started" note survives the chat bound. With 16 other
 // chats holding unread refusals, the 17th chat's note evicted the oldest entry
 // whole, so the spawning chat's head never heard the do-not-respawn order.
@@ -3315,6 +3337,7 @@ int main(int, char**) {
   RUN_TEST(test_a_moved_spawn_that_may_have_run_starts_no_third_copy);
   RUN_TEST(test_the_first_refusal_keeps_its_own_window);
   RUN_TEST(test_a_mistral_sub_that_ran_and_said_nothing_does_not_move);
+  RUN_TEST(test_the_head_turn_arc_is_running_then_offline_on_the_head_key);
   RUN_TEST(test_a_file_task_stays_on_its_provider);
   UNITY_END();
   return 0;

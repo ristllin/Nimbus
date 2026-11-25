@@ -1,0 +1,20 @@
+# route golden parse responses-openai-direct/failed_server_error.txt served at HTTP 200
+parse invalid-argument at plain::openai.parse.failed
+parse stop other
+parse text 0 B fnv64=14650fb0739d0383 head=""
+parse refusal ""
+parse calls 0
+parse meta 0
+parse usage prompt=0 completion=0 cacheRead=0 cacheWrite=0 cacheWrite1h=0 responses=0 maxRequestIn=0 served=""
+exchange err=transport http=200 requests=3 retries=2 climbs=0 cutRetried=0 failOver=0 parkHost=0 maxTokens=0 requestBytes=1187 ms=10000 waitedMs=10000 statusLine=5
+exchange line "No reply: OpenAI could not be reached. Send the message again."
+exchange line stored "No reply: OpenAI could not be reached. Send the message again."
+exchange request 0 1187 B fnv64=9796c3b8ff15234a
+exchange request 1 1187 B fnv64=9796c3b8ff15234a
+exchange request 2 1187 B fnv64=9796c3b8ff15234a
+exchange step stop other
+exchange step text 0 B fnv64=14650fb0739d0383 head=""
+exchange step refusal ""
+exchange step calls 0
+exchange step meta 0
+exchange step usage prompt=0 completion=0 cacheRead=0 cacheWrite=0 cacheWrite1h=0 responses=0 maxRequestIn=0 served=""

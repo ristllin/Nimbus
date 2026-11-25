@@ -29,13 +29,53 @@ bool authBlocked(AsyncWebServerRequest* r) {
   return true;
 }
 
+PrefsPageRows s_rows;   // set once at boot, before the server starts
+
 String qparam(AsyncWebServerRequest* r, const char* name, const char* def = "") {
   if (r->hasParam(name)) return r->getParam(name)->value();
   if (r->hasParam(name, true)) return r->getParam(name, true)->value();
   return def;
 }
 
+// GET's body with the engine's rows added to its items.
+std::string withRows(const std::string& body) {
+  if (!s_rows.add) return body;
+  JsonDocument d;
+  if (deserializeJson(d, body)) return body;
+  JsonArray items = d["items"].as<JsonArray>();
+  if (items.isNull()) items = d["items"].to<JsonArray>();
+  s_rows.add(items);
+  std::string out;
+  serializeJson(d, out);
+  return out;
+}
+
+// A refused action: the store's words and the rule's id.
+void sendPrefErr(AsyncWebServerRequest* r, orch::PrefErr e, const orch::WebActionOut& res) {
+  JsonDocument d;
+  d["error"] = orch::prefErrWords(e);
+  if (!res.id.empty()) d["id"] = res.id;
+  String out;
+  serializeJson(d, out);
+  sendJson(r, orch::prefErrHttpStatus(e), out);
+}
+
+// A POST on one of the engine's rows: answered here, true.
+bool answeredByRows(AsyncWebServerRequest* r, const std::string& action, const std::string& id) {
+  std::string message;
+  if (!s_rows.act || !s_rows.act(action, id, message)) return false;
+  JsonDocument d;
+  d["ok"] = true;
+  d["message"] = message;
+  String out;
+  serializeJson(d, out);
+  sendJson(r, 200, out);
+  return true;
+}
+
 }  // namespace
+
+void setPrefsPageRows(PrefsPageRows rows) { s_rows = std::move(rows); }
 
 void registerPrefsRoutes(AsyncWebServer& server) {
   server.on("/api/prefs", HTTP_GET, [](AsyncWebServerRequest* r) {
@@ -46,7 +86,7 @@ void registerPrefsRoutes(AsyncWebServer& server) {
     const uint32_t nowH = agent::memory::nowHours();   // each rule's age (lane CTX)
     const bool ran = prefs::withStore([&](orch::OwnerPrefs& p) { body = orch::prefsJson(p, nowH); });
     if (!ran) { sendJson(r, 507, "{\"error\":\"The rules file area is not available.\"}"); return; }
-    sendJson(r, 200, String(body.c_str()));
+    sendJson(r, 200, String(withRows(body).c_str()));
   });
 
   server.on("/api/prefs", HTTP_POST, [](AsyncWebServerRequest* r) {
@@ -56,6 +96,7 @@ void registerPrefsRoutes(AsyncWebServer& server) {
     const std::string action(qparam(r, "action").c_str());
     const std::string id(qparam(r, "id").c_str());
     const std::string text(qparam(r, "text").c_str());
+    if (answeredByRows(r, action, id)) return;
     orch::PrefErr e = orch::PrefErr::PersistFailed;
     orch::WebActionOut res;
     bool ran = false;
@@ -65,15 +106,7 @@ void registerPrefsRoutes(AsyncWebServer& server) {
         }))
       ;
     if (!ran) { sendJson(r, 507, "{\"error\":\"The rules file area is not available.\"}"); return; }
-    if (e != orch::PrefErr::Ok) {
-      JsonDocument d;
-      d["error"] = orch::prefErrWords(e);
-      if (!res.id.empty()) d["id"] = res.id;
-      String out;
-      serializeJson(d, out);
-      sendJson(r, orch::prefErrHttpStatus(e), out);
-      return;
-    }
+    if (e != orch::PrefErr::Ok) return sendPrefErr(r, e, res);
     JsonDocument d;
     d["ok"] = true;
     if (!res.id.empty()) d["id"] = res.id;

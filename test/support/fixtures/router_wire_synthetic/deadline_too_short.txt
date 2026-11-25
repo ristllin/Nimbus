@@ -1,0 +1,4 @@
+synthetic: cumulo-nimbus docs/llm-router.md and packages/shared/src/router-refusals.ts (the cloud repo; no public page), read 2026-11-24
+status: 504
+expect: class=bad_request retry=no
+{"error":{"type":"deadline_too_short","message":"Less than 5 s was left before the deadline."},"reason":"deadline_too_short","message":"Less than 5 s was left before the deadline.","charged":false,"retryable":false}

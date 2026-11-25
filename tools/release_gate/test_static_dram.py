@@ -5,7 +5,6 @@ Run: python3 -m pytest tools/release_gate
 
 import json
 import os
-import re
 import struct
 
 import check_static_dram as dram
@@ -91,13 +90,13 @@ def test_cli_checks_one_file(tmp_path):
 
 
 def test_every_shipped_variant_has_a_bounded_ceiling():
-    """The class rule: every variant release.yml ships has a recorded baseline and a
+    """The class rule: every variant release.yml ships (the stable rows of
+    tools/release/variants.json, which its gate loop reads) has a recorded baseline and a
     ceiling no more than 2 KB above it; a new shipped variant with none fails here."""
-    with open(os.path.join(REPO, ".github", "workflows", "release.yml"), encoding="utf-8") as f:
-        yml = f.read()
-    loop = re.search(r"for pair in ([^;]+);", yml)
-    assert loop, "release.yml variant loop not found"
-    shipped = {p.split(":")[0]: p.split(":")[1] for p in loop.group(1).split()}
+    with open(os.path.join(REPO, "tools", "release", "variants.json"), encoding="utf-8") as f:
+        rows = json.load(f)["variants"]
+    shipped = {r["type"]: r["env"] for r in rows}
+    assert shipped, "no stable row in tools/release/variants.json"
     ceilings = dram.load_ceilings()
     assert set(shipped) == set(ceilings)
     for variant, env in shipped.items():
@@ -195,3 +194,101 @@ def test_the_baseline_is_the_measured_merge_and_the_ceilings_did_not_move():
         assert row["baseline"] == MEASURED[name], name
         assert row["ceiling"] == UNCHANGED_CEILINGS[name], f"{name}: a raised ceiling needs the bench heap A/B"
         assert row["baseline"] <= row["ceiling"], name
+
+
+# ---- declared allowances for the engine-2 rows (lane E2-GATE, ruling 121) ----------------
+
+E2_CEIL = {
+    "variants": {"nimbus-tft": {"env": "esp32s3", "baseline": 1000, "ceiling": 1100}},
+    "engine2_baseline_sha": "a" * 40,
+    "engine2": {"freenove-28-e2": {"env": "esp32s3-cyd-e2", "baseline": 1000, "ceiling": 3048}},
+}
+
+
+def e2_case(tmp_path, bss, budget=None):
+    elf = tmp_path / "firmware.elf"
+    elf.write_bytes(make_elf({".dram0.bss": bss, ".dram0.data": 400}))
+    ceil = tmp_path / "ceil.json"
+    ceil.write_text(json.dumps(E2_CEIL))
+    bdir = tmp_path / "budget.d"
+    bdir.mkdir(exist_ok=True)
+    if budget is not None:
+        (bdir / "E2-X.json").write_text(json.dumps(budget))
+    return ["--elf", str(elf), "--ceilings", str(ceil), "--budget-dir", str(bdir), "--lane", "E2-X"]
+
+
+def row(n):
+    return {"lane": "E2-X", "allowance_bytes": 0, "static_dram_bytes": n, "why": "a 512 B static buffer"}
+
+
+def test_declared_growth_under_the_ceiling_passes(tmp_path, capsys):
+    args = e2_case(tmp_path, 600 + 512, row(512))  # 1,512 B: +512 over the baseline, declared
+    assert dram.main([*args, "--variant", "freenove-28-e2"]) == 0
+    assert "inside E2-X's declared 512 B" in capsys.readouterr().out
+
+
+def test_counter_undeclared_growth_fails_under_the_ceiling(tmp_path, capsys):
+    args = e2_case(tmp_path, 600 + 513, row(512))  # 1 B more than declared, far under 3,048 B
+    assert dram.main([*args, "--variant", "freenove-28-e2"]) == 1
+    out = capsys.readouterr().out
+    assert "1 B more than E2-X declared (512 B)" in out and "static_dram_bytes" in out
+
+
+def test_counter_no_file_declares_nothing(tmp_path):
+    args = e2_case(tmp_path, 601)
+    assert dram.main([*args, "--variant", "freenove-28-e2"]) == 1
+
+
+def test_counter_a_declaration_never_lifts_the_ceiling(tmp_path):
+    args = e2_case(tmp_path, 600 + 2049, row(4096))
+    assert dram.main([*args, "--variant", "freenove-28-e2"]) == 1
+
+
+def test_counter_a_malformed_declaration_fails(tmp_path, capsys):
+    args = e2_case(tmp_path, 600, row(-1))
+    assert dram.main([*args, "--variant", "freenove-28-e2"]) == 1
+    assert "non-negative integer" in capsys.readouterr().out
+
+
+def test_a_shipped_engine1_row_keeps_its_ceiling_only_check(tmp_path, capsys):
+    args = e2_case(tmp_path, 690)  # nimbus-tft: +90 B over its baseline, under its ceiling, no file
+    assert dram.main([*args, "--variant", "nimbus-tft"]) == 0
+    assert "declared" not in capsys.readouterr().out
+
+
+def test_real_ceilings_say_how_to_declare_and_give_engine2_2048_b_of_room():
+    with open(dram.CEILINGS, encoding="utf-8") as f:
+        data = json.load(f)
+    how = data["allowance_how"]
+    assert "static_dram_bytes" in how and "image_budget.d" in how and "ruling 121" in how
+    assert len(data["engine2_baseline_sha"]) == 40
+    for name, r in data["engine2"].items():
+        assert r["ceiling"] == r["baseline"] + 2048, name
+
+
+def test_a_bad_declaration_fails_the_engine2_images_only(tmp_path, capsys):
+    args = e2_case(tmp_path, 690, row("many"))
+    assert dram.main([*args, "--variant", "nimbus-tft"]) == 0  # an engine-1 image: its ceiling alone
+    assert dram.main([*args, "--variant", "freenove-28-e2"]) == 1
+
+
+class _Args:
+    lane = None
+    no_infer_lane = False
+    base_ref = "rb-main"
+
+    def __init__(self, ceilings, budget_dir):
+        self.ceilings, self.budget_dir = ceilings, budget_dir
+
+
+def test_a_lane_read_from_the_branch_is_judged_only_on_a_fresh_baseline(tmp_path, monkeypatch):
+    e2_case(tmp_path, 600, row(0))
+    args = _Args(str(tmp_path / "ceil.json"), str(tmp_path / "budget.d"))
+    monkeypatch.setattr(dram.image, "infer_lane", lambda _root: "E2-X")
+    monkeypatch.setattr(dram.image, "git_baseline_problems", lambda _r, _b: lambda _sha: [])
+    assert dram.lane_view(args) == ("E2-X", 0, [], [])
+    monkeypatch.setattr(dram.image, "git_baseline_problems", lambda _r, _b: lambda _sha: ["stale: x.cpp changed"])
+    lane, _n, fails, warns = dram.lane_view(args)
+    assert lane is None and not fails and "not judged" in warns[0]
+    args.no_infer_lane = True
+    assert dram.lane_view(args) == (None, 0, [], [])

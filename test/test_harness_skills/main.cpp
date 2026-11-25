@@ -492,7 +492,8 @@ static std::string readSource(const char* path) {
   return out;
 }
 // The concatenated string literals from `from` up to the first '[' outside a
-// literal (the handler lambda's capture list).
+// literal (the handler lambda's capture list), or the ';' that ends the call when
+// the handler is a named function (files.share since E2-P-OUT2).
 static std::string literalsUntilLambda(const std::string& src, size_t from) {
   std::string text;
   bool in = false;
@@ -504,7 +505,7 @@ static std::string literalsUntilLambda(const std::string& src, size_t from) {
       text += c;
     } else if (c == '"') {
       in = true;
-    } else if (c == '[') {
+    } else if (c == '[' || c == ';') {
       break;
     }
   }
@@ -555,7 +556,8 @@ static size_t skipQuoted(const std::string& src, size_t i, char q, std::string* 
   }
   return i;
 }
-static AddCall readAddCall(const std::string& src, size_t from) {
+// The balanced span from `from` to the `close` that matches the first `open`.
+static AddCall readSpan(const std::string& src, size_t from, char open, char close) {
   AddCall c;
   int depth = 0;
   for (size_t i = from; i < src.size(); ++i) {
@@ -566,10 +568,33 @@ static AddCall readAddCall(const std::string& src, size_t from) {
     if (ch == '"') { i = skipQuoted(src, i, '"', &c.lits); continue; }
     if (ch == '\'') { i = skipQuoted(src, i, '\'', nullptr); continue; }
     c.code += ch;
-    if (ch == '(') ++depth;
-    if (ch == ')' && --depth == 0) break;
+    if (ch == open) ++depth;
+    if (ch == close && --depth == 0) break;
   }
   return c;
+}
+static AddCall readAddCall(const std::string& src, size_t from) { return readSpan(src, from, '(', ')'); }
+
+// A named handler (`reg.add("media.list", "...", listTool, schema)`): its third
+// argument names a ToolResult function; the body of that function's definition in
+// the same file, or an empty code when the call has no such argument or definition.
+static AddCall readNamedHandler(const std::string& src, const AddCall& call) {
+  size_t comma = call.code.find(',');
+  if (comma != std::string::npos) comma = call.code.find(',', comma + 1);
+  if (comma == std::string::npos) return AddCall{};
+  const size_t end = call.code.find_first_of(",)", comma + 1);
+  std::string id;
+  for (size_t i = comma + 1; i < end; ++i)
+    if (call.code[i] != ' ' && call.code[i] != '\n') id += call.code[i];
+  const size_t scope = id.rfind("::");
+  if (scope != std::string::npos) id = id.substr(scope + 2);
+  if (id.empty()) return AddCall{};
+  const std::string head = "ToolResult " + id + "(";
+  for (size_t def = src.find(head); def != std::string::npos; def = src.find(head, def + 1)) {
+    const size_t body = src.find_first_of(";{", def);   // a declaration ends at ';'
+    if (body != std::string::npos && src[body] == '{') return readSpan(src, body, '{', '}');
+  }
+  return AddCall{};
 }
 
 // CUM-523 gate: a tool's RESULT text is built per call, so one that names a
@@ -589,9 +614,13 @@ static void test_cum523_tool_results_name_telegram_tools_only_when_offered() {
       const std::string name = src.substr(at + 6, nameEnd - (at + 6));
       if (name.find('.') == std::string::npos || name == "files.send" || name == "reply.telegram")
         continue;
-      const AddCall call = readAddCall(src, at + 4);
-      const size_t handler = call.code.find('[');   // the description literals come first
-      if (handler == std::string::npos) continue;
+      AddCall call = readAddCall(src, at + 4);
+      if (call.code.find('[') == std::string::npos) {   // no lambda: follow the named handler
+        const AddCall body = readNamedHandler(src, call);
+        if (body.code.empty()) continue;
+        call.lits += body.lits;   // the description literals, then the handler's
+        call.code = body.code;
+      }
       ++handlers;
       const bool namesFile = call.lits.find("files.send") != std::string::npos ||
                              call.lits.find("files_send") != std::string::npos;
@@ -603,6 +632,7 @@ static void test_cum523_tool_results_name_telegram_tools_only_when_offered() {
       TEST_ASSERT_TRUE_MESSAGE(!namesReply || replyGate, (name + ": reply.telegram").c_str());
     }
   }
+  // A named handler (E2-P-TOOLS, E2-P-OUT2, E2-REP2's media.list) is read through its definition.
   TEST_ASSERT_TRUE(handlers >= 30);   // the scan really saw the handlers
 }
 

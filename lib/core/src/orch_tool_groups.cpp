@@ -1,5 +1,7 @@
 #include "nimbus/orch/tool_groups.h"
 
+#include <algorithm>
+
 #include "nimbus/orch/tool_registry.h"
 
 #include <cstring>
@@ -69,6 +71,10 @@ const ToolClassRow kRows[] = {
     {"pdf_write", "files_admin", EC::Effect},
     {"image_generate", "media", EC::Effect},
     {"speak", "media", EC::Effect},
+    {"media_play", "media", EC::Effect},    // E2-P-OUT2: the music player (src/sfx/music.cpp)
+    {"media_pause", "media", EC::Effect},
+    {"media_stop", "media", EC::Effect},
+    {"media_list", "media", EC::Read},
     {"skill_list", "skills", EC::Read},
     {"skill_save", "skills", EC::Effect},
     {"skill_delete", "skills", EC::Effect},
@@ -296,6 +302,10 @@ std::string groupListing(const ToolRegistry& reg, const std::string& group, cons
   return fitLines(lines, names, "not shown: ", kMoreListMax);
 }
 
+namespace {
+const char kAlsoBehind[] = "also behind more: ";   // the index's last line: the groups that did not fit
+}  // namespace
+
 std::string toolsIndex(const ToolRegistry& reg, const Principal& who) {
   const std::vector<ToolRegistry::Spec> specs = reg.toolSpecs();
   std::vector<std::string> lines, names;
@@ -310,7 +320,31 @@ std::string toolsIndex(const ToolRegistry& reg, const Principal& who) {
     lines.push_back(line);
     names.push_back(g.name);
   }
-  return fitLines(lines, names, "also behind more: ", kToolsIndexMax);
+  return fitLines(lines, names, kAlsoBehind, kToolsIndexMax);
+}
+
+std::string groupsIndex(const ToolRegistry& reg, const Principal& who, const char* (*words)(const char* group)) {
+  const std::vector<ToolRegistry::Spec> specs = reg.toolSpecs();
+  std::vector<std::string> lines, names;
+  for (const ToolGroup& g : kGroups) {
+    // The connectors group holds the owner's own servers' tools, which no fixed words name: listed.
+    const bool listed = std::strcmp(g.name, ToolClass::kConnectorsGroup) == 0;
+    std::string line;
+    for (const ToolRegistry::Spec& s : specs) {
+      if (groupOf(reg, s.name) != std::string(g.name) || !reachable(reg, s.name, who)) continue;
+      if (!listed) {
+        const char* w = words ? words(g.name) : nullptr;
+        line = std::string(g.name) + ": " + (w && *w ? w : g.about);
+        break;
+      }
+      line += (line.empty() ? std::string(g.name) + ": " : std::string(", ")) +
+              signature(spelledFor(who, s.name), s.schemaJson, true);
+    }
+    if (line.empty()) continue;
+    lines.push_back(line);
+    names.push_back(g.name);
+  }
+  return fitLines(lines, names, kAlsoBehind, kToolsIndexMax);
 }
 
 // ---- more ---------------------------------------------------------------------------------

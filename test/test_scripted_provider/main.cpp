@@ -14,6 +14,7 @@
 
 #include "../support/fake_provider_deps.h"
 #include "../support/scripted_provider/scripted_provider.h"
+#include "../support/scripted_provider/wire_fixture.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/orch/transcript.h"
 
@@ -296,6 +297,90 @@ static void test_refusal_shapes() {
   TEST_ASSERT_TRUE(ant.find("\"ephemeral_5m_input_tokens\":200") != std::string::npos);
 }
 
+// Lane E2-R3a: the Mistral, Z.ai and text-mode chat answers, each in its provider's own shape.
+static void test_chat_shapes_mistral_zai_and_text_mode() {
+  sp::Step s = sp::call("read_file", R"({"path":"a.md"})");
+  s.thinking = "look first";
+  JsonDocument d;
+  // Mistral: no type on a call, "" content beside it, thinking as a content chunk list.
+  TEST_ASSERT_FALSE(deserializeJson(d, sp::renderAnswer(sp::Dialect::Chat, s, 0, sp::ChatShape::Mistral)));
+  JsonObjectConst m = d["choices"][0]["message"];
+  TEST_ASSERT_TRUE(m["tool_calls"][0]["type"].isNull());
+  TEST_ASSERT_EQUAL_STRING("tool_calls", d["choices"][0]["finish_reason"] | "");
+  TEST_ASSERT_EQUAL_STRING("thinking", m["content"][0]["type"] | "");
+  TEST_ASSERT_EQUAL_STRING("look first", m["content"][0]["thinking"][0]["text"] | "");
+  TEST_ASSERT_EQUAL(9, (int)std::string(m["tool_calls"][0]["id"] | "").size());
+  sp::Step bare = sp::call("read_file", "{}");
+  TEST_ASSERT_FALSE(deserializeJson(d, sp::renderAnswer(sp::Dialect::Chat, bare, 0, sp::ChatShape::Mistral)));
+  TEST_ASSERT_TRUE(d["choices"][0]["message"]["content"].is<const char*>());   // "" beside calls, never null
+  // Z.ai: reasoning_content, arguments as an object; a cut (non-JSON) argument stays a string.
+  TEST_ASSERT_FALSE(deserializeJson(d, sp::renderAnswer(sp::Dialect::Chat, s, 0, sp::ChatShape::Zai)));
+  TEST_ASSERT_EQUAL_STRING("look first", d["choices"][0]["message"]["reasoning_content"] | "");
+  TEST_ASSERT_EQUAL_STRING("a.md", d["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"]["path"] | "");
+  sp::Step cutCall = sp::call("read_file", R"({"path":"a.)");
+  cutCall.finish = sp::Finish::MaxTokens;
+  TEST_ASSERT_FALSE(deserializeJson(d, sp::renderAnswer(sp::Dialect::Chat, cutCall, 0, sp::ChatShape::Zai)));
+  TEST_ASSERT_TRUE(d["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"].is<const char*>());
+  TEST_ASSERT_EQUAL_STRING("length", d["choices"][0]["finish_reason"] | "");
+  // The window ran out: each provider's own word.
+  sp::Step ctx = sp::say("partial");
+  ctx.finish = sp::Finish::Context;
+  TEST_ASSERT_TRUE(sp::renderAnswer(sp::Dialect::Chat, ctx, 0, sp::ChatShape::Mistral).find("\"model_length\"") != std::string::npos);
+  TEST_ASSERT_TRUE(sp::renderAnswer(sp::Dialect::Chat, ctx, 0, sp::ChatShape::Zai).find("\"model_context_window_exceeded\"") !=
+                   std::string::npos);
+  TEST_ASSERT_TRUE(sp::renderAnswer(sp::Dialect::Anthropic, ctx, 0).find("\"model_context_window_exceeded\"") != std::string::npos);
+  // A Z.ai refusal finishes "sensitive".
+  sp::Step no = sp::say("");
+  no.finish = sp::Finish::Refusal;
+  TEST_ASSERT_TRUE(sp::renderAnswer(sp::Dialect::Chat, no, 0, sp::ChatShape::Zai).find("\"sensitive\"") != std::string::npos);
+  // Text mode: no tool_calls, no reasoning; the scripted call comes back as text.
+  TEST_ASSERT_FALSE(deserializeJson(d, sp::renderAnswer(sp::Dialect::Chat, s, 0, sp::ChatShape::Text)));
+  TEST_ASSERT_TRUE(d["choices"][0]["message"]["tool_calls"].isNull());
+  TEST_ASSERT_TRUE(d["choices"][0]["message"]["reasoning_content"].isNull());
+  TEST_ASSERT_EQUAL_STRING("read_file({\"path\":\"a.md\"})", d["choices"][0]["message"]["content"] | "");
+  TEST_ASSERT_EQUAL_STRING("stop", d["choices"][0]["finish_reason"] | "");
+  // Errors: Mistral's top-level object, Z.ai's numeric code under "error".
+  TEST_ASSERT_FALSE(deserializeJson(d, sp::renderError(sp::Dialect::Chat, 400, sp::ChatShape::Mistral)));
+  TEST_ASSERT_EQUAL_STRING("error", d["object"] | "");
+  TEST_ASSERT_TRUE(d["error"].isNull());
+  TEST_ASSERT_FALSE(deserializeJson(d, sp::renderError(sp::Dialect::Chat, 429, sp::ChatShape::Zai)));
+  TEST_ASSERT_EQUAL_STRING("1302", d["error"]["code"] | "");
+  // The provider answers in the shape it is set to.
+  sp::ScriptedProvider p;
+  p.chatShape = sp::ChatShape::Mistral;
+  p.push(bare);
+  agent::HttpRequest req;
+  req.path = "/v1/chat/completions";
+  req.body = "{}";
+  agent::HttpResponse out;
+  std::string err;
+  TEST_ASSERT_TRUE(p.exec(req, out, err));
+  TEST_ASSERT_TRUE(out.body.find("\"type\":\"function\"") == std::string::npos);
+}
+
+// A fixture replays verbatim; its header must name its source.
+static void test_wire_fixture_replays_verbatim() {
+  sp::WireFixture f;
+  std::string err;
+  TEST_ASSERT_TRUE_MESSAGE(sp::parseWireFixture("synthetic: https://docs.example.test/x, read 2026-11-24\nstatus: 429\n"
+                                                "expect: class=billing retry=no\n{\"error\":{\"code\":\"1113\"}}\n",
+                                                f, err),
+                           err.c_str());
+  TEST_ASSERT_EQUAL(429, f.status);
+  TEST_ASSERT_EQUAL_STRING("billing", f.expected("class").c_str());
+  TEST_ASSERT_EQUAL_STRING("no", f.expected("retry").c_str());
+  sp::ScriptedProvider p;
+  p.push(sp::replay(f));
+  agent::HttpRequest req;
+  req.path = "/api/paas/v4/chat/completions";
+  req.body = "{}";
+  agent::HttpResponse out;
+  TEST_ASSERT_TRUE(p.exec(req, out, err));
+  TEST_ASSERT_EQUAL(429, out.status);
+  TEST_ASSERT_EQUAL_STRING("{\"error\":{\"code\":\"1113\"}}", out.body.c_str());
+  TEST_ASSERT_FALSE(sp::parseWireFixture("{\"error\":{}}\n", f, err));   // no source line
+}
+
 // ---- the request view, over every dialect -----------------------------------------
 
 // The same conversation in each dialect's request shape: system, a user turn, a call and
@@ -489,5 +574,7 @@ int main(int, char**) {
   RUN_TEST(test_prefix_property_and_its_counter_cases);
   RUN_TEST(test_pairing_property_and_its_counter_cases);
   RUN_TEST(test_provider_checks_recorded_rounds);
+  RUN_TEST(test_chat_shapes_mistral_zai_and_text_mode);
+  RUN_TEST(test_wire_fixture_replays_verbatim);
   return UNITY_END();
 }

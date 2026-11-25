@@ -1,0 +1,18 @@
+# route golden parse chat-zai-direct/sensitive.txt served at HTTP 200
+parse ok
+parse stop refusal
+parse text 0 B fnv64=14650fb0739d0383 head=""
+parse refusal "sensitive"
+parse calls 0
+parse meta 0
+parse usage prompt=176 completion=40 cacheRead=1024 cacheWrite=0 cacheWrite1h=0 responses=1 maxRequestIn=1200 served="glm-5.3"
+exchange err=ok http=200 requests=1 retries=0 climbs=0 cutRetried=0 failOver=0 parkHost=0 maxTokens=1998 requestBytes=792 ms=0 waitedMs=0 statusLine=0
+exchange line ""
+exchange line stored ""
+exchange request 0 792 B fnv64=e4823a3784053fb0
+exchange step stop refusal
+exchange step text 0 B fnv64=14650fb0739d0383 head=""
+exchange step refusal "sensitive"
+exchange step calls 0
+exchange step meta 0
+exchange step usage prompt=176 completion=40 cacheRead=1024 cacheWrite=0 cacheWrite1h=0 responses=1 maxRequestIn=1200 served="glm-5.3"

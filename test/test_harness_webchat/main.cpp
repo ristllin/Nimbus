@@ -527,6 +527,18 @@ static void test_idle_poll_still_consumes_for_a_drain() {
 
 // ---- the route bodies -------------------------------------------------------
 
+// Lane E2-FIX5 (bench): a message sent before the turn task's queue is open (the first seconds after
+// a start) is told the device is starting up, never that it is finishing a reply; busy keeps its line.
+static void test_a_refusal_at_start_says_starting_and_busy_keeps_its_line() {
+  JsonDocument d = parse(agent::chatRefusalJson(agent::ChatRefusal::Starting));
+  const std::string starting = d["error"].as<std::string>();
+  TEST_ASSERT_TRUE(starting.find("finishing a reply") == std::string::npos);
+  TEST_ASSERT_TRUE(starting.find("starting up") != std::string::npos);
+  d = parse(agent::chatRefusalJson(agent::ChatRefusal::Busy));
+  TEST_ASSERT_EQUAL_STRING("busy - the device is finishing a reply; send that again in a moment",
+                           d["error"].as<std::string>().c_str());
+}
+
 static void test_post_body_returns_the_turn_id() {
   JsonDocument d = parse(agent::chatPostJson("w0000002a"));
   TEST_ASSERT_TRUE(d["ok"].as<bool>());
@@ -618,6 +630,7 @@ int main(int, char**) {
   RUN_TEST(test_cancel_forgets_a_booking);
   RUN_TEST(test_turn_ids_unique_and_seeded);
   RUN_TEST(test_post_body_returns_the_turn_id);
+  RUN_TEST(test_a_refusal_at_start_says_starting_and_busy_keeps_its_line);
   RUN_TEST(test_turn_body_flags_are_exclusive_for_every_state);
   RUN_TEST(test_legacy_watch_and_turn_paths);
   RUN_TEST(test_routine_reply_is_async_captured_and_never_a_turns_reply);

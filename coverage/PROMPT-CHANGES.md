@@ -183,6 +183,30 @@ deleted. Engine 2 has no baseline.
 | src/agent/memory_subsystem.cpp | bf9ef5bb | reply in | ; reply in text instead |
 | src/agent/memory_subsystem.cpp | eb3b2bc3 | tell the | ), pending the owner's approval. It will NOT fire until they |
 
+## Device copy and data forms (ledger ids outside the class gate)
+Owner-facing lines and model-facing data forms that the class catalog does not hold, logged under the
+lane's ledger ids so every new line has a record. The gate does not parse this section.
+
+PC-0177 (lane E2-CHAT; owner-facing device copy, outside the model text catalog: src/agent/commands_plain.cpp and
+src/agent/orchestrator_plain.cpp are named in NON_MODEL_FILES): engine 2's command replies. "This command is not
+available on the new engine yet." for /remind, /skill, /mcp and /prefs; /clear asks "Start a new conversation? The
+current one stays stored on the device. Send /clear yes to confirm." and answers "Started a new conversation. The
+earlier one stays stored on the device."; a bare /budget opens with one line of engine 2's figures in tokens (system
+prompt, tools, fixed part, summary and its cap, recent conversation and the recent part, the compaction and aim marks,
+max rounds and the hard time limit; rulings 105 and 106). Every other command reply is engine 1's, reused. Never sent
+to a model.
+
+PC-0178 (lane E2-CHAT; owner-facing device copy, outside the catalog: orchestrator_plain.cpp): a context skill the
+pinned block cannot hold whole is not cut: "Your skill <id> is too large to ride every message (<n> B; notes and skills
+share 4,096 B). It is listed among your skills instead, and read when a message needs it." Told once per boot per
+skill and size, after the turn. Never sent to a model.
+
+PC-0179 (lane E2-CHAT; model-facing data forms, no prose, catalog bytes unchanged): the owner's skills in the request
+(lib/harness/include/nimbus/harness/plain/chat_skills.h). The skills index line is "skills/<id>.md: <the skill's desc>"
+(PRD section 4's form, under the existing texts.h core::kSkills header); a skill marked inject: context rides the pinned
+block after the notes as the line "skills/<id>.md:" followed by the owner's own body lines. The words are the owner's;
+the firmware adds only the path and the colon. No instruction was added.
+
 ## Re-baselines
 
 ### RBL-0001: re-measured on 9b17824d
@@ -1032,3 +1056,640 @@ deleted. Engine 2 has no baseline.
 - lane: RB-REC6
 - prd: section 4 (the plain file tools), as amended by rulings 95 and 97
 - why: lib/core/src/orch_file_aids_e1.cpp, lib/core/src/orch_file_append.cpp and src/agent/files_subsystem.cpp lose the day-total line and its errors (the running day, the date column, the clock not set, past the size a total streams); the shared scan texts change as PC-0077 says; a selection (files.read column/from/to) gives RB-TR1's part head ("bytes a-b of n, lines x-y of m; next part: ..." or "; end of file") and the rows as stored, its offset a file byte as a plain read's (ruling 97). Planned work, not a fix.
+### PC-0128: the rails' three results for a call a tainted turn may not make as it is (engine 2)
+- catalog: e2
+- class: tool_results
+- kind: spec
+- bytes: 4174 -> 4546
+- sha8: 3665fe56 -> a3248afa
+- lane: RB-RL
+- prd: section 8 (Safety rails, item 1: in a tainted turn note, skill_save and routine create or update go to pending; send to another chat, device configuration, tenant changes and agent_stop are refused with the reason)
+- why: lib/harness/src/plain_rails.cpp: a call the one exemption table (kTaintExemptions) sends to pending is kept by the binding's approval store and not run: kRailPending says so and why; a pending call nothing could keep is refused with kRailNoPending; a call the table refuses or does not name gets kRailRefused. Each states what happened to the call and why (the turn read outside content), never an order. Planned work, not a fix.
+### PC-0125: the owner's line after a guard stop asks the one question whether to go on (engine 2)
+- catalog: e2
+- class: device_notes
+- kind: spec
+- bytes: 2046 -> 1986
+- sha8: 4dc07601 -> 29a09154
+- lane: RB-X3
+- prd: section 1 step 5 (the guards), as amended by rulings 81 to 85 (ruling 84 item 2: the turn ends with what is done, what is left and one question whether to go on; the owner's yes opens a turn that continues from the log)
+- why: lib/harness/include/nimbus/harness/plain/texts.h: one owner line for every guard stop, "This turn stopped at its <slug> limit. Go on from where it stopped?" (kLimitStopped, kLimitStoppedEnd), also when the last round answered with calls only (kLimitLine and kLimitLineEnd, "The turn reached its <slug> limit before a reply. Ask again to continue.", are gone; plain_engine.cpp limitLine). Owner-facing only, never in a request. The next attended turn keeps the stopped turn whole (plain_engine.cpp pointerLimit), so a yes continues from the log. It also frees the bytes the next entry needs (ruling 98 item 3: the class was at 2,046 of 2,048 B after PC-0131). Planned work, not a fix.
+
+### PC-0126: a guard's last round says what is done and what is left (engine 2)
+- catalog: e2
+- class: device_notes
+- kind: spec
+- bytes: 1986 -> 2040
+- sha8: 29a09154 -> 9371985c
+- lane: RB-X3
+- prd: section 1 step 5 (the guards), as amended by rulings 81 to 85 (ruling 84 item 2: no guard ends a turn with a silently poorer answer; at a hard guard, the spend guard or a loop the last round's delivered text states what is done and what is left)
+- why: lib/harness/include/nimbus/harness/plain/texts.h kLimitReachedEnd, the close of the guard trip's device item the model sees before its last round: "[device] limit reached (<slug>): no tool runs now; say what is done and what is left." (was "[device] limit reached (<slug>)"). The new slug "loop" (three tool rounds in a row with no progressing call) rides the same item. A routine or agent report that reaches its limit ends the same way, naming what is unfinished (ruling 84 item 9). Planned work, not a fix.
+
+### PC-0144: the note tool's results and errors (engine 2)
+- catalog: e2
+- class: tool_results
+- kind: spec
+- bytes: 4546 -> 5894
+- sha8: a3248afa -> 6861f37b
+- lane: RB-N1
+- prd: section 4 ("Notes": note returns the stored line and the space used; pinned full is stored unpinned and says so; both full is an error listing the largest keys, nothing evicted; a set from a tainted or unattended turn goes to pending; with no card a member's note is refused in one line)
+- why: lib/core/src/orch_notes.cpp, a new tool of the spec with its own result and error lines (facts only: what was saved, where, the space used; what was kept for approval and why; what was refused and that nothing changed), cataloged as tool_results through E2_EXTRA_SOURCES as the file tools' are; the pending file's own markers ("seq ", "kind=keep ") are file format the catalog lists with them. No prompt text, no instruction. Planned work, not a fix.
+### PC-0140: the summarizer answers changes to one cumulative summary (engine 2)
+- catalog: e2
+- class: summarizer
+- kind: spec
+- bytes: 654 -> 836
+- sha8: 82cd5b54 -> 2ce2aac9
+- lane: RB-C3
+- prd: section 3 (Compaction), as amended by owner rulings 105 and 106 (after a compaction the request is the system prompt, one cumulative structured summary that each compaction updates and never re-summarizes from nothing, and a settable recent part)
+- why: lib/harness/include/nimbus/harness/plain/texts.h summarizer::kPrompt now asks for changes to the running summary (+F, +D, +Q, +O add; =<id> replaces a line the person changed; -<id> drops one that is done; = for none) instead of a one-day digest written from nothing; kSince ("Conversation since the summary:") opens the one message after the summary so far, which rides in the system text with its ids. Code applies the changes (tx::applySummaryEdits), so a line no change names stays byte for byte. Planned work (a lane of the plan implementing the owner's design), not a fix; no instruction was added to pass a test.
+
+### PC-0141: the summary's section titles and the block's label (engine 2)
+- catalog: e2
+- class: core
+- kind: spec
+- bytes: 1474 -> 1688
+- sha8: e511c6c4 -> 68e60f2d
+- lane: RB-C3
+- prd: section 3 (Shape), as amended by owner rulings 105 and 106
+- why: lib/core/include/nimbus/orch/tx/digest.h digest_text: the device-written section titles of the cumulative summary (Facts and standing preferences, Decisions, Quantities and dates as stated, Open items, Files changed), its archive line and its empty form; texts.h core::kDigests reads "Summary of the earlier conversation:" (was "Earlier days:") and kOlderDays says earlier turns appear as one summary and search finds their exact words (was "dated digests"). General sections, no use case named (ruling 41).
+
+### PC-0142: the status line of a turn that waits for the summary; the manual answer (engine 2)
+- catalog: e2
+- class: device_notes
+- kind: spec
+- bytes: 2040 -> 2044
+- sha8: 9371985c -> 251bb8a3
+- lane: RB-C3
+- prd: section 3 and section 8 item 9 (status lines), as amended by ruling 98 item 1 (the engine compacts first at turn open, with a status line) and ruling 106 item 3 (when a turn must wait for the summary, the status line says so); ruling 98 item 3 (the lane that adds to device_notes frees bytes first)
+- why: lib/harness/include/nimbus/harness/plain/texts.h kProgressSummary "updating the summary first." (owner-facing only: the progress line is never stored or shown to a model); to make room kCompactDone, the owner's answer to /compact, reads "The summary is updated." (was "Summarized the earlier turns into day digests.", -23 B: there are no day digests any more).
+
+PC-0143: not used.
+### PC-0147: a stored PDF says it cannot be read yet (engine 2)
+- catalog: e2
+- class: stubs
+- kind: spec
+- bytes: 0 -> 31
+- sha8: e3b0c442 -> 2b588162
+- lane: RB-TG1
+- prd: section 5 (documents: a document lands at inbox/<update id>-<valid name> and the message shows that path; until RB-P2 a PDF is stored and the message says it cannot be read yet)
+- why: lib/core/include/nimbus/net/tg_inbox.h kInboxPdfNotRead, " (a PDF: it cannot be read yet)", appended after the inbox path of a stored PDF in the owner message (nimbus::net::documentDetail). A text type shows its path only (read_file reads it). It is engine 2's only new model text in this lane; the paste pointer reuses tx::longTextHead's line. Planned work, not a fix.
+
+### PC-0148: the hosted file tools refuse a name the store keeps for itself (engine 2 on nimbusd)
+- catalog: e1
+- class: tool_results
+- kind: spec
+- bytes: 34797 -> 34932
+- sha8: 6811ed04 -> 0e2aff74
+- lane: RB-N2b
+- prd: section 4 (the file tools), as amended by ruling 112 item 4 (the tools refuse, in one plain line, a name that collides with a host's own files and a project the host evicts as regenerable) and item 6 (up to 256 B of engine-2 tool_results text for the refusal lines)
+- why: nimbusd/src/hosted_file_tools.h HostedFileTools::kReservedName, 135 B, the one refusal of write_file, append_file and edit_file for a name ending in .tmp (the atomic writer's temporary file) or a path in the chat or chat-* folders (evicted as regenerable copies). It is catalogued under e1 because the gate reads nimbusd's sources there; it reaches only engine-2 requests. Written by lane E2-HOST, which carries RB-N2b's hosted binding (ruling 114, the fast engine-2 path). Planned work, not a fix.
+### PC-0174: delete_file's result line and the device's web_search binding (engine 2)
+- catalog: e2
+- class: tool_results
+- kind: spec
+- bytes: 5894 -> 6058
+- sha8: 6861f37b -> f10df0de
+- lane: RB-N2b
+- prd: section 4 (the file tools: delete_file behind more, files_admin; web_search, whose results are outside content), and ENGINE2-FASTEST-PATH.md step 2 (file tools over the old engine's file store; web search through the old search function; ruling 114)
+- why: lib/core/src/orch_file_tools.cpp kDeleted "deleted {} ({} B)" with delete_file's one argument name (path), the result of the declared tool behind more (texts.h kBehindMore, unchanged); its refusals reuse the existing file tool lines. lib/harness/include/nimbus/harness/plain/texts.h tool_results::kWebSearchNoKey, the one plain line web_search gives on a device with no search key (facts only, no instruction). src/agent/tools_plain.cpp joins the catalog for its literals: the engine-2 name web_search, the old engine's handler name web.search and argument query that it forwards, and the Tavily budget slug; the search results and errors stay the old engine's own (lib/harness/src/websearch.cpp, unchanged, e1 catalog). Written by lane E2-TOOLS, which carries RB-N2b's device binding of the file tools (ruling 114, the fast engine-2 path). Planned work, not a fix.
+
+PC-0175, PC-0176: not used.
+
+### PC-0171: a stub line is refused as file content (engine 2)
+- catalog: e2
+- class: tool_results
+- kind: build
+- bytes: 6058 -> 6142
+- sha8: f10df0de -> 9d11335c
+- lane: E2-VERB
+- prd: section 2 (the stub rule, as amended by owner rulings 81, 82 and 106: under the due mark the request replays every call and result whole; stubs only on the overflow path) and section 4 (the file tools; delete_file behind more, files_admin)
+- why: lib/core/src/orch_file_tools.cpp kStubText, 70 B: write_file content, append_file text and edit_file new that is a stub line and nothing else ([stub ...], tx::looksLikeStub) is refused with one line that says it is a stub line, not text, and that only real text is stored (a fact, not an order: check_tool_result_imperatives; shortened to fit the class ceiling beside PC-0174). The E2-HOST comparison (evidence/refloop-e2, long-chat) showed models copying their own earlier calls, shown with stubbed arguments, into write_file. delete_file's result and argument are PC-0174's (lane E2-TOOLS' FileTools::remove, which this lane binds on nimbusd). The stub texts themselves (lib/core/src/orch_tx_rules.cpp: a file read's stub names read_file with its path and range, a long argument's stub says it is an argument sent earlier, not content) are not in either catalog's sources; they change with this entry too. Planned work, not a fix.
+### PC-0153: the schedule tool's results and errors (engine 2)
+- catalog: e2
+- class: tool_results
+- kind: spec
+- bytes: 6142 -> 6652
+- sha8: 9d11335c -> 5878ac87
+- lane: RB-U1b
+- prd: section 4 (tool 11, schedule: create, update, delete or list reminders and routines) and section 6 (a reminder delivers its fixed text with no model call; routines; new fields in /data/loops2.json), ruling 81 (a text over a limit is refused with the limit named, never stored cut), ruling 111 item 2 (the class ceiling rises from 6,144 B to 6,656 B for the schedule tool's own lines: 510 B of schedule text, 4 B left)
+- why: lib/core/src/orch_schedule_tool.cpp, a new tool of the spec with its own result and error lines, cataloged as tool_results through E2_EXTRA_SOURCES as the note tool's are. Every literal of the file counts: the argument words (op, kind, id, when, text, every and their values), the cadence words, and facts only: what was stored, updated or deleted with its id, kind, time or cadence and whole text, whether it waits for the owner's approval or is paused; what form an argument must take; that a text is over the 2048 B limit; that a turn no person started may list or set reminders only; that the write was refused. No instruction, no prompt text, no engine-1 wording, user noun "routine". Landed by lane E2-SCHED (ruling 114, the fast engine-2 path), chained after PC-0171: the lines were shortened to fit beside PC-0171 and PC-0174 (for example "op: create|update|delete|list", "unattended: list/reminder only", "write refused"), and the routine lastErr "no card" moved to schedule_tool.h (store words, never read by a model). Planned work, not a fix. PC-0154 and PC-0155: not used.
+### PC-0191: a whole result whose stored bulk could not be read says so (engine 2)
+- catalog: e2
+- class: stubs
+- kind: build
+- bytes: 31 -> 68
+- sha8: 2b588162 -> af7ac59a
+- lane: E2-FIX2A
+- prd: section 2 (the stub rule, as amended by owner rulings 81, 82 and 106: under the due mark the request replays every call and result whole), ruling 115 item 7 (finding P11, a missing or short bulk file silently sent its stub or nothing)
+- why: lib/harness/include/nimbus/harness/plain/texts.h stubs::kResultUnread, 37 B, "[the stored result could not be read]": when a result shown whole has a bulk file the card cannot give back whole (gone, short, or a read fault), lib/harness/src/providers/plain_wire_anthropic.cpp wholeText puts this line in its place, then the stored stub when it has one, so the model reads that the earlier result is not here instead of a preview it would take for the data or an empty tool_result (and a failed result keeps is_error). A fact, not an order (check_tool_result_imperatives). The device log records it once per turn. In the stubs class because it stands in for a result the way a stub does; tool_results and device_notes had 4 B left.
+### PC-0200: the summarizer's update answers as a structured change list (engine 2)
+- catalog: e2
+- class: summarizer
+- kind: build
+- bytes: 836 -> 973
+- sha8: 2ce2aac9 -> edb8c9ad
+- lane: E2-CMP
+- prd: section 3 (compaction: acceptance, "the old state stays" otherwise) as amended by owner rulings 105 and 106 (one cumulative summary, updated by changes, never rebuilt from nothing), ruling 116 (every failure state has a true line and ends by itself)
+- why: lib/harness/include/nimbus/harness/plain/texts.h summarizer::kChangesSchema, 137 B: a JSON schema (an object with one list of strings, "changes") sent as output_config.format on the Anthropic wire for a compaction update, so the provider returns the change lines of kPrompt whole and "nothing to change" is an empty list. No prompt text changes and nothing tells the model anything new: the schema is the answer's form, a mechanism (AGENTS.md rule 9). The bench (lanes/E2-BENCH/RESULT.md, problem 2) failed /compact twice on a 55k to 74k token chat with one unread line; probes of the same request shape on Haiku (lanes/E2-CMP/evidence/probes.jsonl) answered a slice with nothing new as "Nothing to change." in 6 of 6 free-text answers and as an empty list in 6 of 6 structured ones (Sonnet: 1 of 3 free-text answers was prose, 0 of 3 structured). Red first: test_plain_compact test_nothing_to_change_is_a_whole_answer_in_the_structured_form and four more at 0af175f52's base (lanes/E2-CMP/evidence/red-before-compact.log). Other wires keep the free-text form, and an answer not taken is asked once more at once in it. Planned work on the engine's spec, not a prompt patch. PC-0201 and PC-0202: not used.
+### PC-0189: a photo not attached to a request says it was shown earlier, and names view only when bound (engine 2)
+- catalog: e2
+- class: stubs
+- kind: build
+- bytes: 68 -> 158
+- sha8: af7ac59a -> 3d2be4da
+- lane: E2-FIX4
+- prd: section 5 (photos on the transcript: pixels while in view, then the photo's line), section 2 (the stub rule: no stub names a tool the chat does not have), rulings 81 and 82 (nothing leaves a request without a named line), ruling 116 item 2 ("cannot read" is never "absent")
+- why: lib/core/include/nimbus/orch/tx/photo_text.h, 90 B, the words tx::photoStub (lib/core/src/orch_tx_rules.cpp) writes after '[photo p<ref> <when>: ' (and the photo's note): "shown earlier in this conversation; not attached to this request", and only when the engine has bound the view tool (the viewBound switch, off until lane E2-SRCH binds view) "; view id=p" <ref> " shows it again". The old line, '[photo p<ref> <when> not shown: view id=p<ref>]' (in orch_tx_rules.cpp, which neither catalog reads), named view, which engine 2 has not bound; on the bench (lanes/E2-BENCH/RESULT.md part 2, d-t02 and d-t13) the head read "not shown" as never having seen the photo and disowned its own correct description. The new line is a fact: the photo was shown earlier, it is not in this request. The words moved to a file of their own so the catalog reads them (E2_EXTRA_SOURCES, class stubs). Red first: test_plain_conformance photo_tests (evidence/red-first-D2.log at 70d198b24). With lane E2-FIX4's rule change a photo stays in view until compaction's pointer or a cap, so the line is rare. PC-0190 and PC-0191: not used by E2-FIX4 (PC-0191 was already E2-FIX2A's).
+### PC-0192: the import's notes name search only when it is bound (engine 2)
+- catalog: e2
+- class: device_notes
+- kind: build
+- bytes: 2044 -> 2044
+- sha8: 251bb8a3 -> e673add3
+- lane: E2-FIX5
+- prd: section 2 (what a request shows; no line names a call the model cannot make), AGENTS.md rule 9, ruling 116 item 1 (a true line)
+- why: lib/core/include/nimbus/orch/tx/migrate.h: the anchor note's " was kept by the earlier engine; search finds it." and the named rows' " not shown: search finds them." are each split in two, the tool-naming tail ("; search finds it." / ": search finds them.") added only when tx::MigrateDeps::bound.search says the device registered a tool named search, else the note ends with kEnd ("."). Engine 2 binds no search today, so the model was told to call a tool it does not have. The anchor note is still recognised by kEarlierKept alone (lib/core/src/orch_tx_migrate.cpp importItem), so notes stored before this change still mark the import as done. No byte added. Notes already stored on a card were rendered at import time and keep their old words. Pinned by test_e2_migration test_the_import_notes_name_search_only_when_it_is_bound (red before: the stored anchor note named search with no search registered) and test_plain_request test_no_template_names_a_tool_that_is_not_bound.
+### PC-0193: a slice's not-loaded line names search only when it is bound (engine 2)
+- catalog: e2
+- class: summarizer
+- kind: build
+- bytes: 973 -> 974
+- sha8: edb8c9ad -> 1855fed2
+- lane: E2-FIX5
+- prd: section 2 (what a request shows), section 3 (compaction: a slice names what it could not read), AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h summarizer::kNotLoaded is split into "[earlier turns not loaded after a restart", then ": search finds them]" when search is bound (CompactDeps::searchBound, from the registry) or "]" otherwise (1 B more). The summarizer read "search finds them" and could carry it into a digest the head reads, where search is not bound. Pinned by test_plain_compact (the line is still named; its tail by the registry) and test_plain_request test_no_template_names_a_tool_that_is_not_bound.
+### PC-0194: stubs, long texts and the omission line name view or search only when bound (engine 2)
+- catalog: e2
+- class: stubs
+- kind: build
+- bytes: 158 -> 158
+- sha8: 3d2be4da -> 3d2be4da
+- lane: E2-FIX5
+- prd: section 2 (the stub rule: a stub names the call that brings its bytes back), AGENTS.md rule 9
+- why: lib/core/src/orch_tx_rules.cpp (not a catalogued source; logged here for the record, no class changes): tx::BoundTools (lib/core/include/nimbus/orch/tx/rules.h) is filled by the engine from its registry each turn (plain::boundTools). Without view: an internal stub ends " ..." (or names E2-VERB's read_file call when one exists), an outside stub ends "outside content, not shown]", a long argument "...; not content]", a long text "[text continues: <n>B more]". Without search the omission line ends ", not shown]". With the tool bound each text is as before, so they turn on by themselves when lane E2-SRCH binds the tools. Stubs are stored at capture: a stub stored earlier keeps its words. The photo stub (E2-FIX4's texts, PC-0189) is fed BoundTools::view at its one call site (plain_wire_anthropic.cpp, RenderInput::bound). Pinned by test_plain_request test_no_template_names_a_tool_that_is_not_bound (every template, the photo stubs included, over the four registries), test_tx_stub_rule, test_plain_rails (red before: the next turn's outside stub named view), test_plain_conformance and the battery's coverResult (a stub never names an unbound view).
+
+### PC-0195: search's and view's result and error lines (engine 2)
+- catalog: e2
+- class: tool_results
+- kind: spec
+- bytes: 6652 -> 7073
+- sha8: 5878ac87 -> dac59e38
+- lane: RB-N3
+- prd: section 4 (tools 7 and 9: search over this conversation's history and the person's notes, view of a stored result, message or photo by id), section 2 (the stub and omission lines that name them), ruling 116 (cannot read is never absent), ruling 117 (the class ceiling 7,168 B for these lines)
+- why: lib/harness/include/nimbus/harness/plain/texts.h tool_results: the words a hit carries (person, assistant, device, summary, " result", ", outside content", " (earlier engine)", "note "), the excerpt's cut mark, "no match", the remainder ("more: searched to <when>, older unread: before=<cursor>", "more match: before=", "searched to the start"), " results unreadable" for stored results the card no longer gives back, view's page tail ("\nnext_offset=N (M B more)"), the photo line and its two endings, and the refusals (no words; a scope, cursor or date that is not valid; a read the card refused, with the cursor that goes on; not this conversation; not in this conversation; stored text gone after 30 days; the id forms). Facts only, no instruction (check_tool_result_imperatives). Written by lane E2-SRCH (ruling 114, the fast engine-2 path), which binds RB-N3's tools on the device and the daemon (lib/harness/src/plain_history.cpp): the lines were cut short (the class had 4 B left before it); the class ceiling goes from 6,656 B to 7,168 B for these lines only, as ruling 117 allows (tools/release_gate/gen_model_text_catalog.py E2_CEILINGS). Planned work, not a fix.
+
+### PC-0196: search's and view's declarations match what is bound (engine 2)
+- catalog: e2
+- class: tool_descriptions
+- kind: spec
+- bytes: 4293 -> 4536
+- sha8: 76f76e0b -> dae5ec39
+- lane: RB-N3
+- prd: section 4 (tools 7 and 9), as this lane binds them
+- why: lib/harness/include/nimbus/harness/plain/texts.h: search says what it reads (this conversation's history, the default, or the person's unpinned notes), that every word must appear, from and to as YYYY-MM-DD, up to 5 hits newest first with an id for view, and before to go on; its schema drops the files and memories scopes (not bound on engine 2; the PRD's files and memories scopes are left to a later lane) and makes scope optional, with before added. view says which ids it opens (r..., m..., p...) and that offset and limit page a long text; its schema gains offset and limit. Written by lane E2-SRCH. Planned work, not a fix.
+
+### PC-0197: the summary line names what search finds on engine 2 (engine 2)
+- catalog: e2
+- class: core
+- kind: spec
+- bytes: 1688 -> 1686
+- sha8: 68e60f2d -> e3d00845
+- lane: RB-N3
+- prd: section 4 (the system core's "what you see" line: stubs and view, older days as digests, search)
+- why: lib/harness/include/nimbus/harness/plain/texts.h core::kOlderDays: "search finds their exact words, files and notes" becomes "search finds their exact words and your notes": search on engine 2 reads this conversation and the person's notes, not files (read_file and list_files do), so the line now says only what is true. Written by lane E2-SRCH. Planned work, not a fix.
+
+### PC-0209: search's rest line names the count and dates of further matches (engine 2)
+- catalog: e2
+- class: tool_results
+- kind: spec
+- bytes: 7073 -> 7071
+- sha8: dac59e38 -> ed391636
+- lane: RB-N3
+- prd: section 4 (tool 7, search: results with source and time), ruling 116 (cannot read is never absent), ruling 117 (the class ceiling 7,168 B for search's and view's lines)
+- why: lib/harness/include/nimbus/harness/plain/texts.h tool_results: search now ranks every match of a whole window (lane E2-SRCH2: the exact phrase, then every word in one line, then in two lines in a row; newest first among equals) and returns twelve, so its rest line says "<N> more matches, <date> to <date>; before=<cursor>" (new " more matches", " to ", "; before=") or, when the window did not reach the start of the range, "more: searched to <date>, older unread; before=<cursor>" (kSearchBefore loses its ": before=" to the shared "; before="). The notes scope says the same count ("<N> more matches; before=n<i>") and its own "more match: before=" goes. Facts only (check_tool_result_imperatives). Written by lane E2-SRCH2 on the orchestrator's order after the bench showed Haiku stopping at search's first page of five newest hits. Planned work, not a fix: the class ends 2 B smaller.
+
+### PC-0210: search's declaration says twelve hits, best first (engine 2)
+- catalog: e2
+- class: tool_descriptions
+- kind: spec
+- bytes: 4536 -> 4535
+- sha8: dae5ec39 -> bab37350
+- lane: RB-N3
+- prd: section 4 (tool 7)
+- why: lib/harness/include/nimbus/harness/plain/texts.h: search's description "Up to 5 hits, newest first" becomes "Up to 12 hits, best first", as lane E2-SRCH2 binds it. Planned work, not a fix.
+
+### PC-0212: a result's stub says it was shown in full earlier and is not attached, then the call that reads it again (engine 2)
+- catalog: e2
+- class: stubs
+- kind: build
+- bytes: 158 -> 290
+- sha8: 3d2be4da -> 3e277c2a
+- lane: E2-FIX9
+- prd: section 2 (the stub rule: a stub names the call that brings its bytes back), AGENTS.md rule 9
+- why: lib/core/include/nimbus/orch/tx/result_text.h, the words tx::stubText (lib/core/src/orch_tx_rules.cpp) writes after an internal result's '[stub <tool> r<q> <bytes>B <lines>L <HH:MM>...] ', moved out of orch_tx_rules.cpp (which neither catalog reads) so the catalog reads them. A result the card kept: '(' "shown in full earlier in this conversation; not attached to this request" then "; view id=r" <q> " shows it again" when the engine bound view, else "; " <a file read's read_file call> " shows it again", else nothing, then ')', and no preview of the result's first bytes. With no card (kept inline up to a cap, so the preview is all that is left): '<preview> ... (' then photo_text.h's "shown earlier in this conversation; not attached to this request" (E2-FIX4's words, PC-0189) and "; full result not kept: no storage card)". The old tails were "<preview> ... (full: view id=r<q>)" and "<preview> ... (not shown in full to fit the request; <read_file call> reads it again)". On the closing bench (lanes/E2-BENCH2/RESULT.md problem 2, evidence/bench/M-u2) the head read the stubs of its earlier file reads as "truncated previews" the tool had returned and told the person twelve correct answers were "not supported by the data". View is now named before read_file when both exist: it shows the bytes the head was shown, read_file the file as it is now. Red first, real model on the daemon (lanes/E2-FIX9/evidence/disown/): six files read in full, the last data row of each answered right, the request cut by the overflow ladder, then "Read data/log-6.csv in full again and tell me only the first data row.": before, Sonnet withdrew its five earlier correct answers in 5 of 5 runs (Haiku 0 of 5); with the facts after the preview ("shown earlier" or "shown in full earlier") 1 of 5 and 0 of 5 on Sonnet, 1 of 5 and 4 of 5 on Haiku; replays of Haiku's last request (evidence/probe-stub.jsonl) withdrew in 5 of 16 with the preview and 0 of 16 without it, so the preview went. Stubs are stored at capture: a stub stored before this change keeps its words.
+
+### PC-0213: the summarizer sees the summary so far ahead of its prompt (engine 2)
+- catalog: e2
+- class: summarizer
+- kind: build
+- bytes: 974 -> 974
+- sha8: 1855fed2 -> 1855fed2
+- lane: E2-FIX9
+- prd: section 3 (compaction: the summarizer answers changes to the summary so far), AGENTS.md rule 9
+- why: lib/harness/src/plain_compact.cpp askRung (no catalogued text changes; logged for the record): the summary so far is now the system block before the prompt, not after it. The prompt ends with its "nothing to change" answer, "=", and a summary whose first title came right after it read "=Facts and standing preferences:"; the summarizer wrote exactly that as its answer for a slice with nothing new, and it was never taken (the closing bench, lanes/E2-BENCH2/RESULT.md problem 2: four failures in a row, the conversation grew to 138.5k tokens). Probes on a captured second-compaction request (lanes/E2-FIX9/evidence/probes.jsonl, claude-haiku-5-5, structured form): with the summary after the prompt a slice of file work with nothing new was answered with the title in 2 of 12, with the summary first in 0 of 12 (every answer "=" or a change); slices with new facts were answered with the same changes either way. The parser also reads a title alone as no change (tx::SummaryEdits::frame). PC-0214: not used.
+
+### PC-0214: a refused request's line to the person carries the provider's reason after a colon (engine 2)
+- catalog: e2
+- class: device_notes
+- kind: build
+- bytes: 2044 -> 2046
+- sha8: e673add3 -> 2204d611
+- lane: E2-FIX11
+- prd: section 8.9 (the closed list of harness-written lines), ruling 116, AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h kReasonSep, the two bytes ": " between "refused the request (HTTP n)" and the provider's own message in the owner's status line (plain_exchange.cpp exchangeLine). The line goes to the person only: every kept copy (the chat's history row, which an older engine puts into a prompt) is the line without the reason (ExchangeResult::errorLineStored, TurnOutcome::statusStored), so no text a model reads changes. The reason is reduced in code to printable ASCII on one line, with the characters Telegram's and the web chat's Markdown read as markup replaced, and is dropped whole when it looks like a key; no catalogued text was added for that.
+
+### PC-0225: how to work asks for tools when asked, and promises nothing unscheduled, instead of inviting acts (engine 2)
+- catalog: e2
+- class: core
+- kind: build
+- bytes: 1686 -> 1674
+- sha8: e3d00845 -> a5a17e0d
+- lane: E2-FIX16
+- prd: section 4 (System prompt, how to work), AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h core::kHowToWork opens "when asked for something a tool can do, do it in this reply" instead of "act with your tools in this reply; when asked for something a tool can do, do it now", and core::kNoLater "There is no later unless you schedule it." becomes "Promise nothing for later that you have not scheduled." The old opener told the head to act with tools in every reply, and the no-later line read as a cue to save or schedule now: in the head-to-head of 902391f7f (lanes/E2-H2H, long-chat, where the person says "No need to comment on it, just say you have it") Sonnet wrote 22 journal files in 2 of 3 runs (0.45 USD a run against 0.14 USD), and offered a reminder nobody asked for (recent-compare-plain rep2). Replays of the captured first long-chat request (lanes/E2-FIX16/scratch/probe.py): Sonnet wrote a file in 5 of 6 before, 0 of 6 with this text and PC-0226; Haiku scheduled an unasked reminder in 5 of 10 before and 0 of 10 without the no-later line. Saving when asked is unchanged: the asked case keeps "do it in this reply". 12 bytes fewer.
+
+### PC-0226: how to work no longer sends every sum to a tool (engine 2)
+- catalog: e2
+- class: core
+- kind: build
+- bytes: 1674 -> 1600
+- sha8: a5a17e0d -> 29889990
+- lane: E2-FIX16
+- prd: section 4 (System prompt, how to work), AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h core::kHowToWork loses "Totals, sums and counts come from a tool result, not your own arithmetic." (PC-0025). It sent every figure through calc: in the head-to-head of 902391f7f (lanes/E2-H2H) Sonnet called calc for "What's 12 times 12?" and three more one-step sums in memory-20-turns (lost 2 of 3 to v5.2.0 on that), for a 9-mile gap in recent-compare-plain, and for a one-number estimate in recent-compare-food, where it computed 557, said "about 560", and later took the gap from 557 (the run's only two failed checks, difference_from_turn). The line also drove the running totals added to 16 long-chat replies. Replays of the captured requests (lanes/E2-FIX16/scratch/probe.py): Haiku called calc for 12 times 12 in 10 of 10 with the line and 0 of 10 without it. The reference loop has no such line and passed 291 of 291 checks. calc and its description stay. 74 bytes fewer.
+
+### PC-0227: the no-promise line keeps the word schedule, so a caller who cannot schedule is not shown it (engine 2)
+- catalog: e2
+- class: core
+- kind: build
+- bytes: 1600 -> 1595
+- sha8: 29889990 -> 6bf20834
+- lane: E2-FIX16
+- prd: section 4 (System prompt; a sentence that names a tool is shown only to a caller who can call it), AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h core::kNoLater "Promise nothing for later that you have not scheduled." (PC-0225) becomes "Promise nothing for later unless you schedule it.": composeSystem leaves out a sentence that names a tool its caller cannot call, and "scheduled" is not the tool's name, so PC-0225's words reached a guest, who cannot schedule (test_plain_request test_the_checker_catches_an_uncallable_name went red). With the tool's word the guest's core is as before. Replay of the captured first long-chat request on Haiku (lanes/E2-FIX16/scratch/probe.py, variant C1b): an unasked reminder in 1 of 10 (5 of 10 with the old line, 0 of 10 with none). 5 bytes fewer.
+### PC-0231: the line of a photo a head cannot take as pixels: blind head, refused photo (engine 2)
+- catalog: e2
+- class: stubs
+- kind: build
+- bytes: 290 -> 372
+- sha8: 3e277c2a -> af49befe
+- lane: E2-P-PHOTO
+- prd: section 5 (photos; PRD.md:189, a blind head reads the description stored at arrival), ROUTER-DESIGN.md section 7, ruling 116, AGENTS.md rule 9
+- why: lib/core/include/nimbus/orch/tx/photo_text.h kPhotoNoSight and kPhotoRefused, the two ends of tx::photoAbsentLine, which never says "shown earlier". Blind (a head without image input): "[photo p<ref> <when>: <description>]" with the description made once at arrival by engine 1's caption walk (only for such a head; no catalogued text), else "...: this model cannot see photos]" (the router design's words); before, such a head got the photo's bracket with "(attached: the photo itself is in this message)", which was not true. Refused: "...: the provider refused this photo, so it is not attached]": a provider refusal naming the image (imageparts::refusedImages, a 400 or 422) re-sends the round once with the photo as this line and keeps it out of view in the chat, so the turn ends in the model's reply instead of an error line alone (engine 1 re-sends with a transcription). Red scenario: test_plain_conformance test_a_photo_the_provider_refuses_ends_in_a_reply_with_a_true_line. PC-0232: not used.
+
+### PC-0233: search declares the scopes files and memories, schedule declares the kind wakeup (engine 2)
+- catalog: e2
+- class: tool_descriptions
+- kind: spec
+- bytes: 4535 -> 4640
+- sha8: bab37350 -> aebfed83
+- lane: RB-N3
+- prd: section 4 (tool 7, search scope files and memories, read only over /mem/vectors.bin; wakeup.set becomes schedule), section 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h kTools: search's description names its four scopes (history with all words, notes, files, the earlier engine's memories by meaning) and its schema enum gains "files" and "memories"; schedule's description names the wakeup ("runs text once at 'when' as your own run, without this chat, able to read files": what the policy row TurnClass::Wakeup lets a routine fire do) and its kind enum gains "wakeup". Both stay under 240 B. Written by lane E2-P-MEM (the schedule part is RB-U1b's tool). Planned work, not a fix (inventory parity-modalities-media rows 18 and 25, parity-autonomy-memory-safety rows A6 and M7).
+
+### PC-0234: search's file hit line and schedule's wakeup words (engine 2)
+- catalog: e2
+- class: tool_results
+- kind: spec
+- bytes: 7071 -> 7097
+- sha8: ed391636 -> d5a076a0
+- lane: RB-N3
+- prd: section 4 (tools 7 and schedule), ruling 117 (the class ceiling 7,168 B for search's lines), ruling 116
+- why: texts.h kSrcFile "file " opens a scope-files hit ("file <project>/<name>: ...<excerpt>..."; the rest lines are search's own). lib/core/src/orch_schedule_tool.cpp: the kind slug "wakeup"; kBadKind "kind: reminder|routine" becomes "kind: reminder|routine|wakeup"; kWrongKey "reminder: when; routine: every" becomes "reminder, wakeup: when; routine: every"; the cap refusal "max 4 wakeups" is built from the existing "max " and the slug. The scope memories answers engine 1's memory.search text whole (e1 catalog, unchanged), including its one line when embeddings cannot serve ("keyword match, embeddings unavailable: <why>"). Facts only. Written by lane E2-P-MEM (the schedule words are RB-U1b's tool). PC-0235: not used.
+
+### PC-0222: the summarizer keeps every code, name and number, and what the person keeps out of notes and files (engine 2)
+- catalog: e2
+- class: summarizer
+- kind: build
+- bytes: 974 -> 1021
+- sha8: 1855fed2 -> a9622cfe
+- lane: E2-FIX15
+- prd: section 3 (compaction: one cumulative summary that keeps facts, quantities, decisions and open items), rulings 105 and 106
+- why: lib/harness/include/nimbus/harness/plain/texts.h summarizer::kPrompt. On the closing bench (lanes/E2-BENCH2/RESULT.md, "Final build 902391f7f") three facts told "conversation only, do not save a note or a file" passed under the summary and Haiku answered 0 of 3, then called its right answers made up. On the daemon (lanes/E2-FIX15/evidence: runs/d4-red1) the stored summary held "F1 The shed padlock code is something the person asked not to be saved anywhere." with no code, and Lena's train only by luck: the summarizer read "not in a note or a file" as "do not keep". Replays of the captured summarizer request (claude-haiku-5-5, lanes/E2-FIX15/evidence/probe-summarizer.jsonl): the old prompt kept 2 of 5 facts with their values in 3 of 3 answers; three wordings that only stressed exact values kept 2 of 5 in 8 of 9; "What the person keeps out of notes and files is kept only here, value and all." kept 5 of 5 in 3 of 3. Room inside the class ceiling (1,024 B) by shorter words elsewhere in the prompt: "a conversation's running summary" (the input names person and assistant), "+Q a quantity or date, with its date" (exact values are now asked of every line), "when it changed", "when done". PC-0223 and PC-0224: not used.
+### PC-0228: the agents group's declarations, agent_list and agent_stop (engine 2)
+- catalog: e2
+- class: tool_descriptions
+- kind: build
+- bytes: 4640 -> 4866
+- sha8: aebfed83 -> 8e3dd670
+- lane: E2-P-SUB
+- prd: section 4 (groups behind more: agents, agent_list and agent_stop; agent_start is always on), section 6 (sub-agents), AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h kBehindMore: agent_list ("List this chat's sub-agent jobs, newest first, with id and state.", no arguments) and agent_stop ("Stop a running sub-agent job by id.", id) join delete_file behind more, in the agents group lib/core/src/orch_tool_groups.cpp already names. agent_start's declaration is unchanged; it reaches the tools array now that lane E2-P-SUB registers it (plain_agents.cpp registerAgentTools over the kept JobEngine). Planned work, not a fix.
+
+### PC-0229: the agent tools' results and errors (engine 2)
+- catalog: e2
+- class: tool_results
+- kind: build
+- bytes: 7097 -> 7188
+- sha8: d5a076a0 -> 6ad8a571
+- lane: E2-P-SUB
+- prd: section 6 (agent_start returns 'started id=a7 job=<provider id>' or the provider's error), section 4 (rules for every tool), AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h tool_results, the words plain_agents.cpp writes: agent_start "started id=<tag> job=<provider job id>" when the job started inside the turn, "queued" when it waits for a free slot, "not started: " then the JobEngine's own refusal line (the spawn notes engine 1 already writes); agent_list "no jobs" or the chat's ledger lines (jobs.cpp, without the old engine's framing line) and ": open" after a job a restart left open; agent_stop "stopping id=<tag>" or "no such job: <id>"; "invalid arguments" for an argument outside the schema, a missing name or task, or more than four files. Facts only, 91 B inside the class ceiling (no ceiling raised). Planned work, not a fix.
+
+### PC-0230: a sub-agent report's line in its report turn (engine 2)
+- catalog: e2
+- class: stubs
+- kind: build
+- bytes: 372 -> 414
+- sha8: af49befe -> e548380a
+- lane: E2-P-SUB
+- prd: section 6 (arrival: the report saved whole as agents/<id>-<name>.md, one item carrying it as an outside bulk result, then one head turn), AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h stubs: the line that opens a report turn's agent item (plain_agents.cpp agentReportNote): "[agent report] <name> id=<tag>", " failed" when the job ended without a result, " saved whole as agents/<tag>-<name>.md" for the file the JobEngine stored the whole reply in; then the report inside the outside-content fence jobs.h already uses for routines. Kept in the stubs class because, like a stub, it names where the whole bytes are kept (the report text itself is cut at 3,500 characters by the JobEngine); the device-notes class had 2 B left. Planned work, not a fix.
+### PC-0236: the hosted daemon registers engine 2's web_search, as the device does (engine 2)
+- catalog: e2
+- class: tool_results
+- kind: spec
+- bytes: 7188 -> 7228
+- sha8: 6ad8a571 -> 56f1887e
+- lane: RB-I1
+- prd: section 4 (web_search), inventory parity-daemon-hosted-release part (a) row A10
+- why: nimbusd/src/hosted_web_search.h is the hosted twin of src/agent/tools_plain.cpp's registration: the names "web_search" and "web.search" and the argument "query", the same words the device file already has, over the old engine's handler; its no-key refusal is texts.h kWebSearchNoKey, unchanged. No new sentence a model reads: the class grows only by the second file's copies of those names. Written by lane E2-P-HOST1 (RB-I1's hosts on engine 2). Planned work, not a fix (CUM-1010).
+### PC-0237: send takes a second message and an allowed chat; speak behind more (engine 2)
+- catalog: e2
+- class: tool_descriptions
+- kind: spec
+- bytes: 4866 -> 5093
+- sha8: 8e3dd670 -> c26a048f
+- lane: RB-SND
+- prd: section 4 (send replaces files.send and reply.telegram; speak in the media group), section 6 (voice out: send kind voice returns the message id), inventory parity-modalities-media rows 11 and 12
+- why: lib/harness/include/nimbus/harness/plain/texts.h: send's description and schema gain kind text (a second message, engine 1's reply.telegram text) and a chat argument (the current chat or an allowlisted one, as reply.telegram and files.send took chat_id), and say truthfully that only a voice note returns a message id while text and files are queued (engine 1's media lane is asynchronous); speak (37 B description, its text schema) is declared behind more, the media group orch_tool_groups.cpp already lists, as engine 1's reply.speak. Written by lane E2-P-OUT1, which binds RB-SND on the device. Planned work, not a fix (CUM-1002).
+
+### PC-0238: send's and speak's result lines (engine 2)
+- catalog: e2
+- class: tool_results
+- kind: spec
+- bytes: 7228 -> 7807
+- sha8: 56f1887e -> 024fb7f0
+- lane: RB-SND
+- prd: section 4 (send, speak), section 6 (voice out), inventory parity-modalities-media rows 11 and 12; ruling 124 (the parity tools' result lines)
+- why: texts.h tool_results kSend* and kSpeak*: what was sent to which chat ("queued for chat <id>", "voice note delivered, message_id <id>"), the Voice replies setting off ("voice replies are off: sent as text, queued for chat <id>"; "not spoken: voice replies are off"), and why not (no turn, arguments, no allowed chat, no such file, not an image, Telegram busy, blocked by the outbound screen, the speaker muted or failing, a voice note not delivered with engine 1's own short reason). Facts only. src/agent/tools_plain_send.h adds the argument and kind words it reads (path, ref, chat, caption, text, kind, file, photo, voice, send, speak). 579 B inside the class ceiling (no ceiling raised). Written by lane E2-P-OUT1, which binds RB-SND on the device. Planned work, not a fix (CUM-1002).
+
+### PC-0239: files.send's lookup is shared, one duplicate literal fewer (engine 1)
+- catalog: e1
+- class: tool_results
+- kind: spec
+- bytes: 34932 -> 34918
+- sha8: 0e2aff74 -> 702310bb
+- lane: RB-SND
+- prd: section 4 (files.send becomes send), inventory parity-modalities-media row 12
+- why: src/agent/files_subsystem.cpp: files.send's lookup, access check, allowlist check and media-lane send move into files::sendStored, which engine 2's send calls too; the handler maps its answer to the same words as before, so its two "file not found" literals (missing entry, missing path) become one. What engine 1's model reads is unchanged. Written by lane E2-P-OUT1, which binds RB-SND on the device. Planned work, not a fix (CUM-1002).
+
+### PC-0240: engine 1's image, PDF, share, stat, fetch and music tools bound on engine 2; read_file's binary line states the size (engine 2)
+- catalog: e2
+- class: tool_results
+- kind: spec
+- bytes: 7807 -> 8125
+- sha8: 024fb7f0 -> 2b214ae3
+- lane: RB-I2
+- prd: section 4 (files_admin and media behind more), inventory parity-modalities-media rows 13, 14, 19, 20, 21, 28 and parity-tools-commands-surfaces (files.fetch, files.share, files.stat, files.pdf, image.generate, media.*)
+- why: src/agent/tools_plain_files.cpp registers image_generate, pdf_write, share_file, file_stat, fetch_url, media_play, media_pause and media_stop over engine 1's own handlers (files_subsystem.cpp, pdf_tool.cpp, music.cpp, moved out of their lambdas unchanged). Its result-class literals: the tool names, the argument names it maps (path to project and name), two path lines (" is not a path (project/name)", " is read-only here" for a write under inbox/, skills/, agents/ or the archive) and the four engine-1 tool names an engine-1 answer may carry with their engine-2 names (files.list, files.pdf, files.send, image.generate). Read_file's refusal of a file that is not text now says its size: "{} is not text ({}, {} B)" and "{} is a PDF ({} B); its text is not readable yet"; a page holding a NUL byte past the sniffed head answers the same line instead of the bytes. Written by lane E2-P-OUT2 (RB-I2, the device binding on engine 2). Planned work, not a fix (CUM-1002).
+### PC-0241: the descriptions and schemas of the engine-2 files_admin and media tools bound over engine 1 (engine 2)
+- catalog: e2
+- class: tool_descriptions
+- kind: spec
+- bytes: 5093 -> 6618
+- sha8: c26a048f -> 810a26e5
+- lane: RB-I2
+- prd: section 4 (files_admin and media behind more)
+- why: src/agent/tools_plain_files.cpp namespace tool_descriptions: one description and one schema per tool (image_generate, pdf_write, share_file, file_stat, fetch_url, media_play, media_pause, media_stop), shown only in `more`'s group listing, never in the always-on array or the cached start of a request. Engine 1's facts each restates: what the handler does, its arguments in engine 2's path form, what it returns. Written by lane E2-P-OUT2 (RB-I2, the device binding on engine 2). Planned work, not a fix (CUM-1002). PC-0242: not used.
+### PC-0247: the skills group's declarations, skill_list, skill_save and skill_delete (engine 2)
+- catalog: e2
+- class: tool_descriptions
+- kind: build
+- bytes: 6618 -> 7190
+- sha8: 810a26e5 -> 037e6389
+- lane: E2-P-SKILL
+- prd: section 4 (groups behind more: skills; skill.save and skill.delete with the owner's approval), inventory parity-autonomy-memory-safety S3, AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h kBehindMore: skill_list (no arguments), skill_save (id, md: the front matter keys an assistant save needs, desc required, and that the owner approves it first) and skill_delete (id) join the skills group lib/core/src/orch_tool_groups.cpp already names and the skills index already points at ("skill_list through more"). They bind engine 1's skill.save and skill.delete over the same store. Planned work, not a fix (CUM-1004).
+
+### PC-0248: the skill tools' results and errors (engine 2)
+- catalog: e2
+- class: tool_results
+- kind: build
+- bytes: 8125 -> 8678
+- sha8: 2b214ae3 -> c9108838
+- lane: E2-P-SKILL
+- prd: section 4 (skills), inventory parity-autonomy-memory-safety S3, AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/chat_skill_tools.h, engine 1's skill.save and skill.delete handler words (memory_subsystem.cpp, e1 catalog, unchanged) bound for engine 2: the admin refusals, the near-duplicate line, "skill '<id>' deleted"; skill_list's line per skill ("skills/<id>.md: approved | waiting for the owner | approved, an edit waiting for the owner - <desc>", "no saved skills"); the store's own result words (skill_store.cpp, skill_commands.cpp) are engine 1's, unchanged. PC-0249 in the same file: the store's two lines that name engine 1's tools are said in engine 2's words (the size refusal names "skill_save with id <id>-more"; a skill past 4,096 B is "listed and read when needed (read_file skills/<id>.md reads it all)", true on engine 2, which has no attached copy). Facts only, inside the ceiling (no ceiling raised). Planned work, not a fix (CUM-1004).
+
+### PC-0243: the device, people, models and docs groups' declarations behind more (engine 2)
+- catalog: e2
+- class: tool_descriptions
+- kind: build
+- bytes: 7190 -> 10139
+- sha8: 037e6389 -> df1e7e66
+- lane: E2-P-TOOLS
+- prd: section 4 (the groups behind more: device, people, models, docs), inventory parity-tools-commands-surfaces.md rows device, device_control, people, models.list, docs; parity-providers-models.md rows 12 and 13
+- why: lib/harness/include/nimbus/harness/plain/texts.h kBehindMore declares device.status, device.log, ota.status, device.selftest, system.health, device.control, tenant.list, tenant.set_role, tenant.set_quota, models.list, docs.list, docs.search and docs.read (spelled with '_' for the model), each at most 172 B of facts over engine 1's handlers, which src/agent/tools_plain_device.h binds unchanged; device.control's schema names the action shapes engine 1's validator reads. Listed only inside their groups (more with group); the tools array is unchanged. The owner's tools index grows by 82 B and stays inside its 512 B fit (docs and skills move to its "also behind more" tail). Planned work, not a fix.
+
+### PC-0244: device_control's result leads and the group bindings' names (engine 2)
+- catalog: e2
+- class: tool_results
+- kind: build
+- bytes: 8678 -> 8941
+- sha8: c9108838 -> 127b32e3
+- lane: E2-P-TOOLS
+- prd: section 1 step 6 (a restart or a head switch runs after the reply is sent and the turn is closed), section 4, AGENTS.md rule 9
+- why: texts.h tool_results gains device_control's leads "applied: ", "not applied: ", "action must be an object" and " (runs after this reply is sent)" (engine 1's device.control wrote the first two in orchestrator_e1.cpp); the applier's own summary tokens and refusals are device_apply.cpp's, unchanged and catalogued with engine 1. The rest of the growth is src/agent/tools_plain_device.h's registry names and the action rule key "device.control" it reads, no sentence. Planned work, not a fix.
+
+### PC-0252: /mcp approve and deny move to a file both engines link (engine 1)
+- catalog: e1
+- class: device_notes
+- kind: remove
+- bytes: 54884 -> 54663
+- sha8: 645e6e2a -> 1193384b
+- lane: E2-P-CONN1
+- prd: inventory parity-autonomy-memory-safety row C1 and parity-tools-commands-surfaces row /mcp (engine 2 binds engine 1's remote tool servers and /mcp)
+- why: the seven /mcp replies ("Usage: /mcp approve <name>  |  /mcp deny <name>", "No MCP server named ...", "Approved MCP server ...", "Removed approval for MCP server ...") left src/agent/orchestrator_e1.cpp's /mcp branch unchanged into src/agent/connectors_approval.cpp (connectors::mcp::approvalCommand), which engine 1's /mcp and engine 2's (commands_plain.cpp) both call. They are owner-facing replies of a slash command, never sent to a model; the catalog had them under device_notes only because orchestrator_e1.cpp is listed whole. No text a model reads changed: the class shrinks by those 221 B. The registration of a server's tools moved to the shared mcp::registerServerTools; the fallback description "<slug> tool" stays in src/agent/connectors.cpp (same bytes, same class). The rails' new connector row (plain_rails.cpp) adds no text. PC-0253, PC-0254: not used.
+### PC-0257: the text-mode history line and the unknown-model line (engine 2)
+- catalog: e2
+- class: stubs
+- kind: spec
+- bytes: 414 -> 458
+- sha8: e548380a -> 887cd2b2
+- lane: RB-R4 (lane E2-R4b)
+- prd: router design (P/analysis-2026-11-24/ROUTER-DESIGN.md) section 5 item 7 (text-mode history), section 7 (captions in the photo stub), section 14 lane R4b; AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h stubs. kEarlierRan (PC-0257): a head whose table row has no tools sees each stored call and its result in their place as one line, "[device] earlier I ran <tool>: <result or its stub>" (the separator is device_notes::kReasonSep), so a switch to a text-mode head still sees what happened; nothing is stored differently. kNotAvailableOn (PC-0259): the exchange's line when the provider does not know the model, "<model> is not available on <provider>.", in place of the generic refusal line; kept in stubs because device_notes is at its ceiling. PC-0258: a photo's stored caption (the image part's new `cap` key) rides the existing photo line where its note would ("[photo p<ref8> <when>: <caption>]"); no new text. Planned work, not a fix (CUM-999).
+### PC-0260: the custom endpoint's tool-call probe (engine 2)
+- catalog: e2
+- class: probe
+- kind: spec
+- bytes: 1323 -> 1344
+- sha8: 29789b84 -> f4dd133a
+- lane: RB-R4 (lane E2-R8a, router design lane R8; the router lanes file their entries under RB-R4 as PC-0257 did)
+- prd: router design (P/analysis-2026-11-24/ROUTER-DESIGN.md) section 3.3 (tools only after the verify step accepted a tool call and a window is known), section 14 lane R8; AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h probe. kToolProbeAsk, kToolProbeName and kToolProbeDescription (PC-0260): the one request the device's custom endpoint verify sends (src/agent/provider_verify.cpp through plain::toolProbeBody), the word "ping" with one tool "ping" ("Answers pong.") and tool_choice required, read only by the owner's own endpoint at verify, never in a turn. PC-0261, PC-0262: not used (the text-mode line and the no-key line are owner-facing device copy, never sent to a model). Planned work, not a fix (CUM-1001).
+### PC-0263: the line for a round that moved to another head (engine 2)
+- catalog: e2
+- class: stubs
+- kind: spec
+- bytes: 458 -> 492
+- sha8: 887cd2b2 -> 33dccf84
+- lane: RB-R4 (lane E2-P-FO, router design lane P-FO)
+- prd: router design (P/analysis-2026-11-24/ROUTER-DESIGN.md) section 9 "Fail-over" (one line per switch: "<Provider A> failed (<class>); this answer came from <model B>"), section 6 item 7; AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h stubs. kFailedOver and kAnswerFrom (PC-0263): the person's status line when a round failed on one provider and another head answered (plain::failoverLine; the class is the frozen exchangeErrSlug). It is the turn's status line, so its stored copy is the chat's history row; no request text, tool result or device note changes. Kept in stubs because device_notes is at its ceiling. PC-0264: not used. Planned work, not a fix (CUM-1001).
+### PC-0267: a sub-agent's failure and a report a restart left waiting reach engine 2's report turn (engine 1 catalog)
+- catalog: e1
+- class: device_notes
+- kind: remove
+- bytes: 54663 -> 54655
+- sha8: 1193384b -> bace59ab
+- lane: E2-P-SUB2
+- prd: PRD section 6 (sub-agents on engine 2); inventory parity row PC-0267; rulings 115, 116 (every failure has a true line); AGENTS.md rule 9
+- why: lib/harness/src/jobs.cpp. With JobEngine::Deps::reportTurns (engine 2 on the device and on nimbusd) a job's failure is parked as its result ("FAILED: " + the engine's existing failure line) and arrives as a report turn, and a result the finished ring marks unreported at a boot is parked again: its saved file read back whole, or, when it failed or the file cannot be read, the existing line "The result of [<job>] was lost when the device restarted, so it will not arrive.". No new sentence: the two "FAILED: " literals fold into one helper (parkFailure) and the lost line into lostAtRestartLine, so the class shrinks by 8 B and the lost line moves within the file (CUM-1006).
+### PC-0270: the line for the owner's tool servers waiting for approval (engine 2)
+- catalog: e2
+- class: core
+- kind: spec
+- bytes: 1595 -> 1706
+- sha8: 6bf20834 -> 51b7732e
+- lane: RB-I2 (lane E2-REP2, parity of engine 1's "[DEVICE MCP SERVERS]" pending line)
+- prd: section 4 (remote tool servers behind more; engine 1's catalogSection told the model a configured server was not approved yet); rulings 115, 116 (every failure has a true line)
+- why: lib/harness/include/nimbus/harness/plain/texts.h core. kServersWaiting and kServersApprove: after the tools index, only in the owner's turn and only while a device-dialed server is enabled and not approved, one paragraph naming the servers and saying the owner answers with /mcp approve or /mcp deny (plain_request.cpp coreText, RequestFacts::toolServersWaiting). Without it the model could not tell the owner why a configured server's tools were missing. Nothing is added to a member's turn or when none waits.
+### PC-0271: the description and schema of media_list (engine 2)
+- catalog: e2
+- class: tool_descriptions
+- kind: spec
+- bytes: 10139 -> 10225
+- sha8: df1e7e66 -> 7967b1d2
+- lane: RB-I2
+- prd: section 4 (media behind more)
+- why: src/agent/tools_plain_files.cpp namespace tool_descriptions kList: the one description and the empty schema of media_list (engine 1's media.list handler, src/sfx/music.cpp listTool), shown only in `more`'s media group listing, never in the always-on array or the cached start.
+### PC-0272: the name literal of media_list (engine 2)
+- catalog: e2
+- class: tool_results
+- kind: spec
+- bytes: 8941 -> 8951
+- sha8: 127b32e3 -> ffa17b15
+- lane: RB-I2
+- prd: section 4 (media behind more)
+- why: src/agent/tools_plain_files.cpp registerTools: the registered name "media_list", counted as model text because the model spells calls with it (as "media_stop"); no result line is new.
+
+### PC-0273: the line of a photo past the model row's photo limits (engine 2)
+- catalog: e2
+- class: stubs
+- kind: build
+- bytes: 492 -> 512
+- sha8: 33dccf84 -> b42c515f
+- lane: E2-REP4
+- prd: section 5 (photos), ROUTER-DESIGN.md section 7 (the table's image limits), ruling 116, AGENTS.md rule 9
+- why: lib/core/include/nimbus/orch/tx/photo_text.h kPhotoOverLimit, the third end of tx::photoAbsentLine. The planner (plain_plan.cpp rowTakes) now reads the model row's imagesMax, imageFormats and imageMaxKiB: a photo past the row's count (the open turn's own first, then the earlier ones newest first), in a format the row does not take, or larger than its size renders as "[photo p<ref> <when>: <description>; over the model limit]" instead of pixels, so a ten-photo album to a row that takes eight (Mistral Small and Medium) is no longer refused by the provider (review F3, analysis-2026-11-24/review-provider-wires.md). Red scenario: test_plain_conformance test_an_album_past_the_rows_photo_count_sends_the_rest_as_lines (ten image parts before the fix). PC-0274: not used.
+### PC-0275: agent_start names the owner's connector the job needs, so a chat head reaches a provider-run connector through a sub-agent (engine 2 catalog)
+- catalog: e2
+- class: tool_descriptions
+- kind: spec
+- bytes: 10225 -> 10255
+- sha8: 7967b1d2 -> 3e8cdb20
+- lane: RB-R4 (lane E2-REP5; the router leftovers file their entries under RB-R4 as PC-0257 did)
+- prd: PRD section 6 (sub-agents on engine 2) and the capability matrix row of the chat codec (no provider connectors on a chat-completions head); AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h agent_start schema gains the optional string "connector". Engine 1's Mistral head runs its tool loop on chat completions with no connector, and reaches the owner's Mistral Studio connectors through a sub-agent whose spawn names the connector as its skill: the JobEngine runs it on the connector's provider, a Mistral sub on the Conversations API that attaches the connectors (connectors_wire.h:20-30, mistral.cpp mistralDispatch). plain_agents.cpp maps the argument to that skill and orchestrator_plain.cpp wires JobEngine::Deps::connectorProvider, so engine 2 does the same under engine 1's refusals. Planned work, not a fix (CUM-1005).
+### PC-0276: the docs group and device_status on a hosted instance's engine 2
+- catalog: e2
+- class: tool_results
+- kind: spec
+- bytes: 8951 -> 9025
+- sha8: ffa17b15 -> 0010cad5
+- lane: RB-N2b (lane E2-REP3: the hosted daemon's engine-2 binding, RB-N2b's first one, finished)
+- prd: PRD section 4 (the docs and device groups behind more); lane E2-P-HOST2 "Found, not fixed" (docs tools and device.status ran on engine 1 only on nimbusd); AGENTS.md rule 9
+- why: nimbusd/src/hosted_e2_device.h. The hosted engine-2 registrations of docs.search, docs.read (engine 1's hosted handlers, called through its registry, no new text), docs.list (the docs pack's index as JSON) and device.status (the instance's state as JSON): only registry names and JSON keys, no sentence. The declarations are the device's (plain/texts.h, unchanged). Planned work, not a fix (CUM-1010).
+### PC-0277: a failed job a restart left unreported is reported as failed (engine 1 catalog)
+- catalog: e1
+- class: device_notes
+- kind: remove
+- bytes: 54655 -> 54642
+- sha8: bace59ab -> e80baae6
+- lane: E2-REP6
+- prd: review 2026-11-24 storage-history F7; rulings 115, 116 (every failure has a true line); AGENTS.md rule 9
+- why: lib/harness/src/jobs.cpp. restoreUnreported parked the lost-result line ("The result of [<job>] was lost when the device restarted, so it will not arrive.") for a job that had failed, so the model told the person a result was lost when the job had failed. A failed entry now gets the existing failure line, "Job [<job>] failed: unknown error" (its reason is not kept across a restart). No new sentence: the failure line folds into one helper (failedLine) and its two "unknown error" literals into one constant, so the class shrinks by 13 B (CUM-1006).
+### PC-0280: engine 2's tool descriptions trimmed under their ceiling, wording only (engine 2 catalog)
+- catalog: e2
+- class: tool_descriptions
+- kind: spec
+- bytes: 10255 -> 10112
+- sha8: 3e8cdb20 -> de644435
+- lane: RB-R4 (lane E2-REP7; the router leftovers file their entries under RB-R4 as PC-0275 did)
+- prd: PRD section 4 (the always-on tools and the groups behind more, each description at most 240 B under the class ceiling); AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h. PC-0275 left the class at 10,255 B against its 10,240 B ceiling, so test_plain_ceilings failed on the tip. Wording only, meaning kept, longest first: read_file ("if more remains"), edit_file ("No match ... is an error listing the match lines", "the count replaced"), append_file (drops "It only appends.", which "Add text to the end" already says), search ("this chat", "text files"), view (articles dropped), schedule ("its text"), skill_list, skill_save ("a how-to in"), device.status, device.log, ota.status, device.selftest ("skipped while silent"), device.control ("run after this reply"), tenant.list, tenant.set_quota, models.list ("A provider's models", "refresh fetches after this turn") and the three docs tools ("the device's documentation"). 143 B removed, 128 B of room left under the unchanged ceiling for the next addition. No text added; kind spec because each shortened string is a new text to the gate.
+### PC-0283: the standing rules under their own header, and the groups behind more by their few words (engine 2)
+- catalog: e2
+- class: core
+- kind: build
+- bytes: 1706 -> 2033
+- sha8: 51b7732e -> 078dd6de
+- lane: E2-BFIX4
+- prd: section 4 (the system core: pinned notes and the tools index behind more), AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h core kRules and kGroupWords, lib/harness/src/plain_request.cpp notesSection and coreText, lib/core/src/orch_tool_groups.cpp groupsIndex. Bench 24 Nov on unit F1 (CUM-1012): "/prefs add End every reply with the word Roger." reached the next request as one more line under "Pinned notes:" among facts, and Haiku answered "4" and "Red." twice; the pinned notes of kind rule now come first under "Standing rules, to follow in every reply:" (engine 1 framed them as standing rules in its never-dropped band). The tools index named each tool with its arguments and ran out of its 512 B at models ("also behind more: docs, skills"), so Haiku said it had no skill tool; each group is now one line of its few words ("skills: save, list and delete skills (how-tos)"), the connectors group still lists its servers' tools. Red scenarios: test_plain_chat_binding test_a_rule_added_by_prefs_rides_the_next_request_under_the_standing_rules_header, test_plain_request test_the_tools_index_names_every_group_with_its_words_and_skills_fits.
+### PC-0284: schedule tells a reminder from a wakeup as its handler runs them; device_control names volume (engine 2)
+- catalog: e2
+- class: tool_descriptions
+- kind: build
+- bytes: 10112 -> 10116
+- sha8: de644435 -> 45cd801b
+- lane: E2-BFIX4
+- prd: section 4 (the always-on tools and the groups behind more, each description at most 240 B), AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h. Bench 24 Nov (CUM-1012): "Set a wake-up for 2 minutes from now with the message: bench wake-up check" became a wakeup, ran as a task on the small model, opened a skill and asked what to check. Engine 1 makes a fixed text the person asked to be told a reminder (/remind, delivered as written) and wakeup.set a follow-up the assistant does itself; the schedule description now says a reminder sends its text as written, "what the person asked to be told", and a wakeup is the assistant's own task whose findings it sends here (the fire's answer goes to the chat's outbox), 231 -> 228 B ("Returns the entry." and the op list, which the schema enum gives, dropped). device.control's description says "volume sfxVol" (+7 B): Haiku sent {"speaker_volume":1}. Red scenario: test_plain_request test_the_schedule_description_tells_a_reminder_from_a_wakeup_as_the_handler_runs_them.
+### PC-0285: device_control answers an unknown key with the keys it takes (engine 2)
+- catalog: e2
+- class: tool_results
+- kind: build
+- bytes: 9025 -> 9048
+- sha8: 0010cad5 -> 2d815249
+- lane: E2-BFIX4
+- prd: section 4 (the device group behind more), AGENTS.md rule 9
+- why: src/agent/tools_plain_device.h deviceControl and lib/harness/include/nimbus/harness/plain/texts.h kControlKeys. Bench 24 Nov (CUM-1012): {"speaker_volume":1} was answered "applied: unsupported" (it said applied, and gave no hint that the key is sfxVol). An action no branch reads is now refused "not applied: unsupported; action keys: " followed by the declaration's own words for the action argument (no new sentence), and a config action's keys no knob reads (lib/core unknownConfigKeys) get the same line after what was applied. The JSON keys that read the declaration ("properties", "description") count here as every literal of the file does; the three "device.control" literals fold into one constant. Red scenario: test_plain_device_tools test_an_unknown_device_control_key_is_not_applied_and_the_answer_names_the_keys.
+### PC-0281: a kept result's stub says it was removed after the head read it in full and replied; an outside result's stub says so first, with no byte count (engine 2)
+- catalog: e2
+- class: stubs
+- kind: build
+- bytes: 512 -> 503
+- sha8: b42c515f -> 851ff20b
+- lane: E2-BFIX3
+- prd: section 2 (the stub rule: a stub says what is true of the result and names the call that brings its bytes back), rulings 115 and 116, AGENTS.md rule 9
+- why: lib/core/include/nimbus/orch/tx/result_text.h kResultShownInFull, "shown in full earlier in this conversation; not attached to this request" (72 B) becomes "removed from this history after you read it in full and replied" (63 B), in every kept result's stub. tx::stubText (lib/core/src/orch_tx_rules.cpp, which neither catalog reads) now writes an outside result's stub as '[stub ' <those words> ': ' <tool>(<args>) ' r'<q> ' outside content' then "; view id=r" <q> " shows it again" (both catalogued) and ']', where it was '[stub <tool>(<args>) r<q> <n>B outside content, not shown: view id=r<q>]'; with no card the facts are photo_text.h's "shown earlier in this conversation; not attached to this request" and the end "; full result not kept: no storage card". On the bench of 24 Nov (lanes/E2-BENCH3/RESULT.md defect 3) Haiku told the person three times that it had made up a right answer once its result was a stub. Red first on the daemon (lanes/E2-BFIX3/scratch/withdraw.py, Haiku head, a memo read from inbox/, two unrelated turns, the fact asked again): 10 of 10 runs withdrew in the bench's form and 10 of 10 in a fact-only form. Replays of the captured requests (scratch/probe.py) showed two causes: "not shown" read as a call that returned nothing, and the byte count (the tool's whole output, header included) differed from the size the answer had quoted (7 and 8 of 10 doubted with the count, 1 and 3 of 10 without it). After: the bench's form 5 of 10 runs (each after an unprompted view in the next turn whose own result is stubbed one turn later), the fact form 1 of 10 (the same); the fact right in 20 of 20; one Sonnet run clean. Stubs are stored at capture: a stub stored before this change keeps its words. PC-0282: not used.
+### PC-0288: the Responses and Chat codecs say a reply does not start with the message time (engine 2)
+- catalog: e2
+- class: core
+- kind: build
+- bytes: 2033 -> 2089
+- sha8: 078dd6de -> b5a5c3a7
+- lane: E2-CFIX2
+- prd: section 4 (the core), router design section 4 (the codecs), AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h core::kStampNotRepeated, "\n\nA reply never starts with the time a message was sent." (56 B), sent by lib/harness/src/providers/plain_wire_openai.cpp after the core in "instructions" and by plain_wire_chat.cpp after the core block of the system message. The Messages codec does not send it: no Anthropic request byte moves (every messages-anthropic-* route golden unchanged). Bench 24 Nov (lanes/E2-BENCH3/RESULT.md defect 6): on an OpenAI head every reply began with the time of the person's message ("22:59 Hello there, Sam.", "23:24 Sam, ..."), the model copying the "[2026-11-24 Tue 23:24]" stamp the core says every message starts with; both codecs already render the stamp in the bracketed form the Anthropic rendering has, so the stamp stays (the model still reads when each message was sent) and one line in the system text says it is not repeated. The composed core (test_plain_request's measure lines) is unchanged; the line rides only the OpenAI and chat requests. Not measured against a model (no provider request in this lane: the test key is refused until 1 December); the bench's H check on an OpenAI head is the check. Red scenario: test_plain_wire_chat test_the_openai_and_chat_codecs_say_the_stamp_is_not_repeated_and_anthropic_is_unchanged. Goldens moved: every responses-openai-* and chat-* request golden (Golden-scope: responses, chat).
+### PC-0289: search reaches the conversations before /clear and says so; device_control takes the key and value form and volume (engine 2)
+- catalog: e2
+- class: tool_results
+- kind: build
+- bytes: 9048 -> 9093
+- sha8: 2d815249 -> 38bc4ee7
+- lane: E2-CFIX2
+- prd: section 4 (search and view; the device group behind more), rulings 81 and 116, AGENTS.md rule 9
+- why: two bench defects of 24 Nov (lanes/E2-BENCH3/RESULT.md defects 4 and 5). (1) After /clear yes, "what did I say about my library card?" found 0 hits: search read the new conversation's key only. lib/harness/src/plain_history.cpp now reads every stored conversation of the chat, the new one first, then "<chat>_c<g-1>" down to "<chat>" with the earlier engine's rows; a hit from a cleared conversation carries tool_results::kSrcCleared ", before /clear" (15 B) in its line and the id "c<g>r<q>" that view opens (with the same words in its head); a cursor that stops in or between earlier conversations is "c<g>:<cursor>". The new conversation's request is unchanged (it still starts empty). (2) {"type":"config","key":"volume","value":1} was answered "applied: protected-BLOCKED": the field "key" ends in "key", the credential backstop. src/agent/tools_plain_device.h knobForm reads {"key":K,"value":V} as the knob K and "volume" as sfxVol (the speaker volume engine 1's own volume command sets: src/test_console.cpp "volume", the menu's Volume row, store::setSfxVolume), as keyed and typed config; every refused key (protected included) is answered "not applied: <reason>; action keys: " and the declaration's words, as E2-BFIX4 did for an unknown one. The literals counted: "key", "value", "volume", "sfxVol", "config", "type" (30 B, one constant each). Red scenarios: test_plain_history test_search_after_clear_finds_the_cleared_conversations_and_view_opens_the_hit, test_plain_device_tools test_device_control_takes_volume_in_key_value_form_and_a_refusal_names_the_keys.
+### PC-0286: the exchange line's class words end before its next step, so the switch line says them too (engine 2)
+- catalog: e2
+- class: device_notes
+- kind: build
+- bytes: 2046 -> 2046
+- sha8: 2204d611 -> e8bf79b6
+- lane: E2-CFIX1
+- prd: section 7 (fail-over: one true line per switch), rulings 116, AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h kUnreachable and kUnreadable each split in two at the next step (" could not be reached" + ". Send the message again.", " sent an answer the device could not read" + ". Try again."), byte for byte: exchangeLine sends the same lines as before (every route golden unchanged), and failoverLine (lib/harness/src/plain_exchange.cpp) names the class with the first half. Bench 24 Nov on unit F1 (lanes/E2-BENCH3/RESULT.md defect 1): the switch line read "Anthropic failed (other); this answer came from gpt-6-luna." for a key over its usage limit. Red scenario: test_plain_chat_binding test_a_usage_limit_refusal_fails_over_with_the_photos_and_the_true_reason.
+### PC-0287: a switch line names its class in the exchange line's words, and a refusal's reason for the person alone (engine 2)
+- catalog: e2
+- class: stubs
+- kind: build
+- bytes: 503 -> 508
+- sha8: 851ff20b -> 239edbdd
+- lane: E2-CFIX1
+- prd: section 7 (fail-over: one true line per switch), ruling 116, AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h kFailedOver (" failed (", 9 B) dropped, kAnswerFrom "); this answer came from " becomes "; this answer came from " (-1 B), kCutAnswer " cut its answer" (+15 B). failoverLine writes "<provider> had a server error (HTTP 500); this answer came from <model>." with device_notes' class words (PC-0286), and a refusal (Other, or a billing refusal by the marker table) as "<provider> refused the request (HTTP 400): <its reason>; ..." in the sent line only; the stored line (what a model may read) is "<provider> refused the key or the account has no credit (HTTP 400); ..." with no provider words (E2-FIX11's rule). Bench 24 Nov (lanes/E2-BENCH3/RESULT.md defect 1): "Anthropic failed (other); this answer came from gpt-6-luna." where the key had reached its usage limit until 1 December. Red scenario: test_plain_chat_binding test_a_usage_limit_refusal_fails_over_with_the_photos_and_the_true_reason.

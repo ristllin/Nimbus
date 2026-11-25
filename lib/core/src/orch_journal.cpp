@@ -70,6 +70,7 @@ size_t serializeFinished(const FinishedJob& f, char* buf, size_t sz) {
   d["q"] = f.seq;
   d["cid"] = f.chatId;
   if (f.failed) d["fail"] = true;
+  if (f.unreported) d["unrep"] = true;
   const size_t need = measureJson(d);
   if (need + 1 > sz) {
     if (sz) buf[0] = 0;
@@ -92,6 +93,7 @@ bool deserializeFinished(const char* buf, FinishedJob& f) {
   f.finishedEpoch = d["ts"] | 0u;
   f.seq = d["q"] | 0u;
   f.failed = d["fail"] | false;
+  f.unreported = d["unrep"] | false;
   return f.tag[0] != 0;
 }
 
@@ -113,7 +115,7 @@ void Journal::begin(JournalStore* store) {
   finCount_ = 0;
   nextFinSeq_ = 0;
   fin_.clear();
-  fin_.reserve(kJournalFinishedKeep);
+  fin_.reserve(kJournalFinishedMax);
   if (!store_) return;
   loadFinished();
   for (int s = 0; s < kAgentMaxJobs; s++) {
@@ -168,19 +170,29 @@ bool Journal::saveFinished(int i) {
 }
 
 // Ring index for a new entry: a free store slot while the ring has room (the lowest
-// number), else the oldest entry's.
+// number); full, the oldest entry whose report is not waiting (E2-REP6); every entry
+// waiting, a free overflow slot up to kJournalFinishedMax; past that the oldest entry,
+// named by droppedUnreported().
 int Journal::finishedTarget() {
+  dropped_[0] = 0;
   if (finCount_ >= kJournalFinishedKeep) {
-    int i = 0;
-    for (int k = 1; k < finCount_; k++)
-      if (fin_[k].job.seq < fin_[i].job.seq) i = k;
-    return i;
+    int i = -1;
+    for (int k = 0; k < finCount_; k++)
+      if (!fin_[k].job.unreported && (i < 0 || fin_[k].job.seq < fin_[i].job.seq)) i = k;
+    if (i >= 0) return i;
+    if (finCount_ >= kJournalFinishedMax) {
+      i = 0;
+      for (int k = 1; k < finCount_; k++)
+        if (fin_[k].job.seq < fin_[i].job.seq) i = k;
+      std::memcpy(dropped_, fin_[i].job.tag, sizeof(dropped_));
+      return i;
+    }
   }
   for (int s = kJournalFinishedSlot0; s < kJournalSlots; s++) {
     bool used = false;
     for (int k = 0; k < finCount_ && !used; k++) used = fin_[k].slot == s;
     if (used) continue;
-    if (fin_.capacity() < kJournalFinishedKeep) fin_.reserve(kJournalFinishedKeep);
+    if (fin_.capacity() < kJournalFinishedMax) fin_.reserve(kJournalFinishedMax);
     FinEntry e;
     e.slot = s;
     fin_.push_back(e);
@@ -207,10 +219,18 @@ bool Journal::finish(const char* tag, const FinishedJob& f, JobState final) {
   return ringLanded && seenLanded;
 }
 
+bool Journal::markReported(const char* tag) {
+  const int i = tag ? finishedSlotFor(tag) : -1;
+  if (i < 0) return false;
+  if (!fin_[i].job.unreported) return true;
+  fin_[i].job.unreported = false;
+  return saveFinished(i);
+}
+
 bool Journal::finished(int idx, FinishedJob& out, bool* beforeBoot) const {
   if (idx < 0 || idx >= finCount_) return false;
-  // Newest first: the idx-th highest seq (the ring is at most 8 entries).
-  bool taken[kJournalFinishedKeep] = {};
+  // Newest first: the idx-th highest seq (the ring is at most kJournalFinishedMax entries).
+  bool taken[kJournalFinishedMax] = {};
   int pick = 0;
   for (int n = 0; n <= idx; n++) {
     pick = -1;

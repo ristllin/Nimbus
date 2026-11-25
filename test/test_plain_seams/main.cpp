@@ -66,7 +66,6 @@ tx::TxLog gLog(gFiles, "1001");
 tx::TxArena gArena;
 plain::PlainHooks gHooks;
 plain::TurnCtx gTurn;
-plain::ToolCall gCall;
 
 struct StubRow {
   const char* where;
@@ -80,15 +79,8 @@ std::vector<StubRow> stubs() {
   static tx::Item item;
   static bool flag;
   return {
-      {"plain::wireFor responses", [] { const plain::WireCodec* w; return plain::wireFor(plain::Dialect::OpenAIResponses, w); }},
-      {"plain::wireFor chat", [] { const plain::WireCodec* w; return plain::wireFor(plain::Dialect::ChatCompletions, w); }},
-      {"plain::wireFor flat", [] { const plain::WireCodec* w; return plain::wireFor(plain::Dialect::Flat, w); }},
-      {"plain::railFor", [] { plain::RailVerdict v; return plain::railFor(gTurn, gCall, v); }},
-      {"plain::installRails", [] { return plain::installRails(gHooks, {}); }},
       {"plain::photoAllowed", [] { return plain::photoAllowed(gTurn, {}, flag); }},
       {"plain::installMedia", [] { return plain::installMedia(gHooks, {}); }},
-      {"plain::agentReportPath", [] { return plain::agentReportPath("a7", "trip", s); }},
-      {"plain::installAgents", [] { return plain::installAgents(gHooks, {}); }},
       {"plain::documentRoute", [] { plain::DocRoute r; return plain::documentRoute(gTurn, "inbox/1-a.pdf", "application/pdf", r); }},
   };
 }
@@ -110,9 +102,11 @@ static void test_every_stub_answers_not_implemented() {
   tx::StoreState state = tx::StoreState::Stored;
   (void)gLog.append(tx::Item{}, state);
   TEST_ASSERT_TRUE(state == tx::StoreState::NotStored);
-  const plain::WireCodec* w = reinterpret_cast<const plain::WireCodec*>(&state);
-  (void)plain::wireFor(plain::Dialect::Flat, w);
-  TEST_ASSERT_NULL(w);
+  // Every dialect has its codec since E2-R6 (Chat, Flat) and E2-R7 (Responses): wireFor is no stub.
+  for (plain::Dialect d : plain::kAllDialects) {
+    const plain::WireCodec* w = nullptr;
+    TEST_ASSERT_TRUE_MESSAGE(plain::wireFor(d, w).ok() && w != nullptr, plain::dialectSlug(d));
+  }
 }
 
 // The engine wired with a scripted model behind the transport but never booted (and with
@@ -342,7 +336,7 @@ static void test_slug_tables_are_whole() {
                           tx::Err::TooLarge,  tx::Err::Io,            tx::Err::Busy};
   assertUniqueSlugs(errs, tx::errSlug, "err");
   const plain::GuardTrip trips[] = {plain::GuardTrip::None, plain::GuardTrip::Rounds, plain::GuardTrip::Time,
-                                    plain::GuardTrip::Spend, plain::GuardTrip::Size};
+                                    plain::GuardTrip::Spend, plain::GuardTrip::Size, plain::GuardTrip::Loop};
   assertUniqueSlugs(trips, plain::guardTripSlug, "guard trip");
 }
 

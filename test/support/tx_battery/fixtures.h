@@ -106,10 +106,8 @@ inline void callUntilAnswered(Battery& b, const std::string& tool, const std::st
   });
 }
 
-// A digest the summarizer may return: over the 120 B a slice of 2 KB or more needs, under 768 B.
-inline constexpr const char* kDigest =
-    "Day digest: the owner asked about the boat, read files and searched the web; nothing is pending. "
-    "He prefers short answers. Facts: Nereid II, 9.5 m.";
+// What the summarizer may answer: changes to the cumulative summary (lane RB-C3, tx::parseSummaryEdits).
+inline constexpr const char* kDigest = kSummaryAnswer;
 
 inline TurnScript chat(uint32_t gap, const std::string& ask, const std::string& answer) {
   return TurnScript{gap, ask, {sp::say(answer)}};

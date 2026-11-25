@@ -255,10 +255,11 @@ std::string FileStore::dump() const {
     out += buf;
     out += e.providerTag; out += '\t';
     out += e.providerFileId;
-    if (!e.owner.empty() || e.shared) {
+    if (!e.owner.empty() || e.shared || e.outside) {
       out += '\t'; out += e.owner;
       if (e.shared) out += "|shared";   // rides the owner field, no new column
     }
+    if (e.outside) out += "\toutside";   // E2-REP4: the tenth field, only when set
     out += '\n';
   }
   return out;
@@ -289,17 +290,17 @@ bool FileStore::load(const std::string& blob) {
   byFolded.reserve(1024);
   while (nextLine(line)) {
     if (line.empty()) continue;
-    // split on tabs into 8 fields, plus an OPTIONAL 9th (v3.7.0 owner);
-    // skip malformed lines (tolerant load).
-    std::string f[9];
+    // split on tabs into 8 fields, plus an OPTIONAL 9th (v3.7.0 owner) and
+    // 10th (E2-REP4 "outside"); skip malformed lines (tolerant load).
+    std::string f[10];
     size_t start = 0; int n = 0;
-    for (; n < 9; ++n) {
+    for (; n < 10; ++n) {
       size_t tab = line.find('\t', start);
       if (tab == std::string::npos) { f[n] = line.substr(start); ++n; break; }
       f[n] = line.substr(start, tab - start);
       start = tab + 1;
     }
-    if (n != 8 && n != 9) continue;   // 9 = v3.7.0 owner field (optional)
+    if (n < 8) continue;   // 9 = v3.7.0 owner field, 10 = E2-REP4 outside (both optional)
     FileEntry e;
     e.project.assign(f[0].data(), f[0].size());
     e.name.assign(f[1].data(), f[1].size());
@@ -310,7 +311,8 @@ bool FileStore::load(const std::string& blob) {
     e.hash = strtoull(f[5].c_str(), nullptr, 16);
     e.providerTag.assign(f[6].data(), f[6].size());
     e.providerFileId.assign(f[7].data(), f[7].size());
-    if (n == 9) {
+    e.outside = n == 10 && f[9] == "outside";
+    if (n >= 9) {
       e.owner.assign(f[8].data(), f[8].size());
       const size_t bar = e.owner.find('|');
       if (bar != std::string::npos) {

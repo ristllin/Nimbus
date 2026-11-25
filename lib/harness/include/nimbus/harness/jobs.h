@@ -72,6 +72,10 @@ bool freshCreditsASite(const std::string& text);
 // device glue can key its head-turn arc ("head") on the same hash.
 uint32_t keyFromTag(const char* tag);
 
+// The ring's event for the head turn (the "head" key): Running while a turn works, Offline after. Engine 1's
+// TurnEngine::setHeadArc sends the same event; engine 2's turn brackets itself with it (E2-P-TOOLS, E2-REP2).
+nimbus::attn::Event headArcEvent(bool lit);
+
 // The job engine's owner delivery composed with episodic capture (CUM-482).
 // Job-engine messages - spawn acks, "Couldn't start that agent on ...", sub
 // failures, raw fallbacks - bypassed the chat history, so the web chat (which
@@ -94,6 +98,12 @@ bool isJobDelivery(const std::string& rowTags);   // whole comma-list item match
 // The outside-content fence's opening line (what sub-agents returned: data, never instructions,
 // RB-Q2a). Also the mark on a scratchpad entry a turn fed outside content wrote.
 extern const char kOutsideContentOpen[];
+extern const char kOutsideContentCloseLine[];   // "[end outside content]\n"
+// Text that came from outside, fenced as data: the opening line, the text with every close of
+// the fence it carries neutralised (any case, any whitespace), the closing line. Nothing of the
+// text is dropped. The one fence of both engines: the sub-agent results here, a routine's reply
+// after outside content on engine 2 (plain_unattended.cpp, lane RB-RL).
+std::string fenceOutsideContent(const std::string& text);
 
 class JobEngine {
  public:
@@ -256,6 +266,11 @@ class JobEngine {
     // engine owns only the coalesce/fallback clock that triggers it.
     std::function<void(const std::string& chatId)> synthesize;
     std::function<bool()> turnInFlight;
+    // Engine 2 (lane E2-P-SUB2): every finished or failed job comes back as its own report turn.
+    // A failure is parked like a result (never a bare line), the finished ring marks each parked
+    // result unreported until markReported, and the first pump after a boot parks again the
+    // results a restart left unreported (read from the file each was saved to, through readDoc).
+    bool reportTurns = false;
     // Reserved for parity with the device's ttsAnnounce helper; no job path
     // currently fires it (the device function is uncalled today). Nullable.
     std::function<void(const std::string& text)> ttsAnnounce;
@@ -318,8 +333,16 @@ class JobEngine {
   // clock, one dispatch, loop-closure synthesis, round-robin poll. Returns the
   // active job count (journal count).
   int pump();
+  // The pump's dispatch step alone: at most one queued spawn, under the same gates. True when one
+  // was taken from the queue (started or refused). No poll, no synthesis (engine 2, inside a turn).
+  bool dispatchQueued();
 
   bool cancel(const char* tagOrJobId);
+  // Lane E2-P-SUB2: a spawn of `chatId` still queued (not dispatched) whose name is `name` leaves
+  // the queue; its ledger line says stopped. False when none is queued under that name.
+  bool cancelQueued(const std::string& chatId, const std::string& name);
+  // Lane E2-P-SUB2 (reportTurns): `tag`'s report turn ran; its finished-ring entry is reported.
+  void markReported(const std::string& tag);
   // Lane QW4 (CUM-774): true while a job's stop is asked but not yet confirmed by its
   // provider (it is on the background stop list: asked again, polled, counted).
   bool stopping(const char* tagOrJobId) const;
@@ -437,6 +460,8 @@ class JobEngine {
            (dispatching_ ? 1 : 0);
   }
   int  pendingCount() const { return (int)pending_.size(); }  // queued-not-yet-dispatched (W5)
+  // The journal it runs on (read only): engine 2's agent tools read a job's tag and provider id.
+  const nimbus::orch::Journal* journal() const { return d_.journal; }
 
   // CUM-538: spawns that never started (queue full, no provider, the provider
   // refused) - the owner hears each at once, but the head used to learn nothing
@@ -504,6 +529,12 @@ class JobEngine {
   struct ReapEntry { uint32_t key; uint32_t dueAt; };
 
   void dispatchSpawn(const PendingSpawn& p);
+  // Lane E2-P-SUB2 (reportTurns): park again, once per boot, the results the finished ring marks
+  // unreported from before this boot.
+  void restoreUnreported();
+  // A failure line parked as `chatId`'s result (failed: the engine's own line), for the report.
+  void parkFailure(const char* tag, const std::string& label, const std::string& chatId, const std::string& text);
+  bool restoredUnreported_ = false;
   // Where a spawn runs: the provider (explicit hint, connector routing, then
   // firstSubProvider), its adapter and the model. A provider with no key of its
   // own runs on the Cumulo router when the router offers its model (CUM-541).

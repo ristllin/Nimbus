@@ -1,5 +1,5 @@
 // Guards scaled to the head, the spend of one request, identical-call suppression
-// (plain/guards.h). Lane RB-E1b.
+// (plain/guards.h). Lane RB-E1b; the soft guards, the loop and the table at full lane RB-X3.
 #include "nimbus/harness/plain/guards.h"
 
 #include <ArduinoJson.h>
@@ -10,7 +10,9 @@
 
 #include "nimbus/harness/plain/exchange.h"
 #include "nimbus/harness/plain/texts.h"
+#include "nimbus/orch/model_price_defaults.h"   // headRatesFor: the ledger's own price rows (E2-FIX6)
 #include "nimbus/orch/tool_groups.h"
+#include "nimbus/orch/tx/budget.h"
 #include "nimbus/orch/tx/item.h"
 
 namespace agent {
@@ -28,34 +30,180 @@ uint64_t costOf(uint64_t tokens, uint64_t microPerM) {
 }  // namespace
 
 Status guardLimitsFor(int storedRounds, const HeadCost& cost, GuardLimits& out) {
+  return guardLimitsFor(storedRounds, cost, false, out);
+}
+
+namespace {
+
+// The size and spend caps for a turn of `rounds` requests: a progressing turn of that
+// many requests at the head's size fits, so only a runaway (requests far above the due mark,
+// every round a cache miss) reaches them.
+void capsFor(const HeadCost& cost, uint16_t rounds, GuardLimits& out) {
+  const uint64_t request = cost.requestTokensAtTrigger ? cost.requestTokensAtTrigger : kDefaultRequestTokens;
+  out.maxPromptTokens = clamp32(std::max<uint64_t>(4ull * cost.targetTokens, (uint64_t)rounds * request));
+  out.maxSpendMicroUsd = clamp32(std::max<uint64_t>(
+      kMinSpendCapMicroUsd, (uint64_t)rounds * cost.warmRequestMicroUsd + cost.coldRequestMicroUsd));
+}
+
+uint32_t fnv(uint32_t h, const std::string& s) {
+  for (unsigned char ch : s) h = (h ^ ch) * 16777619u;
+  return h;
+}
+uint32_t keyHash(const std::string& a, const std::string& b) {
+  return fnv(fnv(2166136261u, a) ^ 0x9e3779b9u, b) | 1u;   // never 0
+}
+
+// An error as the loop rule compares it: its first line, at most kErrorKeyBytes, without digits, so
+// a request id, a timestamp or a counter in the text does not make the same failure look new.
+constexpr size_t kErrorKeyBytes = 160;
+uint32_t errorKey(const std::string& text) {
+  std::string k;
+  for (size_t i = 0; i < text.size() && text[i] != '\n' && k.size() < kErrorKeyBytes; ++i)
+    if (text[i] < '0' || text[i] > '9') k += text[i];
+  return keyHash(k, "");
+}
+
+// What one turn remembers is bounded: past it a new call or text is progress, unremembered.
+constexpr size_t kProgressMemory = 512;
+
+}  // namespace
+
+Status guardLimitsFor(int storedRounds, const HeadCost& cost, bool attended, GuardLimits& out) {
   out = GuardLimits{};
-  // A stored orchLoopRnds of 8 or less reads as 16 (the old engine's default was 8); 9 to 32
-  // is honoured; above 32 is the ceiling.
+  // A stored orchLoopRnds of 8 or less reads as 16 (the old engine's default was 8); 9 to 32 is
+  // honoured; above 32 is the ceiling.
   out.rounds = storedRounds <= 8 ? kDefaultRounds : (uint16_t)std::min<int>(storedRounds, kMaxRounds);
   out.softWallMs = kSoftWallMs;
-  const uint64_t request = cost.requestTokensAtTrigger ? cost.requestTokensAtTrigger : kDefaultRequestTokens;
-  out.maxPromptTokens = clamp32(std::max<uint64_t>(4ull * cost.targetTokens, 16ull * request));
-  out.maxSpendMicroUsd =
-      clamp32(std::max<uint64_t>(kMinSpendCapMicroUsd, 16ull * cost.warmRequestMicroUsd + cost.coldRequestMicroUsd));
+  out.attended = attended;
+  // Unattended: today's limits (ruling 84 item 9). Attended: the soft figures are checked again
+  // and the hard ones bound the turn (ruling 84 item 2).
+  out.hardRounds = attended ? std::max<uint16_t>(kHardRounds, out.rounds) : out.rounds;
+  out.timeLimitMs = attended ? kAttendedHardWallMs - kLastRoundReserveMs : kSoftWallMs;
+  out.lastRoundWallMs = attended ? kAttendedHardWallMs : kHardWallMs;
+  capsFor(cost, attended ? out.hardRounds : kDefaultRounds, out);   // unattended: today's 16 x
   return Status::success();
+}
+
+HeadCost guardCostFor(const nimbus::orch::tx::HeadBudget& budget, const HeadRates& rates) {
+  HeadCost c;
+  c.targetTokens = budget.tokens.aim;
+  c.requestTokensAtTrigger = budget.tokens.due;
+  c.inMicroPerM = rates.in;
+  c.outMicroPerM = rates.out;
+  c.cacheReadMicroPerM = rates.cacheRead;
+  c.cacheWriteMicroPerM = rates.cacheWrite;
+  c.longOver = rates.longOver;
+  c.longInMicroPerM = rates.longIn;
+  c.longOutMicroPerM = rates.longOut;
+  c.longCacheReadMicroPerM = rates.longCacheRead;
+  c.longCacheWriteMicroPerM = rates.longCacheWrite;
+  const uint32_t p = budget.tokens.due;
+  c.warmRequestMicroUsd = requestMicroUsd(c, RequestTokens{p / 10, kGuardOutputTokens, p - p / 10, 0});
+  c.coldRequestMicroUsd = requestMicroUsd(c, RequestTokens{p, kGuardOutputTokens, 0, 0});
+  return c;
+}
+
+// A call progresses unless suppression answered it or it failed exactly as its previous attempt.
+void GuardProgress::noteCall(const std::string& tool, const std::string& args, bool suppressed, bool isError,
+                             const std::string& result) {
+  if (suppressed) return;
+  const uint32_t key = keyHash(tool, args);
+  const uint32_t outcome = isError ? errorKey(result) : 0;
+  for (std::pair<uint32_t, uint32_t>& a : attempts) {
+    if (a.first != key) continue;
+    const bool same = outcome && a.second == outcome;
+    a.second = outcome;
+    if (same) return;
+    roundProgressed = progressed = true;
+    return;
+  }
+  if (attempts.size() < kProgressMemory) attempts.emplace_back(key, outcome);
+  roundProgressed = progressed = true;
+}
+
+void GuardProgress::noteText(const std::string& text) {
+  if (text.empty()) return;
+  const uint32_t h = keyHash(text, "");
+  if (std::find(texts.begin(), texts.end(), h) != texts.end()) return;
+  if (texts.size() < kProgressMemory) texts.push_back(h);
+  progressed = true;
+}
+
+void GuardProgress::endRound() {
+  idle = roundProgressed ? 0 : (uint8_t)std::min<int>(idle + 1, 255);
+  roundProgressed = false;
+}
+
+SoftCheck checkSoftGuards(const GuardLimits& limits, const GuardState& state, GuardProgress& progress,
+                          GuardTrip& which) {
+  which = GuardTrip::None;
+  if (!limits.attended || !limits.rounds || !limits.softWallMs) return SoftCheck::None;
+  const uint16_t atRounds = progress.nextRounds ? progress.nextRounds : limits.rounds;
+  const uint32_t atMs = progress.nextMs ? progress.nextMs : limits.softWallMs;
+  const bool byRounds = state.rounds >= atRounds;
+  const bool byTime = (uint64_t)state.elapsedMs + kMinRequestMs >= atMs;
+  if (!byRounds && !byTime) return SoftCheck::None;
+  which = byRounds ? GuardTrip::Rounds : GuardTrip::Time;
+  if (!progress.progressed) return SoftCheck::Stop;
+  progress.progressed = false;   // the next check asks for progress since this one
+  // The next check is the next multiple of the interval past where the turn is now, so one long
+  // round never makes the next boundary due at once.
+  if (byRounds) progress.nextRounds = (uint16_t)std::min<uint32_t>((state.rounds / limits.rounds + 1u) * limits.rounds, UINT16_MAX);
+  if (byTime) {
+    const uint64_t now = (uint64_t)state.elapsedMs + kMinRequestMs;
+    progress.nextMs = (uint32_t)std::min<uint64_t>((now / limits.softWallMs + 1) * limits.softWallMs, UINT32_MAX);
+  }
+  return SoftCheck::GoOn;
 }
 
 Status checkGuards(const GuardLimits& limits, const GuardState& state, GuardTrip& out) {
   out = GuardTrip::None;
-  if (!limits.rounds || !limits.softWallMs) return Status::fail(Err::InvalidArgument, "plain::checkGuards");
-  if (state.rounds >= limits.rounds) out = GuardTrip::Rounds;
-  else if ((uint64_t)state.elapsedMs + kMinRequestMs >= limits.softWallMs) out = GuardTrip::Time;
+  if (!limits.rounds || !limits.softWallMs || !limits.hardRounds || !limits.timeLimitMs)
+    return Status::fail(Err::InvalidArgument, "plain::checkGuards");
+  if (state.idleRounds >= kLoopRounds) out = GuardTrip::Loop;
+  else if (state.rounds >= limits.hardRounds) out = GuardTrip::Rounds;
+  else if ((uint64_t)state.elapsedMs + kMinRequestMs >= limits.timeLimitMs) out = GuardTrip::Time;
   else if (limits.maxSpendMicroUsd && state.spendMicroUsd >= limits.maxSpendMicroUsd) out = GuardTrip::Spend;
   else if (limits.maxPromptTokens && state.promptTokens >= limits.maxPromptTokens) out = GuardTrip::Size;
   return Status::success();
 }
 
 uint32_t requestMicroUsd(const HeadCost& cost, const RequestTokens& t) {
-  const uint64_t cacheR = cost.cacheReadMicroPerM ? cost.cacheReadMicroPerM : cost.inMicroPerM / 10;
-  const uint64_t cacheW = cost.cacheWriteMicroPerM ? cost.cacheWriteMicroPerM : cost.inMicroPerM * 5 / 4;
-  const uint64_t sum = costOf(t.prompt, cost.inMicroPerM) + costOf(t.output, cost.outMicroPerM) +
-                       costOf(t.cacheRead, cacheR) + costOf(t.cacheWrite, cacheW);
+  // A request over the long-prompt threshold is billed at the long tier, every term (E2-FIX6).
+  const uint64_t whole = (uint64_t)t.prompt + t.cacheRead + t.cacheWrite;
+  const bool tier = cost.longOver && cost.longInMicroPerM && whole > cost.longOver;
+  const uint64_t in = tier ? cost.longInMicroPerM : cost.inMicroPerM;
+  const uint64_t out = tier ? cost.longOutMicroPerM : cost.outMicroPerM;
+  const uint64_t readRate = tier ? cost.longCacheReadMicroPerM : cost.cacheReadMicroPerM;
+  const uint64_t writeRate = tier ? cost.longCacheWriteMicroPerM : cost.cacheWriteMicroPerM;
+  const uint64_t cacheR = readRate ? readRate : in / 10;
+  const uint64_t cacheW = writeRate ? writeRate : in * 5 / 4;
+  const uint32_t long1h = std::min(t.cacheWrite1h, t.cacheWrite);
+  const uint64_t sum = costOf(t.prompt, in) + costOf(t.output, out) + costOf(t.cacheRead, cacheR) +
+                       costOf(t.cacheWrite - long1h, cacheW) + costOf(long1h, in * 2);
   return clamp32(sum);
+}
+
+bool headRatesFor(const std::string& provider, const std::string& model, HeadRates& out) {
+  out = HeadRates{};
+  namespace orch = nimbus::orch;
+  const orch::BuiltinPrice* row = orch::builtinModelPrice(provider.c_str(), model.c_str());
+  if (!row) row = orch::builtinDefaultPrice(provider.c_str(), model.c_str());
+  if (!row || !row->microIn || !row->microOut) return false;
+  out.in = row->microIn;
+  out.out = row->microOut;
+  out.cacheRead = row->microCacheR ? row->microCacheR : row->microIn / 10;
+  out.cacheWrite = row->microCacheW ? row->microCacheW : row->microIn + row->microIn / 4;
+  char key[orch::kModelKeyCap];
+  if (!row->longOver || !orch::builtinLongTierKey(provider.c_str(), model.c_str(), row->longOver + 1, key)) return true;
+  const orch::BuiltinPrice* lr = orch::builtinModelPrice(provider.c_str(), key);
+  if (!lr || !lr->microIn || !lr->microOut) return true;
+  out.longOver = row->longOver;
+  out.longIn = lr->microIn;
+  out.longOut = lr->microOut;
+  out.longCacheRead = lr->microCacheR ? lr->microCacheR : lr->microIn / 10;
+  out.longCacheWrite = lr->microCacheW ? lr->microCacheW : lr->microIn + lr->microIn / 4;
+  return true;
 }
 
 Status isPureTool(const std::string& name, bool& out) {

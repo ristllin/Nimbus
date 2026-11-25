@@ -64,6 +64,7 @@ class Job:
     dir: Path
     env: dict = field(repr=False, default_factory=dict)
     loop_note: str = ""  # an experiment: one extra line on the reference loop's system prompt
+    engine: str = "1"  # arm A's engine: "2" starts its nimbusd with NIMBUSD_ENGINE=2 (the owner chat on engine 2)
 
     @property
     def keys(self) -> dict:
@@ -192,10 +193,24 @@ def harness_calls(exchanges: list) -> tuple:
 
 
 RECALL_HEAD = "## RELEVANT MEMORIES"
+# Engine 2's notes reach the model as a pinned block in the system part (lib/harness texts.h core::kNotes).
+PINNED_HEAD = "Pinned notes:"
+
+
+def _pinned_notes(request: dict) -> list:
+    """Engine 2's pinned notes block, one entry per line, or [] when the request has none."""
+    system = request.get("system") or ""
+    texts = [system] if isinstance(system, str) else [b.get("text", "") for b in system if isinstance(b, dict)]
+    for text in texts:
+        if PINNED_HEAD in text:
+            block = text.split(PINNED_HEAD, 1)[1].lstrip("\n").split("\n\n", 1)[0]
+            return [line.strip() for line in block.splitlines() if line.strip()]
+    return []
 
 
 def recalled_memories(exchanges: list) -> list:
-    """The long-term memories the harness itself put into the turn's context (its automatic recall).
+    """The long-term memories the harness itself put into the turn's context (its automatic recall,
+    or engine 2's pinned notes).
 
     They reach the model with no tool call, so without this the record (and the judge) could not
     tell an answer from memory apart from a guess.
@@ -207,7 +222,7 @@ def recalled_memories(exchanges: list) -> list:
         if RECALL_HEAD in (text or ""):
             block = text.split(RECALL_HEAD, 1)[1].split("\n\n", 1)[0]
             return [line[2:].strip() for line in block.splitlines() if line.startswith("- ")]
-    return []
+    return _pinned_notes(request or {})
 
 
 def spawned(exchanges: list) -> bool:
@@ -237,12 +252,17 @@ def snapshot_state(d: Nimbusd) -> dict:
     memories = [e.get("content", "") for e in d.get_json("/api/mem/vector?limit=200").get("entries", [])]
     rules, _ = d.call_tool("prefs.edit", {"action": "list"})
     status, scratch = d.call("GET", "/api/mem/scratchpad")
+    # Engine 2 keeps long-term memory as notes (<data>/mem/notes/<person>.md and .more.md); an engine-1
+    # instance has none, so this is "" there.
+    notes_dir = Path(d.data_dir) / "mem" / "notes"
+    notes = "\n".join(p.read_text() for p in sorted(notes_dir.glob("*.md"))) if notes_dir.is_dir() else ""
     return {
         "files": files,
         "loops": d.get_json("/api/loops"),
         "memories": memories,
         "rules": rules,
         "scratchpad": scratch if status == 200 else "",
+        "notes": notes,
     }
 
 
@@ -282,7 +302,10 @@ class Arm:
             shutil.rmtree(self.dir)
         self.proxy.start()
         self.proxy.mark(turn=0, phase="setup")
-        self.d = Nimbusd(self.dir / "data", self.job.keys, self.dir / "nimbusd.log", capture_url=self.proxy.url())
+        keys = dict(self.job.keys)
+        if self.name == "A" and self.job.engine == "2":
+            keys["NIMBUSD_ENGINE"] = "2"
+        self.d = Nimbusd(self.dir / "data", keys, self.dir / "nimbusd.log", capture_url=self.proxy.url())
         self.d.start(self.job.head)
         self.d.configure(self.job.head, self.job.model, self.job.sub_model)
         self.d.wait_verified(self.job.head)
@@ -508,6 +531,44 @@ class ArmA(Arm):
 
     def new_conversation(self):
         self.d.post_form("/api/orch", {"clearConv": "1"})
+        if self.job.engine == "2":
+            self._engine2_new_conversation()
+
+    def _engine2_new_conversation(self):
+        """clearConv clears engine 1's conversation only. Since E2-P-HOST1/E2-REP3 engine 2 on nimbusd has the
+        owner's own /clear (engine2_route.h, Engine2Host::clearCommand): the rig sends "/clear yes" on the web
+        chat, the device's two steps in one, and requires the done line. Notes, files and routines stay, as
+        they do for the other arms. (Lane E2-H2H2: the earlier move-aside of <data>/mem/tx now reads as a first
+        start, and engine 2 then tells the head the earlier engine kept a conversation, which is not so.)"""
+        seq0 = self._replies_seq()
+        self.proxy.mark(turn=self.turn, phase="new_conversation")
+        status, body = self.d.call("POST", "/api/chat", form={"text": "/clear yes"})
+        if status != 200:
+            raise RuntimeError(f"/clear yes answered {status}: {body[:200]}")
+        turn = json.loads(body).get("turn")
+        if turn is not None:
+            self._wait_turns([turn], time.time() + 30)
+        self._settle()
+        rows = self._chat_rows(seq0)
+        if not any(r.startswith("Started a new conversation.") for r in rows):
+            raise RuntimeError(f"/clear yes did not start a new conversation: {rows[-3:]}")
+
+    def _engine2_new_conversation_move_aside(self):
+        """Lane E2-H2H's emulation, kept for a build without /clear on engine 2: the daemon stops, its
+        transcript store (<data>/mem/tx) and compaction record move aside into this arm's folder (kept as
+        evidence), and it starts again."""
+        mem = Path(self.d.data_dir) / "mem"
+        aside = self.dir / f"engine2-cleared-c{self.conversations}"
+
+        def move_aside():
+            aside.mkdir(parents=True, exist_ok=True)
+            for name in ("tx", "compact_ctl.txt"):
+                if (mem / name).exists():
+                    shutil.move(str(mem / name), str(aside / name))
+
+        self.proxy.mark(turn=self.turn, phase="new_conversation")
+        self.d.restart(while_stopped=move_aside)
+        self._settle()
 
     def close(self):
         if self.d and self.d.proc:

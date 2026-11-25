@@ -1,0 +1,11 @@
+recorded: lane E2-R10 tools/harness-lab r10 (33-S7-unknown-model), read 2026-11-24
+status: 404
+expect: class=unknown_model retry=no
+{
+  "error": {
+    "message": "The model `r10-no-such-model` does not exist or you do not have access to it.",
+    "type": "invalid_request_error",
+    "param": null,
+    "code": "model_not_found"
+  }
+}

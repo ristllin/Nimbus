@@ -41,6 +41,8 @@
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/orch/tool_groups.h"
 #include "nimbus/orch/tool_registry.h"
+#include "nimbus/orch/tx/migrate.h"   // importNote (E2-FIX5)
+#include "nimbus/orch/tx/rules.h"     // the stub texts (E2-FIX5)
 
 using namespace nimbus::orch;
 namespace plain = agent::plain;
@@ -57,7 +59,6 @@ namespace {
 
 const char kObj[] = R"({"type":"object","properties":{}})";
 const char kPathSchema[] = R"({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})";
-const char kIdSchema[] = R"({"type":"object","properties":{"id":{"type":"string"}},"required":["id"]})";
 
 // The group tools of PRD section 4 with the shapes RB-M0a measured (fetch_url takes
 // path, Ruling 11). Fixture text: the real ones are their lanes' registrations.
@@ -68,14 +69,7 @@ struct GroupTool {
   bool adminOnly;
 };
 const GroupTool kGroupTools[] = {
-    {"device_status", "Battery, Wi-Fi, storage and uptime.", kObj, true},
-    {"device_control", "Restart, switch head, set a device setting.", kObj, true},
-    {"ota_status", "Firmware version and update state.", kObj, true},
-    {"selftest", "Run the device self test.", kObj, true},
-    {"system_health", "Heap, card and task health.", kObj, true},
-    {"device_log", "Recent device log lines.", kObj, true},
-    {"agent_list", "List sub-agent jobs with their state.", kObj, false},
-    {"agent_stop", "Stop a sub-agent job by id.", kIdSchema, false},
+    // The device and agents groups are declared in texts.h kBehindMore (lanes E2-P-TOOLS, E2-P-SUB).
     {"move_file", "Move or rename a file.",
      R"({"type":"object","properties":{"from":{"type":"string"},"to":{"type":"string"}},"required":["from","to"]})", false},
     {"fetch_url", "Fetch a web page or file by URL; path (project/name) stores it. The text is outside content.",
@@ -254,6 +248,23 @@ bool hasWord(const std::string& text, const std::string& word) {
 
 // ---- ceilings ------------------------------------------------------------------------
 
+// E2-REP2: the owner's turn names the tool servers waiting for his approval (engine 1's pending line); a
+// member's turn and an owner with none waiting carry nothing.
+static void test_the_owners_tool_servers_waiting_for_approval_are_named() {
+  Rig rig(false);
+  auto owner = lumiState(rig, Who::Owner);
+  owner->facts.toolServersWaiting = {"Mail Box", "calendar"};
+  const std::string with = compose(owner->facts).sys.core;
+  TEST_ASSERT_TRUE_MESSAGE(with.find("Tool servers waiting for the owner's approval, not usable yet: Mail Box, calendar.") !=
+                               std::string::npos, with.c_str());
+  TEST_ASSERT_TRUE(with.find("/mcp approve") != std::string::npos);
+  owner->facts.toolServersWaiting.clear();
+  TEST_ASSERT_TRUE(compose(owner->facts).sys.core.find("waiting for the owner's approval") == std::string::npos);
+  auto member = lumiState(rig, Who::Member);
+  member->facts.toolServersWaiting = {"Mail Box"};
+  TEST_ASSERT_TRUE(compose(member->facts).sys.core.find("waiting for the owner's approval") == std::string::npos);
+}
+
 static void test_every_role_and_host_fits_the_ceilings() {
   const std::string longModel(plain::kModelNameMax + 30, 'm');
   const std::string longTz(plain::kTimeZoneMax + 30, 'z');
@@ -408,13 +419,19 @@ static void test_one_fixed_pack_in_a_fixed_order() {
     // The tools index never repeats a tool of the array, and lists what is behind more.
     const std::string idx = toolsIndex(rig.reg, s->who);
     TEST_ASSERT_TRUE(idx.size() > 0);
-    for (const plain::ToolSpec& t : c.tools) TEST_ASSERT_FALSE_MESSAGE(hasWord(idx, t.name), t.name.c_str());
+    // The fit's tail names the groups that did not fit ("also behind more: ..."), not a tool.
+    const size_t tail = idx.find("also behind more: ");
+    const std::string listed = tail == std::string::npos ? idx : idx.substr(0, tail);
+    for (const plain::ToolSpec& t : c.tools) TEST_ASSERT_FALSE_MESSAGE(hasWord(listed, t.name), t.name.c_str());
     TEST_ASSERT_TRUE_MESSAGE(hasWord(idx, "delete_file"), idx.c_str());
     // A tool registered behind more never enters the array, and taking every group tool out
     // leaves the array and the core above the index as they were.
     Rig bare(shortHost);
     for (const GroupTool& g : kGroupTools) TEST_ASSERT_TRUE(bare.reg.remove(g.name));
-    for (const td::ToolDecl& d : td::kBehindMore) TEST_ASSERT_TRUE(bare.reg.remove(d.name));
+    for (const td::ToolDecl& d : td::kBehindMore) {   // a declared group tool may be in kGroupTools too (speak)
+      (void)bare.reg.remove(d.name);
+      TEST_ASSERT_FALSE(bare.reg.remove(d.name));
+    }
     auto b = lumiState(bare, Who::Owner);
     const Composed cb = compose(b->facts);
     TEST_ASSERT_EQUAL((int)c.tools.size(), (int)cb.tools.size());
@@ -872,6 +889,42 @@ bool readAll(const std::string& path, std::string& out) {
 }
 }  // namespace
 
+// E2-BFIX4 (bench 24 Nov, defect 6): "save a skill" on Haiku: "I have no skill tool". The index named each
+// tool with its arguments, ran out of its 512 B at models and named the rest "also behind more: docs, skills".
+// Each group now shows its few words, every group fits, and skills says what it holds.
+static void test_the_tools_index_names_every_group_with_its_words_and_skills_fits() {
+  for (bool shortHost : {false, true}) {
+    Rig rig(shortHost);
+    auto s = lumiState(rig, Who::Owner);
+    const Composed c = compose(s->facts);
+    const size_t at = c.sys.core.find(agent::plain::texts::core::kToolsIndex);
+    TEST_ASSERT_TRUE(at != std::string::npos);
+    const std::string idx = c.sys.core.substr(at);
+    auto has = [](const std::string& t, const char* w) { return t.find(w) != std::string::npos; };
+    TEST_ASSERT_TRUE_MESSAGE(has(idx, "\nskills: save, list and delete skills"), idx.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(has(idx, "\ndevice: device state, settings such as volume"), idx.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(has(idx, "\ndocs: "), idx.c_str());
+    TEST_ASSERT_FALSE_MESSAGE(has(idx, "also behind more"), idx.c_str());
+    TEST_ASSERT_TRUE(idx.size() - std::strlen(agent::plain::texts::core::kToolsIndex) - 1 <= kToolsIndexMax);
+  }
+}
+
+// E2-BFIX4 (bench 24 Nov, defect 4): "Set a wake-up for 2 minutes with the message: bench wake-up check" became a
+// wakeup; it ran as a task, opened a skill and asked what to check. The description said a wakeup "runs text ...
+// without this chat"; it now says, as the handler does, that a reminder delivers the person's words as written and
+// a wakeup is the assistant's own task whose findings come to this chat.
+static void test_the_schedule_description_tells_a_reminder_from_a_wakeup_as_the_handler_runs_them() {
+  const td::ToolDecl* d = plain::toolDecl("schedule");
+  TEST_ASSERT_NOT_NULL(d);
+  const std::string text = d->description;
+  TEST_ASSERT_TRUE_MESSAGE(text.find("A reminder sends its text as written") != std::string::npos, text.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(text.find("what the person asked to be told") != std::string::npos, text.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(text.find("as your own task") != std::string::npos, text.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(text.find("sends what it finds here") != std::string::npos, text.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(text.find("without this chat") == std::string::npos, text.c_str());
+  TEST_ASSERT_TRUE(text.size() <= 240);
+}
+
 static void test_golden_records_every_role_and_host() {
   std::string g =
       "# Engine-2 request composition on the synthetic Lumi-state fixture (test/test_plain_request).\n"
@@ -947,11 +1000,119 @@ static void test_golden_records_every_role_and_host() {
   TEST_ASSERT_TRUE_MESSAGE(cur == g, "plain_prompt_core.txt is stale (see .out); read the diff, then GOLDEN_UPDATE=1");
 }
 
+// Lane E2-FIX5: no text a model reads names a tool that is not bound. Over the class: a registry
+// holding every engine-2 tool but search, view, both or neither; the fact read from it
+// (plain::boundTools, as the engine reads it for each turn) renders every stub, long-text, omission and
+// import-note template, and every tool name in the result is registered there. Before: "view id=r<q>"
+// and "search finds them" whatever the registry held.
+namespace {
+bool namesWord(const std::string& text, const std::string& name) {
+  for (size_t at = text.find(name); at != std::string::npos; at = text.find(name, at + 1)) {
+    const bool left = at == 0 || !(std::isalnum((unsigned char)text[at - 1]) || text[at - 1] == '_');
+    const size_t end = at + name.size();
+    const bool right = end >= text.size() || !(std::isalnum((unsigned char)text[end]) || text[end] == '_');
+    if (left && right) return true;
+  }
+  return false;
+}
+std::vector<std::string> templateTexts(const nimbus::orch::tx::BoundTools& b) {
+  namespace tx = nimbus::orch::tx;
+  std::vector<std::string> out;
+  std::string s;
+  tx::StubFacts f;
+  f.tool = "read_file";
+  f.q = 42;
+  f.bytes = 15204;
+  f.lines = 310;
+  f.hhmm = "13:02";
+  f.preview = "hello";
+  f.cls = tx::ResultClass::Bulk;
+  f.bound = b;
+  for (int noCard = 0; noCard < 2; ++noCard)
+    for (int again = 0; again < 2; ++again)
+      for (int outside = 0; outside < 2; ++outside) {
+        tx::StubFacts g = f;
+        g.noCard = noCard;
+        g.again = again ? tx::wayBack("read_file", R"({"path":"notes/a.md"})") : std::string();
+        if (outside) {
+          g.tool = "web_search";
+          g.args = R"({"q":"tide"})";
+          g.cls = tx::ResultClass::Outside;
+        }
+        TEST_ASSERT_TRUE(tx::stubText(g, s).ok());
+        out.push_back(s);
+      }
+  TEST_ASSERT_TRUE(tx::longArgStub(15204, "ab12cd34", 9, s, std::string(), b).ok());
+  out.push_back(s);
+  TEST_ASSERT_TRUE(tx::longTextHead(std::string(200, 'x'), 100, tx::viewPointer(7, b), s, true).ok());
+  out.push_back(s);
+  TEST_ASSERT_TRUE(tx::photoStub("ab12cd34", "Tue 17 Nov 13:02", s, b.view).ok());   // E2-FIX4's, fed b.view
+  out.push_back(s);
+  TEST_ASSERT_TRUE(tx::photoStub("ab12cd34", "Tue 17 Nov 13:02", "a red car", s, b.view).ok());
+  out.push_back(s);
+  for (const char* dates : {"", "15-16 Nov"}) {
+    TEST_ASSERT_TRUE(tx::omissionLine(3, dates, s, b).ok());
+    out.push_back(s);
+  }
+  tx::ImportPlan p;
+  p.turns = 3;
+  p.named = 12;
+  p.searchBound = b.search;   // as the import fills it from MigrateDeps::bound
+  out.push_back(tx::importNote(p));
+  namespace sm = plain::texts::summarizer;
+  out.push_back(std::string(sm::kNotLoaded) + (b.search ? sm::kNotLoadedSearch : sm::kNotLoadedEnd));
+  return out;
+}
+}  // namespace
+
+namespace {
+std::vector<std::string> engineTwoToolNames() {
+  std::vector<std::string> names;
+  for (const td::ToolDecl& d : td::kTools) names.push_back(d.name);
+  for (const td::ToolDecl& d : td::kBehindMore) names.push_back(d.name);
+  return names;
+}
+// Every engine-2 tool, less search and/or view.
+void registerAllBut(ToolRegistry& reg, const std::vector<std::string>& names, bool searchOn, bool viewOn) {
+  for (const std::string& n : names) {
+    if ((n == "search" && !searchOn) || (n == "view" && !viewOn)) continue;
+    reg.add(n, "d", okHandler, kObj);
+  }
+}
+}  // namespace
+
+static void test_no_template_names_a_tool_that_is_not_bound() {
+  const std::vector<std::string> names = engineTwoToolNames();
+  for (int searchOn = 0; searchOn < 2; ++searchOn)
+    for (int viewOn = 0; viewOn < 2; ++viewOn) {
+      ToolRegistry reg;
+      registerAllBut(reg, names, searchOn, viewOn);
+      const nimbus::orch::tx::BoundTools b = plain::boundTools(&reg);
+      TEST_ASSERT_EQUAL((bool)searchOn, b.search);
+      TEST_ASSERT_EQUAL((bool)viewOn, b.view);
+      size_t viewSeen = 0, searchSeen = 0;
+      for (const std::string& t : templateTexts(b)) {
+        for (const std::string& n : names)
+          TEST_ASSERT_TRUE_MESSAGE(!namesWord(t, n) || reg.has(n), (n + " not bound, named in: " + t).c_str());
+        viewSeen += namesWord(t, "view");
+        searchSeen += namesWord(t, "search");
+      }
+      // The neighbor: a bound tool is still named (the way back turns on by itself).
+      // Two internal (a file read's names view too when bound, lane E2-FIX9), two outside, long argument, long text,
+      // two photos.
+      TEST_ASSERT_EQUAL(viewOn ? 8u : 0u, viewSeen);
+      TEST_ASSERT_EQUAL(searchOn ? 4u : 0u, searchSeen);   // two omission lines, the import note, kNotLoaded
+    }
+  TEST_ASSERT_FALSE(plain::boundTools(nullptr).search || plain::boundTools(nullptr).view);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
+  RUN_TEST(test_the_owners_tool_servers_waiting_for_approval_are_named);
   RUN_TEST(test_every_role_and_host_fits_the_ceilings);
   RUN_TEST(test_every_declaration_fits);
   RUN_TEST(test_every_tool_like_name_is_callable);
+  RUN_TEST(test_no_template_names_a_tool_that_is_not_bound);
   RUN_TEST(test_the_checker_catches_an_uncallable_name);
   RUN_TEST(test_registry_and_manifest_agree);
   RUN_TEST(test_one_fixed_pack_in_a_fixed_order);
@@ -966,6 +1127,8 @@ int main(int, char**) {
   RUN_TEST(test_tools_bytes_is_the_rendered_array);
   RUN_TEST(test_same_facts_same_bytes);
   RUN_TEST(test_a_clock_in_the_core_would_be_caught);
+  RUN_TEST(test_the_tools_index_names_every_group_with_its_words_and_skills_fits);
+  RUN_TEST(test_the_schedule_description_tells_a_reminder_from_a_wakeup_as_the_handler_runs_them);
   RUN_TEST(test_golden_records_every_role_and_host);
   return UNITY_END();
 }

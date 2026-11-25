@@ -80,6 +80,7 @@ def make_jobs(args, scenarios: list, env: dict) -> list:
                         rep=rep,
                         env=env,
                         loop_note=args.loop_note,
+                        engine=args.engine,
                         dir=run_dir(args.evidence, model, sc["id"], rep),
                         **MODELS[model],
                     )
@@ -114,6 +115,7 @@ def run_task(job: Job, arm_name: str, args) -> str:
         "rep": job.rep,
         "effort": job.effort,
         "loop_note": job.loop_note,
+        "engine": job.engine,  # arm A's engine (arm B is the loop either way)
         "started": utc(),
         "steps": [],
     }
@@ -284,6 +286,7 @@ def main():
     run.add_argument("--reps", type=int, default=3)
     run.add_argument("--only", help="comma-separated scenario ids")
     run.add_argument("--arms", default="A,B")
+    run.add_argument("--engine", default="1", choices=("1", "2"), help="arm A's engine (2: NIMBUSD_ENGINE=2)")
     run.add_argument("--parallel", type=int, default=4)
     run.add_argument("--max-usd", type=float, default=40.0)
     run.add_argument(

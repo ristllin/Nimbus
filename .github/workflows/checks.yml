@@ -9,6 +9,10 @@ on:
     branches: [main]
   pull_request:
 
+# Every job only reads the repository.
+permissions:
+  contents: read
+
 jobs:
   # Same gates as the local pre-commit hooks (.pre-commit-config.yaml):
   # gitleaks, hygiene fixers, ruff, lizard complexity. The private
@@ -108,6 +112,54 @@ jobs:
           elif [ -n "${PUSH_BEFORE:-}" ] && [ "$PUSH_BEFORE" != "0000000000000000000000000000000000000000" ]; then BASE="$PUSH_BEFORE"
           else BASE="HEAD~1"; fi
           python3 tools/release_gate/check_pending_roster.py --native-log native.log --base-ref "$BASE"
+
+  # L0 with both engines built (PRD section 10, lane RB-I0): the Freenove CYD product image on
+  # engine 1 and its engine-2 twin. Every map links one engine, the engine-2 ELF defines no
+  # engine-1 symbol and registers no old-engine tool, both images fit their slot, keep the
+  # tg_poll stack floor and stay under their static-DRAM ceilings. tools/build_all.sh
+  # (build-all.yml) runs the same gates on all six engine-2 envs.
+  engine-images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: Nimbus
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+          key: pio-engines-${{ runner.os }}-${{ hashFiles('Nimbus/platformio.ini') }}
+          restore-keys: |
+            pio-engines-${{ runner.os }}-
+      - name: Install PlatformIO
+        run: pip install platformio
+      - name: Build both engines (esp32s3-cyd, esp32s3-cyd-e2)
+        working-directory: Nimbus
+        run: pio run -e esp32s3-cyd -e esp32s3-cyd-e2
+      - name: Every map links one engine
+        working-directory: Nimbus
+        run: python3 tools/release_gate/check_engine_filter.py --require-maps esp32s3-cyd esp32s3-cyd-e2
+      - name: No old-engine tool registers on engine 2
+        working-directory: Nimbus
+        run: python3 tools/engine/list_tool_registrations.py --check
+      - name: The engine-2 ELF defines no engine-1 symbol
+        working-directory: Nimbus
+        run: python3 tools/release_gate/check_elf_symbols.py --engine1-absent --elf .pio/build/esp32s3-cyd-e2/firmware.elf
+      - name: Both images fit their app slot
+        working-directory: Nimbus
+        run: python3 tools/release_gate/check_image_size.py
+      - name: Static DRAM under the ceilings
+        working-directory: Nimbus
+        run: python3 tools/release_gate/check_static_dram.py
+      - name: tg_poll stack floor on both engines
+        working-directory: Nimbus
+        run: python3 tools/release_gate/check_tg_poll_stack.py --quiet
 
   # The release-gate + HIL-harness LOGIC must itself be tested (it is the thing
   # that decides whether a release ships). These are pure host tests - no board,

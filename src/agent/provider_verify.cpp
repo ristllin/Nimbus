@@ -34,6 +34,7 @@
 #include "model_refresh.h"         // a deferred LLM verify still gets its model list
 #include "nimbus/orch/model_refresh.h"  // kRefreshMinLargest - a list refresh's floor
 #include "nimbus/harness/turn_memory.h"  // PsramFirstScope - a worker's small blocks off internal SRAM
+#include "nimbus/harness/plain/head_slot.h"  // lane E2-R8a: the custom endpoint's window and tool probe
 
 // The Arduino core's loop task (cores/esp32/main.cpp): the device's own re-checks start
 // there (lane QW4, askedByOwner).
@@ -941,6 +942,114 @@ static void deferLowMemory(const String& provider, uint32_t max8) {
     (void)model_refresh::request(provider.c_str(), ask == DeferralAsk::Forced ? "verify" : "verify-deferred");
 }
 
+// ---- the custom endpoint's verify step (lane E2-R8a, router design section 3.3) -------------
+// One HTTP/1.0 exchange on an open client: the status code and up to `maxBody` bytes of the body.
+template <class C>
+static int customExchange(C& client, const String& req, std::string& body, size_t maxBody) {
+  client.print(req);
+  const uint32_t deadline = millis() + 15000;
+  String head;
+  bool inBody = false;
+  int code = 0;
+  while ((int32_t)(millis() - deadline) < 0 && body.size() < maxBody) {
+    if (!client.available()) {
+      if (!client.connected()) break;
+      delay(2);
+      continue;
+    }
+    const char c = (char)client.read();
+    if (inBody) {
+      body += c;
+      continue;
+    }
+    head += c;
+    if (!code && head.endsWith("\r\n")) code = head.substring(head.indexOf(' ') + 1).toInt();
+    inBody = head.endsWith("\r\n\r\n");
+  }
+  return code;
+}
+
+static void closeClient(WiFiClientSecure& c) { tlsClose(c); }
+static void closeClient(WiFiClient& c) { c.stop(); }
+
+// The verify's requests (plain::customVerify) over `client` (plain TCP or TLS by the base), one
+// connection each; a connection that does not open answers 0.
+template <class C>
+static int8_t customRound(C& client, const agent::plain::HeadSlot& slot, const String& key, uint32_t& window,
+                          bool& tools, bool& cleartext) {   // slot: the endpoint and model only (no table is read here)
+  const String host(slot.endpoint.host.c_str());
+  const String tail = "Accept-Encoding: identity\r\nUser-Agent: Nimbus\r\nConnection: close\r\n\r\n";
+  auto exchange = [&](const agent::HttpRequest& req, std::string& body) {
+    if (!connectHost(client, host.c_str(), slot.endpoint.port)) return 0;
+    String text = String(req.method.c_str()) + " " + req.path.c_str() + " HTTP/1.0\r\nHost: " + host + "\r\n";
+    for (const auto& h : req.headers) text += String(h.first.c_str()) + ": " + h.second.c_str() + "\r\n";
+    if (!req.body.empty()) text += "Content-Length: " + String((unsigned)req.body.size()) + "\r\n";
+    text += tail + req.body.c_str();
+    const int code = customExchange(client, text, body, req.body.empty() ? 64 * 1024 : 16 * 1024);
+    closeClient(client);
+    return code;
+  };
+  const agent::plain::CustomVerify v =
+      agent::plain::customVerify(slot, std::string(key.c_str()), store::customConv() == "anthropic", exchange);
+  window = v.window;
+  tools = v.tools;
+  cleartext = v.cleartextKey;
+  return v.result;
+}
+
+// The custom endpoint: its key at /models, the window it serves for the model, and whether it takes a
+// tool call; kept as the model's one row in the custom model store (the listed window the budget reads,
+// CapTools for the binding's tools). With no window the head runs in text mode (orchestrator_plain.cpp).
+static void runCustomVerify(bool refreshOnly) {
+  agent::plain::HeadSlot slot;
+  slot.model = store::customModel().c_str();
+  const String key = store::customKey();
+  if (slot.model.empty() || !agent::plain::customEndpointOf(std::string(store::customBase().c_str()), slot.endpoint)) {
+    alog("verify: custom endpoint has no base or model - not verified");
+    return;
+  }
+  if (!arbiter::acquireWork(35000)) {
+    recordOutcome("custom", -1, "tlsbusy", refreshOnly);
+    return;
+  }
+  uint32_t window = 0;
+  bool tools = false, cleartext = false;
+  int8_t result = -1;
+  if (slot.endpoint.tls) {
+    WiFiClientSecure client;
+    tlsSetup(client);
+    client.setConnectionTimeout(15000);
+    result = customRound(client, slot, key, window, tools, cleartext);
+  } else {
+    WiFiClient client;
+    client.setConnectionTimeout(15000);
+    result = customRound(client, slot, key, window, tools, cleartext);
+  }
+  arbiter::releaseWork();
+  recordOutcome("custom", result, cleartext ? "cleartext" : "", refreshOnly);
+  if (cleartext) alog("verify: custom endpoint is http:// and has a key: the key is never sent in clear, not verified");
+  if (result != 1) return;
+  nimbus::orch::ModelInfo row;
+  row.id = slot.model;
+  row.roles = nimbus::orch::RoleOrchestrator;
+  row.apiCaps = true;
+  row.ctxTokens = window;
+  if (tools) row.caps |= nimbus::orch::CapTools;
+  nimbus::orch::ModelStoreMeta meta;
+  meta.fetchedAt = nimbus::orch::calendarNowOrZero(time(nullptr));
+  meta.fw = NIMBUS_FW_VERSION;
+  meta.total = 1;
+  meta.src = "api";
+  const bool kept = store::setModelStoreText("custom", nimbus::orch::serializeModelStore(meta, {row}));
+  alogf("verify: custom %s window %u tokens%s, tool call %s, %s", slot.model.c_str(), (unsigned)window,
+        window ? "" : " (unknown: it runs in text mode until a window is set in settings)", tools ? "taken" : "not taken",
+        kept ? "kept" : "not stored");
+}
+
+bool customToolsVerified() {
+  return agent::plain::customToolsFrom(store::modelStoreText("custom"), std::string(store::customModel().c_str()));
+}
+
 static void runOne() {
   // Small blocks to PSRAM for the whole run, as a turn does (turn_memory.h): this worker's own
   // stack took 8.5 KB of the 31 KB at rest, and the rest of the run lives on what is left.
@@ -949,6 +1058,11 @@ static void runOne() {
   String provider = g_provider;
   const bool refreshOnly = g_refreshOnly;   // R5: the model list only
   if (refreshOnly) alogf("verify: %s model list refresh (GET only)", provider.c_str());
+  if (provider == "custom") {   // lane E2-R8a: the endpoint's window and tool call
+    runCustomVerify(refreshOnly);
+    g_pending = false;
+    return;
+  }
 
   String hostBuf;               // backs a dynamic host (zai probe result / cumulo base)
   const char* host = nullptr;

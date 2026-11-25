@@ -40,6 +40,7 @@ import check_owner_regressions
 import check_plain_ceilings
 import check_prompt_ceiling
 import check_release_notes
+import check_router_release
 import check_sram_staging
 import check_static_dram
 import check_storm_evidence
@@ -48,6 +49,27 @@ import check_tls_sni
 import check_tg_poll_stack
 import check_tool_result_imperatives
 import model_id_lint
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "engine"))
+import list_tool_registrations  # noqa: E402  (tools/engine)
+
+# The engine-2 image every gate run requires (lane RB-I0): the Freenove CYD product image on engine 2.
+# Build it with the engine-1 images: pio run -e esp32s3-cyd-e2 (the other e2 envs are checked when built).
+E2_REQUIRED = ("esp32s3-cyd-e2",)
+E2_ENVS = ("esp32s3-e2", "esp32s3-cyd-e2", "esp32s3-cyd-35-e2", "esp32s3-cyd-40-e2", "test-e2", "test-cyd-e2")
+
+
+def engine1_absent(argv: "list[str]") -> int:
+    """check_elf_symbols --engine1-absent on every built engine-2 image; the required ones must be built."""
+    rc = 0
+    for env in E2_ENVS:
+        elf = os.path.join(check_elf_symbols.REPO, ".pio", "build", env, "firmware.elf")
+        if env not in E2_REQUIRED and not os.path.exists(elf):
+            print(f"[gate:elf-symbols] {env}: not built here")
+            continue
+        rc |= check_elf_symbols.main(["--engine1-absent", "--elf", elf])
+    return rc
+
 
 HARDWARE_BATTERY = """\
 HARDWARE (bench, --allow-hardware; paste the real output):
@@ -152,8 +174,10 @@ def run_host_checks() -> bool:
         ("image-size vs app partition (lane TESTFIT)", check_image_size.main),
         (
             "engine filter: no engine-2 object in a device image (RB-I0a)",
-            lambda argv: check_engine_filter.main(["--require-maps", "esp32s3", "esp32s3-cyd"]),
+            lambda argv: check_engine_filter.main(["--require-maps", "esp32s3", "esp32s3-cyd", *E2_REQUIRED]),
         ),
+        ("engine 2 links no engine-1 symbol (RB-I0)", engine1_absent),
+        ("no old-engine tool registers on engine 2 (RB-I0)", lambda argv: list_tool_registrations.main(["--check"])),
         ("sram-staging (CUM-24)", check_sram_staging.main),
         ("ota-nvs (CUM-237)", check_ota_preserves_nvs.main),
         ("config-mapping (CUM-388)", check_config_mapping.main),
@@ -174,6 +198,10 @@ def run_host_checks() -> bool:
         ("fold health: the summary never pauses for good (v5.1.2)", check_fold_health.main),
         ("request budget table: bounds, rounds, no field below v5.1.2", check_budget_table.main),
         ("no use case named in the core: the domain-words lint (RB-REC1)", lambda argv: check_no_domain_words.main([])),
+        (
+            "router release: no releasable provider on synthetic fixtures or unrecorded shapes (E2-R3b)",
+            check_router_release.main,
+        ),
     ):
         rc = fn([])
         results.append((name, rc == 0))

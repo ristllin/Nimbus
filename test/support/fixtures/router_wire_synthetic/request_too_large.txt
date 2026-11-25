@@ -1,0 +1,4 @@
+synthetic: cumulo-nimbus docs/llm-router.md and packages/shared/src/router-refusals.ts (the cloud repo; no public page), read 2026-11-24
+status: 413
+expect: class=request_too_large retry=no
+{"error":"request_too_large","reason":"request_too_large","message":"The request body is larger than the router accepts.","charged":false,"retryable":false}

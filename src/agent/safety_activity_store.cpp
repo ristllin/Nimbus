@@ -256,6 +256,7 @@ ApproveResult approve(const std::string& id, AllowScope scope, std::string& msgO
   ensureLoaded();
   const SafetyEntry* e = g_log.find(id);
   if (!e) { msgOut = "Entry not found."; return ApproveResult::NotFound; }
+  if (!nimbus::orch::allowRulesApply(e->source)) { msgOut = nimbus::orch::kRailApprovalLine; return ApproveResult::Rejected; }
   // ContentClass is a real scope ONLY for a genuine narrow category. A coarse rule
   // (the moderation-classifier block, which carries no sub-category) would make the
   // allow match every future block on that gate: a global off switch, which the whole

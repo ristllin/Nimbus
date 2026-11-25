@@ -123,6 +123,23 @@ struct DeferredEffects {
   std::string arg[kDeferredKinds];        // its argument (the head to switch to, the image), by kind
   bool has(Deferred d) const { return (mask >> static_cast<uint8_t>(d)) & 1u; }
 };
+// How a registry tool asks for one (lane E2-P-TOOLS): its ToolResult::code is "deferred:<kind>" or
+// "deferred:<kind>:<arg>"; the binding's dispatch reads it into ToolOutput::deferred. A code of any
+// other shape (stored, queued, ...) asks for nothing.
+inline std::string deferredCode(Deferred d, const std::string& arg = std::string()) {
+  return "deferred:" + std::to_string(static_cast<unsigned>(d)) + (arg.empty() ? std::string() : ":" + arg);
+}
+inline bool deferredFromCode(const std::string& code, Deferred& d, std::string& arg) {
+  static const char kLead[] = "deferred:";
+  const size_t lead = sizeof(kLead) - 1;
+  if (code.size() <= lead || code.compare(0, lead, kLead) != 0) return false;
+  const char k = code[lead];
+  if (k < '1' || k >= static_cast<char>('0' + kDeferredKinds)) return false;
+  if (code.size() > lead + 1 && code[lead + 1] != ':') return false;
+  d = static_cast<Deferred>(k - '0');
+  arg = code.size() > lead + 2 ? code.substr(lead + 2) : std::string();
+  return true;
+}
 
 struct ToolOutput {
   std::string id;        // echoes ToolCall::id
@@ -160,6 +177,9 @@ struct TurnCtx {
   uint64_t startedAt = 0;       // epoch seconds; 0 = clock not set
   uint32_t startedMs = 0;       // monotonic
   bool tainted = false;         // the request carries an outside result whole
+  // Lane E2-P-PHOTO: the head takes no image input (orch::headTakesImages, the binding's call): no
+  // photo is shown as pixels; each renders as its line with the description stored at arrival.
+  bool photosBlind = false;
   uint16_t dayStartMin = kDayStartDefaultMin;   // every message stamp's running-day clause
   const nimbus::orch::Principal* who = nullptr;
 };

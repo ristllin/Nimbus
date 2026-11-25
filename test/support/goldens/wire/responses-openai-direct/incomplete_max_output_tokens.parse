@@ -1,0 +1,20 @@
+# route golden parse responses-openai-direct/incomplete_max_output_tokens.txt served at HTTP 200
+parse ok
+parse stop cut
+parse text 16 B fnv64=9c5cb071ac86b449 head="Your boat is the"
+parse refusal ""
+parse calls 0
+parse meta 1
+parse   meta 0 beforeCall=0 112 B fnv64=9d5d588dcfd02aa1 head="{\"type\":\"reasoning\",\"id\":\"rs_syn_01\",\"summary\":["
+parse usage prompt=176 completion=40 cacheRead=1024 cacheWrite=0 cacheWrite1h=0 responses=1 maxRequestIn=1200 served="gpt-5.6"
+exchange err=cut http=200 requests=1 retries=0 climbs=0 cutRetried=0 failOver=0 parkHost=0 maxTokens=0 requestBytes=1187 ms=0 waitedMs=0 statusLine=4
+exchange line "The reply above was cut at the length limit."
+exchange line stored "The reply above was cut at the length limit."
+exchange request 0 1187 B fnv64=9796c3b8ff15234a
+exchange step stop cut
+exchange step text 16 B fnv64=9c5cb071ac86b449 head="Your boat is the"
+exchange step refusal ""
+exchange step calls 0
+exchange step meta 1
+exchange step   meta 0 beforeCall=0 112 B fnv64=9d5d588dcfd02aa1 head="{\"type\":\"reasoning\",\"id\":\"rs_syn_01\",\"summary\":["
+exchange step usage prompt=176 completion=40 cacheRead=1024 cacheWrite=0 cacheWrite1h=0 responses=1 maxRequestIn=1200 served="gpt-5.6"

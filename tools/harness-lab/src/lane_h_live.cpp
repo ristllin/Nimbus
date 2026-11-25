@@ -240,7 +240,10 @@ class HRig {
     ad_.setModelMemory = [](const std::string&, const std::string&) { return false; };
     ad_.modelIsValid = [this](const std::string& p, const std::string& m) { return listed(p, m); };
     ad_.providerHasKey = [this](const std::string& p) { return keyed(p); };
-    ad_.setOrchHostModel = [this](const std::string& p, const std::string& m) { applied_.push_back({p, m}); };
+    ad_.setOrchHostModel = [this](const std::string& p, const std::string& m) {
+      applied_.push_back({p, m});
+      return true;
+    };
     ad_.modelMiss = [this](const std::string& p, const std::string&) {
       const orch::RefreshAsk a = q_.request(p.c_str(), keyed(p), nowMs());
       if (a == orch::RefreshAsk::Queued) queued_++;

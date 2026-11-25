@@ -750,7 +750,7 @@ static void test_the_device_wiring_of_the_merge_fixes() {
   const size_t gate = web.find("runsWhilePaused(std::string(text.c_str()))");
   TEST_ASSERT_TRUE(gate != std::string::npos);
   TEST_ASSERT_TRUE(web.substr(gate, 400).find("agent::budget::noteMessage(\"web\"") != std::string::npos);
-  const std::string orch = slurp("src/agent/orchestrator.cpp");
+  const std::string orch = slurp("src/agent/orchestrator_e1.cpp");
   TEST_ASSERT_TRUE(orch.find("facts.date = agent::telegram::turnMessageDate();") != std::string::npos);
   TEST_ASSERT_TRUE(orch.find("facts.voiceNote = agent::telegram::turnIsVoiceNote();") != std::string::npos);
   TEST_ASSERT_TRUE(orch.find("budget::handle(v, cmd.args, chatId, owner, facts)") != std::string::npos);
@@ -852,7 +852,7 @@ static void test_owner_chats_only_never_a_group() {
 // verbs are owner-only in the one table.
 static void test_the_dispatcher_wires_the_verbs() {
   for (const char* v : {"usage", "budget", "model"}) TEST_ASSERT_TRUE(isOwnerVerb(v));
-  const std::string src = slurp("src/agent/orchestrator.cpp");
+  const std::string src = slurp("src/agent/orchestrator_e1.cpp");
   const size_t help = src.find("if (v == \"help\" || v == \"start\")");
   TEST_ASSERT_TRUE(help != std::string::npos);
   const std::string helpBlock = src.substr(help, src.find("return;", help) - help);

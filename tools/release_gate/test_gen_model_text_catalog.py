@@ -156,11 +156,17 @@ def test_e2_ceilings_are_the_prd_figures():
         "core": 3072,
         "device_notes": 2048,
         "stubs": 512,
-        "tool_results": 6144,
+        "tool_results": 9216,  # rulings 111 item 2 and 117 (7,168 B), then ruling 124 (9,216 B, the parity tools)
         "probe": 1536,  # ruling 33: the qualified probe prompt (1,296 B) byte for byte (RB-G1)
         "summarizer": 1024,
         "tool_descriptions": 10240,
     }
+
+
+def test_the_tool_results_ceiling_stays_inside_ruling_124():
+    # Ruling 111 let the class rise by 512 B over 6,144 B (schedule), ruling 117 by 512 B more (search and
+    # view); ruling 124 sets it to 9,216 B for the parity tools' result lines. No more without a ruling.
+    assert 6144 <= cat.E2_CEILINGS["tool_results"] <= 9216
 
 
 def test_the_goldens_are_fresh(capsys):

@@ -13,6 +13,7 @@
 #include "../sys/agent_log.h"
 #include "../sys/heap_watch.h"          // restingLargest - the handshake floor gate
 #include "memory_subsystem.h"           // registry() - where models.list lives
+#include "engine_tools.h"               // registerModelsFamily (tools_e1.cpp)
 #include "nimbus/orch/model_catalog.h"  // lane F: the model store, rowOffered, modelPrice
 #include "nimbus/orch/model_choices.h"  // staticModelChoices - before the first fetch
 #include "nimbus/orch/model_refresh.h"
@@ -232,7 +233,7 @@ void begin() {
   };
   h.load = [](const std::string& p, nimbus::orch::ProviderModels& out) { return loadRows(p, out); };
   h.requestRefresh = [](const std::string& p) { return request(p.c_str(), "head"); };
-  nimbus::orch::registerModelsTool(memory::registry(), h);
+  tools::registerModelsFamily(memory::registry(), h);   // models.list (tools_e1.cpp)
   // A turn's record names the concrete model each host answered with: a "-latest" echo
   // (Mistral's answers) is looked up in the stored lists this module keeps fresh.
   nimbus::orch::installServedModelResolver([](const char* host, const char* echo, char* out, size_t cap) {

@@ -1,0 +1,20 @@
+# route golden parse chat-zai-direct/reasoning_content_text.txt served at HTTP 200
+parse ok
+parse stop end
+parse text 45 B fnv64=1a7d375f35cd627b head="The second seed in the list is rainbow chard."
+parse refusal ""
+parse calls 0
+parse meta 1
+parse   meta 0 beforeCall=0 61 B fnv64=9715da70314b920c head="{\"reasoning_content\":\"From the earlier read: rai"
+parse usage prompt=217 completion=21 cacheRead=1792 cacheWrite=0 cacheWrite1h=0 responses=1 maxRequestIn=2009 served="glm-5.3"
+exchange err=ok http=200 requests=1 retries=0 climbs=0 cutRetried=0 failOver=0 parkHost=0 maxTokens=1998 requestBytes=792 ms=0 waitedMs=0 statusLine=0
+exchange line ""
+exchange line stored ""
+exchange request 0 792 B fnv64=e4823a3784053fb0
+exchange step stop end
+exchange step text 45 B fnv64=1a7d375f35cd627b head="The second seed in the list is rainbow chard."
+exchange step refusal ""
+exchange step calls 0
+exchange step meta 1
+exchange step   meta 0 beforeCall=0 61 B fnv64=9715da70314b920c head="{\"reasoning_content\":\"From the earlier read: rai"
+exchange step usage prompt=217 completion=21 cacheRead=1792 cacheWrite=0 cacheWrite1h=0 responses=1 maxRequestIn=2009 served="glm-5.3"

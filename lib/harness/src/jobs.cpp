@@ -109,6 +109,18 @@ static std::string jobLabel(const orch::JobRecord& rec) {
   return rec.category[0] ? (mdl + " (" + rec.category + ")") : mdl;
 }
 
+// A result the device's RAM held when it restarted, for the job labelled `label`.
+static std::string lostAtRestartLine(const std::string& label) {
+  return std::string("The result of [") + label + "] was lost when the device restarted, so it will not arrive.";
+}
+
+// A job that ended in an error, and why (kUnknownError when its reason is not known: the provider
+// gave none, or a restart left it unreported and its reason was not kept: E2-REP6).
+static constexpr char kUnknownError[] = "unknown error";
+static std::string failedLine(const std::string& label, const char* why) {
+  return std::string("Job [") + label + "] failed: " + why;
+}
+
 // The owner's reply when a spawn's dispatch fails: what happened, then the one
 // next step (subagents F3). The switch names every FabricErr with no default,
 // so a new error class fails the build's -Wswitch until it has its own words.
@@ -169,6 +181,14 @@ JobEngine::JobEngine(Deps d, Tuning t)
 
 void JobEngine::deliver(const std::string& chatId, const std::string& text) {
   if (d_.deliver) d_.deliver(chatId, text);
+}
+
+attn::Event headArcEvent(bool lit) {
+  attn::Event e;
+  e.type = attn::Event::Type::JobState;
+  e.key = keyFromTag("head");
+  e.status = (uint8_t)(lit ? solide::ring::Status::Running : solide::ring::Status::Offline);
+  return e;
 }
 
 // Emit one JobState event with the backend accent hue applied.
@@ -629,8 +649,22 @@ static std::string freshSeedBody(const std::vector<JobEngine::FreshResult>& take
   if (stubbed)
     b += "(" + std::to_string(stubbed) +
          " result(s) summarized - fetch full text with results.get)\n";
-  b += "[end outside content]\n";
+  b += kOutsideContentCloseLine;
   return b;
+}
+
+// Defined here, after the seed body, so the catalog keeps its order (RB-Q2a's literal, unchanged).
+const char kOutsideContentCloseLine[] = "[end outside content]\n";
+
+std::string fenceOutsideContent(const std::string& text) {
+  std::string body = text;
+  defangFenceClose(body);
+  std::string out = kOutsideContentOpen;
+  out += '\n';
+  out += body;
+  out += '\n';
+  out.append(kOutsideContentCloseLine, sizeof kOutsideContentCloseLine - 2);   // the closing line, no newline
+  return out;
 }
 
 // Take the parked results in `scope` (every one when null), rendered as the seed; the
@@ -702,6 +736,8 @@ std::string JobEngine::ownerText(const FreshScope* scope) const {
 
 void JobEngine::deliverOwnerFallback() {
   hlog::log("orchestrator: synthesis stuck - delivering raw results (fallback)");
+  if (d_.reportTurns)   // delivered raw below: none is reported again after a restart
+    for (const FreshResult& f : fresh_) markReported(f.tag);
   // Each chat's results to that chat (CUM-830), consumed so nothing is delivered twice.
   while (!fresh_.empty()) {
     const std::string chatId = nextFreshChat();
@@ -1668,8 +1704,13 @@ void JobEngine::finishJob(const orch::JobRecord& rec, const std::string& artifac
   if (d_.nowString) strncpy(f.finishedAt, d_.nowString().c_str(), sizeof(f.finishedAt) - 1);
   f.finishedEpoch = d_.nowEpoch ? d_.nowEpoch() : 0;
   f.failed = final != orch::JobState::Done;
+  // Engine 2: a parked result waits for its report turn (a stopped job has none).
+  f.unreported = d_.reportTurns && final != orch::JobState::Cancelled;
   if (!d_.journal->finish(rec.tag, f, final))
     hlog::logf("orchestrator: finished record %s not stored", rec.tag);
+  if (d_.journal->droppedUnreported()[0])   // E2-REP6: every entry waited; that report is held in RAM only
+    hlog::logf("orchestrator: %d reports wait: %s's waits in RAM only (lost at a restart)", orch::kJournalFinishedMax,
+               d_.journal->droppedUnreported());
 }
 
 std::string JobEngine::finishedBeforeRestartText() const {
@@ -1689,10 +1730,38 @@ std::string JobEngine::finishedBeforeRestartText() const {
   return out;
 }
 
+// At most ONE queued spawn, while in-flight sessions stay under the inflight cap and heap is
+// above the dispatch floor. Engine 2's agent_start calls it inside the turn (no poll, no synthesis).
+bool JobEngine::dispatchQueued() {
+  if (!d_.fabric || !d_.journal || pending_.empty() || nowMs() < nextDispatchAt_ ||
+      d_.journal->count() >= t_.maxActiveInflight || freeHeap() < t_.dispatchMinHeap)
+    return false;
+  PendingSpawn p = pending_.front();
+  pending_.erase(pending_.begin());
+  // A deep wave grew the queue's internal-SRAM backing past the baseline;
+  // release it once the inbox drains so the larger allocation is transient, not
+  // a permanent steady-state cost (nimbus-internal-heap-map).
+  if (pending_.empty() && pending_.capacity() > (size_t)orch::kAgentMaxJobs) {
+    std::vector<PendingSpawn>().swap(pending_);
+    pending_.reserve(orch::kAgentMaxJobs);
+  }
+  // Bridge the dispatch window for activeCount(): the entry left pending_ and
+  // the journal record lands only after dispatch returns (a synchronous
+  // Mistral sub blocks HERE for its whole run) - without this flag the head
+  // arc read zero children mid-run and the reconciler cleared it.
+  dispatching_ = true;
+  dispatchSpawn(p);
+  dispatching_ = false;
+  nextDispatchAt_ = nowMs() + 2500;
+  nextPollAt_     = nowMs() + 1500;
+  return true;
+}
+
 // ---- the pump (the JOB parts of the device's pollJobs) ----------------------
 
 int JobEngine::pump() {
   if (!d_.fabric || !d_.journal) return 0;
+  if (d_.reportTurns && !restoredUnreported_) restoreUnreported();   // once per boot (E2-P-SUB2)
   reapDone();     // collapse any delivered sub-agent arcs whose grace has elapsed
   stopFrozenHelpers();   // lane QW4 (CUM-778): a spend freeze stops paid helpers
   serviceStopList();     // lane QW4 (CUM-774): helpers whose stop is not yet confirmed
@@ -1727,31 +1796,8 @@ int JobEngine::pump() {
     }
   }
 
-  // Dispatch at most ONE queued spawn per cycle, while in-flight sessions stay
-  // under the inflight cap and heap is above the dispatch floor.
-  if (!pending_.empty() && nowMs() >= nextDispatchAt_ &&
-      d_.journal->count() < t_.maxActiveInflight &&
-      freeHeap() >= t_.dispatchMinHeap) {
-    PendingSpawn p = pending_.front();
-    pending_.erase(pending_.begin());
-    // A deep wave grew the queue's internal-SRAM backing past the baseline;
-    // release it once the inbox drains so the larger allocation is transient, not
-    // a permanent steady-state cost (nimbus-internal-heap-map).
-    if (pending_.empty() && pending_.capacity() > (size_t)orch::kAgentMaxJobs) {
-      std::vector<PendingSpawn>().swap(pending_);
-      pending_.reserve(orch::kAgentMaxJobs);
-    }
-    // Bridge the dispatch window for activeCount(): the entry left pending_ and
-    // the journal record lands only after dispatch returns (a synchronous
-    // Mistral sub blocks HERE for its whole run) - without this flag the head
-    // arc read zero children mid-run and the reconciler cleared it.
-    dispatching_ = true;
-    dispatchSpawn(p);
-    dispatching_ = false;
-    nextDispatchAt_ = nowMs() + 2500;
-    nextPollAt_     = nowMs() + 1500;
-    return d_.journal->count();
-  }
+  // Dispatch at most ONE queued spawn per cycle (dispatchQueued).
+  if (dispatchQueued()) return d_.journal->count();
 
   // Loop-closure: once every sub-agent has finished and nothing is queued, feed
   // the parked results back for ONE synthesis turn.
@@ -1800,9 +1846,13 @@ int JobEngine::pump() {
       // A synchronous sub's result lived in the device's RAM, so a job restored after a
       // restart cannot be collected: say that, not "expired" (subagents F4.4).
       const bool lost = d_.journal->restored(rec.tag) && backendRunsSync(rec.backend);
-      deliver(rec.chatId, lost ? std::string("The result of [") + jobLabel(rec) +
-                                     "] was lost when the device restarted, so it will not arrive."
-                               : std::string("Job [") + jobLabel(rec) + "] expired or was not found.");
+      const std::string goneText = lost ? lostAtRestartLine(jobLabel(rec))
+                                        : std::string("Job [") + jobLabel(rec) + "] expired or was not found.";
+      if (d_.reportTurns) {   // engine 2 (E2-P-SUB2): the failure is a report turn, not a bare line
+        parkFailure(rec.tag, jobLabel(rec), rec.chatId, goneText);
+      } else {
+        deliver(rec.chatId, goneText);
+      }
       ledgerFinished(rec.tag, LedgerState::Failed,
                      lost ? "its result was lost when the device restarted"
                           : "it expired or was not found on its provider");
@@ -1837,10 +1887,8 @@ int JobEngine::pump() {
         // Same owner-delivery discipline as a normal sub failure (W19): while
         // other work runs, the failure joins the fresh results so the final
         // synthesis reports it; alone, it IS the report.
-        if (activeCount() > 1 || !pending_.empty()) {
-          addFreshResult(rec.tag, jobLabel(rec).c_str(), std::string("FAILED: ") + failText,
-                         nimbus::orch::nsForChat(rec.chatId, /*admin=*/false), /*failed=*/true);
-          freshChatId_ = rec.chatId;
+        if (d_.reportTurns || activeCount() > 1 || !pending_.empty()) {
+          parkFailure(rec.tag, jobLabel(rec), rec.chatId, failText);
         } else {
           deliver(rec.chatId, failText);
         }
@@ -1961,14 +2009,12 @@ int JobEngine::pump() {
       // results (the final report says which subs failed) instead of pinging
       // the owner mid-run - 50 subs must not mean up to 50 failure messages.
       // A failure with nothing else live IS the final report: deliver as before.
-      const std::string failText = std::string("Job [") + jobLabel(rec) + "] failed: " +
-              (env_ref().error[0] ? env_ref().error : "unknown error");
-      ledgerFinished(rec.tag, LedgerState::Failed, env_ref().error[0] ? env_ref().error : "unknown error",
-                     env_ref().toolNames);
-      if (activeCount() > 1 || !pending_.empty()) {   // >1: this job still counts
-        addFreshResult(rec.tag, jobLabel(rec).c_str(), std::string("FAILED: ") + failText,
-                       nimbus::orch::nsForChat(rec.chatId, /*admin=*/false), /*failed=*/true);
-        freshChatId_ = rec.chatId;
+      const char* why = env_ref().error[0] ? env_ref().error : kUnknownError;
+      const std::string failText = failedLine(jobLabel(rec), why);
+      ledgerFinished(rec.tag, LedgerState::Failed, why, env_ref().toolNames);
+      // Engine 2 (E2-P-SUB2): always parked, so it reaches the person as a report turn.
+      if (d_.reportTurns || activeCount() > 1 || !pending_.empty()) {   // >1: this job still counts
+        parkFailure(rec.tag, jobLabel(rec), rec.chatId, failText);
       } else {
         deliver(rec.chatId, failText);
       }
@@ -2293,6 +2339,61 @@ bool JobEngine::stopping(const char* tagOrJobId) const {
   for (const Stopping& e : stopping_)
     if (e.tag == tagOrJobId || e.jobId == tagOrJobId) return true;
   return false;
+}
+
+void JobEngine::parkFailure(const char* tag, const std::string& label, const std::string& chatId,
+                            const std::string& text) {
+  addFreshResult(tag, label.c_str(), std::string("FAILED: ") + text,
+                 nimbus::orch::nsForChat(chatId, /*admin=*/false), /*failed=*/true);
+  freshChatId_ = chatId;
+}
+
+bool JobEngine::cancelQueued(const std::string& chatId, const std::string& name) {
+  if (name.empty()) return false;
+  for (auto it = pending_.begin(); it != pending_.end(); ++it) {
+    if (chatId != it->chatId || name != it->name) continue;
+    if (LedgerEntry* e = queuedEntry(*it)) {
+      e->state = LedgerState::Cancelled;
+      e->atMs = nowMs();
+    }
+    hlog::logf("orchestrator: queued spawn %s stopped before it started", it->name);
+    pending_.erase(it);
+    return true;
+  }
+  return false;
+}
+
+void JobEngine::markReported(const std::string& tag) {
+  if (!d_.reportTurns || !d_.journal || tag.empty()) return;
+  if (!d_.journal->markReported(tag.c_str()))
+    hlog::logf("orchestrator: report mark for %s not stored", tag.c_str());
+}
+
+// The results a restart left unreported: each one's saved file read back whole (the result as
+// it was parked, before the 3500-char view), or a true line when it cannot be.
+void JobEngine::restoreUnreported() {
+  restoredUnreported_ = true;
+  if (!d_.journal) return;
+  std::vector<orch::FinishedJob> waiting;
+  orch::FinishedJob f;
+  bool before = false;
+  for (int i = 0; d_.journal->finished(i, f, &before); i++)
+    if (before && f.unreported) waiting.insert(waiting.begin(), f);   // oldest first
+  for (const orch::FinishedJob& w : waiting) {
+    const std::string label = w.name[0] ? std::string(w.name) : std::string(w.tag);
+    std::string text;
+    const char* slash = std::strchr(w.artifact, '/');
+    if (!w.failed && slash && d_.readDoc)
+      text = d_.readDoc(w.chatId, std::string(w.artifact, (size_t)(slash - w.artifact)), std::string(slash + 1));
+    if (text.empty()) {   // a failure (said as one: E2-REP6), or a result whose file cannot be read
+      parkFailure(w.tag, label, w.chatId, w.failed ? failedLine(label, kUnknownError) : lostAtRestartLine(label));
+    } else {
+      addFreshResult(w.tag, label.c_str(), text, nimbus::orch::nsForChat(w.chatId, /*admin=*/false));
+      fresh_.back().saved.push_back(w.artifact);
+      freshChatId_ = w.chatId;
+    }
+    hlog::logf("orchestrator: %s's report waited at the restart; it comes now", w.tag);
+  }
 }
 
 bool JobEngine::cancel(const char* tagOrJobId) {

@@ -4,6 +4,7 @@
 #include "nimbus/harness/plain/engine.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -11,9 +12,17 @@
 
 #include "nimbus/harness/channel.h"
 #include "nimbus/harness/log.h"
+#include "nimbus/harness/plain/compact.h"   // recheckAsk: the account check (E2-PARK1)
 #include "nimbus/harness/plain/exchange.h"
+#include "nimbus/harness/plain/prefix.h"   // the frozen system part (lane E2-CACHE)
+#include "nimbus/harness/plain/rails.h"   // the item taint rule (RB-RL)
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/harness/platform.h"
+#include "nimbus/orch/mcp_client.h"   // serverOf (E2-REP2)
+#include "nimbus/harness/plain/head_gate.h"   // limitTurnLine (E2-CFIX3)
+#include "nimbus/orch/provider_park.h"   // parkKeyFingerprint: a fallback head's refusal (E2-REP1)
+#include "nimbus/orch/path_rules.h"   // storePathFor: an own path as the store lists it (E2-FIX8)
+#include "nimbus/orch/psram_alloc.h"   // WorkingVector: the argument walks keep their list off the stack
 #include "nimbus/orch/tool_groups.h"
 #include "nimbus/orch/tool_registry.h"
 #include "nimbus/orch/tx/arena.h"
@@ -35,12 +44,18 @@ struct PlainEngine::ChatState {
   tx::RecentFilesBlock recent;
   uint64_t nextQ = 1;                  // the next item's q (also given to items not stored)
   uint64_t lastClosedQ = 0;            // the last item of the last closed turn (its e item)
+  // Overflow ladder rung 1's line, kept from turn to turn (lane E2-FIX9): the closed bulk at or below it renders as
+  // stubs until a compaction stores (or a restart), so the turns after it share one cached prefix; it moves only
+  // when a request is over its cap again, and then down to kLadderLowPercent of the cap.
+  uint64_t ladderLine = 0;
   uint32_t lastTurn = 0;
+  std::unique_ptr<LastTurn> last;      // the last closed turn, for the turn inspector (lane E2-P-SURF)
   bool booted = false;
   bool afterRestart = true;            // the first turn after boot opens cold
   bool storageEpisode = false;         // storage refused an item and has stored none since
   bool noteDue = false;                // a stored gap note is still owed for the last episode
   bool noteShown = false;              // the model has seen the note in this episode (RAM at least)
+  uint32_t lostAtEpisode = 0;          // TxLog::lostCount() when the episode began (lane E2-BFIX1)
   uint64_t droppedThru = 0;            // the newest q given up from RAM (the restart fill, a full arena)
   // A full arena (ruling 60): the oldest closed turns left RAM (storage keeps them). The
   // omission line names them until a digest covers them.
@@ -49,6 +64,23 @@ struct PlainEngine::ChatState {
   uint32_t lastDroppedTurn = 0;        // the newest turn a drop reached (counted once)
   // The memory line, built at boot: on a refused allocation it goes out with no allocation.
   std::string memoryLine;
+  // The stored conversation could not be loaded (lane E2-STORE, finding S5): open() answered Io
+  // on a device with a card fitted. The chat runs from RAM, the log stays closed, and reopen()
+  // stores the RAM items after the stored conversation once the card answers. mergedThru is
+  // the newest RAM q already appended; qShift and turnShift move RAM numbers past the stored
+  // ones (set at the first append, kept across retries so a partial merge resumes in order).
+  bool unloaded = false;
+  // The frozen system part (lane E2-CACHE, EngineDeps::stablePrefix): what the requests send and what
+  // was last seen of its parts; its record beside the transcript. prefixStore: Untried (not read yet),
+  // Known (read, or listed as absent: it may be written), Unread (the card did not answer: never
+  // written over, read again at the next turn open). prefixDirty: RAM is ahead of the record.
+  FrozenPrefix prefix;
+  enum class PrefixStore : uint8_t { Untried = 0, Known = 1, Unread = 2 } prefixStore = PrefixStore::Untried;
+  bool prefixDirty = false;
+  bool shiftSet = false;
+  uint64_t mergedThru = 0;
+  uint64_t qShift = 0;
+  uint32_t turnShift = 0;
 };
 
 namespace {
@@ -56,6 +88,11 @@ namespace {
 uint32_t fnv1a(uint32_t h, const std::string& s) {
   for (unsigned char ch : s) h = (h ^ ch) * 16777619u;
   return h;
+}
+
+// The model the provider named last (E2-P-SURF); an answer that names none keeps the one before.
+void keepServed(std::string& kept, const std::string& named) {
+  if (!named.empty()) kept = named;
 }
 
 // One turn's state. It lives on the heap so runTurn's frame stays small.
@@ -66,11 +103,10 @@ struct Turn {
   std::vector<ToolSpec> tools;
   const WireCodec* wire = nullptr;
   uint32_t bodyCap = 0;                // the head's body cap (budget()); 0 only before it runs
-  bool floorHead = false;              // the head's class (tx::HeadBudget::floorHead)
   uint32_t messageCap = tx::kInlineMessageCap;   // text kept inline (tx::HeadBudget::messageCap)
   uint32_t bulkWholeCap = tx::kBulkWholeMax;     // tier 2 whole in its own turn (tx::HeadBudget::bulkWholeCap)
   GuardLimits limits;
-  uint32_t hardWallMs = kHardWallMs;   // the guard's last round runs to it (a routine's is lower)
+  GuardProgress progress;              // progressing or a loop (ruling 84 item 2; lane RB-X3)
   LadderState ladder;
   RenderInput render;
   ExchangeResult ex;
@@ -80,17 +116,36 @@ struct Turn {
   uint16_t toolRounds = 0;             // rounds whose calls ran (the round guard counts these)
   std::vector<uint64_t> roundStart;    // the first q of each answered round (ladder rung 2)
   bool lastRound = false;              // a guard tripped: this request goes with tool choice none
+  std::vector<std::string> photosShown;   // the open turn's visible photo refs (its t item; E2-P-PHOTO)
+  bool photoRefusalResent = false;     // the round was re-sent once without photos a provider refused
   bool held = false;                   // beforeDeliver held the reply once
   std::string heldText;                // the held reply: delivered if the extra round fails
   std::string interim;                 // text the model wrote beside its calls this turn (RB-H81)
   std::vector<uint64_t> callQ;         // the q of each call of the round being run (pairing)
   uint64_t curCallQ = 0;               // the q of the call whose result is being stored
   bool storeFailed = false;            // the arena refused an item: the turn ends
+  uint32_t lostAtOpen = 0;             // TxLog::lostCount() at the open (E2-BFIX1: an item given up this turn)
   bool storageLineDue = false;
   bool fileSetChanged = false;
   bool sawOutside = false;
   bool sawMeta = false;
   bool longArgs = false;               // a call kept a long argument whole: its stub shows from the close
+  // Lane E2-FIX6: what this turn's own calls did, for the frozen system part (seeOwnChanges). notStored:
+  // an item of this turn did not reach the card (its own changes are not taken as held by the
+  // conversation). ownTexts: the successful, stored results (short ones: a note's stored line);
+  // ownPaths: the paths their calls named; ownFromQ: the turn's first item.
+  bool notStored = false;
+  std::vector<std::string> ownTexts;
+  std::vector<std::string> ownPaths;
+  bool callRan = false;                // the call being stored ran here (a hook's answer never ran it: not own)
+  // Lane E2-FIX10: the paths the device stored for the message that opens this turn (TurnInput::stored),
+  // kept only once that message is stored; taken as the turn's own at the open, once.
+  std::vector<std::string> inbound;
+  bool inboundSeen = false;
+  bool inboundMoved = false;           // the open moved the seen list: undone at the close if an item was refused
+  std::string inboundSeenBefore;       // the seen list before that move
+  uint64_t inboundOwnFromBefore = 0;
+  uint8_t compactAsks = 0;             // compaction first, asked once a turn per urgency (lane RB-C3)
   uint32_t sizeTokens = 0;             // the size guard's input: request sizes summed, cache included
   DeferredEffects deferred;            // effects to run after the turn (TurnOutcome::deferred)
   GuardTrip trip = GuardTrip::None;
@@ -113,8 +168,29 @@ struct Turn {
   tx::ItemKind refusedKind = tx::ItemKind::User;
   StatusLine status = StatusLine::None;
   std::string statusText;
+  std::string statusStored;            // statusText as it may be kept (no provider words); empty: the same
   const std::string* statusRef = nullptr;   // the line that goes out: statusText or a kept line
+  // The line as it may be stored or reach a model (TurnOutcome::statusStored); statusRef set.
+  const std::string& storedLine() const { return statusStored.empty() || statusRef != &statusText ? *statusRef : statusStored; }
   bool parkHost = false, failOver = false;
+  bool modelUnusable = false;          // the provider does not know the model (E2-R8a: the store marks it)
+  std::string unusableProvider, unusableModel;   // which head did not know it (review R2)
+  // Lane E2-P-FO: rounds moved to another head, the heads tried (slot/model), the answering head's slot
+  // (set at the first switch), the person's line per switch, what each head left was billed, and the
+  // turn's totals when the head now answering took over (its share is the rest).
+  uint8_t switches = 0;
+  std::vector<std::string> tried;
+  std::string slot;
+  std::string switchLines;
+  std::string switchStored;   // switchLines without a provider's reason (E2-CFIX1): what may be kept
+  std::vector<HeadShare> shares;
+  HeadShare base;
+  int parkStatus = 0;                  // the park's refusal: its status and body (E2-FIX14)
+  bool parkBilling = false;            // and billing by the classifier (E2-CFIX1)
+  bool parkModel = false;              // and the account check was refused too (E2-PARK1)
+  bool neutralSwitch = false;          // a member's chat: the switch line names only the model (R11)
+  std::string parkText;
+  std::vector<TurnOutcome::FallbackRefusal> fallbackRefusals;   // E2-REP1
   std::string cause;
   tx::TurnEndFacts end;
   std::vector<tx::Item> writes;        // c, r pairs of successful effect calls (supersede rule)
@@ -122,6 +198,7 @@ struct Turn {
   tx::Item item;                       // the item being built and stored
   tx::Item read;                       // an item decoded from the arena
   tx::StubFacts stub;
+  std::string again;                   // the long arguments' way back (tx::wayBack), while tierArgs runs
 };
 
 class TurnRun {
@@ -131,11 +208,13 @@ class TurnRun {
   // The loop. Everything around it is durability: each answer and each result is stored
   // before the next request leaves. Kept out of line: runTurn's own frame stays small.
   __attribute__((noinline)) Status run(const TurnInput& in) {
+    t_.lostAtOpen = d_.log->lostCount();
     Status st = open(in);
     while (st.ok() && !t_.storeFailed) {
       if ((st = boundary()).ok()) st = ask();                              // render, post, read
       if (!st.ok() || t_.ex.err != ExchangeErr::None) break;               // failed or cut: ended
       const ParsedStep& step = t_.ex.step;
+      if (step.outside) t_.sawOutside = t_.ctx.tainted = true;            // a provider-side connector answered
       if (step.calls.empty() || t_.lastRound) {                            // no call: the text is the reply
         if (!(st = finalAnswer(step)).ok() || t_.answered) break;
         continue;                                                          // held once: one more round
@@ -151,6 +230,7 @@ class TurnRun {
   // Text the model already wrote in this turn beside its calls: when the last round answers with
   // nothing, it is the reply, never lost behind a provider line (RB-W1b's report, lane RB-H81).
   void keepInterim(const std::string& text) {
+    t_.progress.noteText(text);   // new text is progress (RB-X3)
     if (!t_.interim.empty()) t_.interim += "\n\n";
     t_.interim += text;
   }
@@ -189,14 +269,27 @@ class TurnRun {
     }
     const bool ok = state == tx::StoreState::Stored;
     if (stored) *stored = ok;
+    if (!ok) t_.notStored = true;
     if (!ok && !c_.storageEpisode) {
       c_.storageEpisode = c_.noteDue = t_.storageLineDue = true;
       c_.noteShown = false;
+      c_.lostAtEpisode = d_.log->lostCount();
       event("not-stored");
     }
     if (ok) c_.storageEpisode = false;
+    heldWritten();
     return Status::success();
   }
+
+  // Lane E2-BFIX1: the log wrote every item it held, in order, and gave none up: the episode left
+  // no hole, so no gap note is owed for it.
+  void heldWritten() {
+    if (!d_.log->isOpen() || d_.log->heldCount()) return;
+    c_.storageEpisode = false;   // storage took a line since the refusal
+    if (c_.noteDue && d_.log->lostCount() == c_.lostAtEpisode) c_.noteDue = false;
+  }
+  // The turn left an item off storage: one still held in RAM, or one given up this turn.
+  bool turnUnstored() const { return d_.log->heldCount() || d_.log->lostCount() != t_.lostAtOpen || !d_.log->isOpen(); }
 
   Status note(const std::string& text, tx::NoteClass cls, bool* stored = nullptr) {
     tx::Item& h = blank(tx::ItemKind::DeviceNote);
@@ -221,6 +314,7 @@ class TurnRun {
   // item of the open turn (q at or above firstQ; before the turn stores anything, every resident
   // item is closed). False when nothing closed is resident.
   bool dropOldestClosed() {
+    if (c_.unloaded) return false;   // RAM is the only copy: nothing leaves it (ruling 81)
     uint32_t through = 0;
     const size_t end = dropEnd(closedPrefix(through), through);
     uint64_t lastQ = 0;
@@ -291,7 +385,7 @@ class TurnRun {
     }
     std::string dates;
     (void)tx::omissionDates(first, lastAt, t_.tz, dates);
-    if (!n || !tx::omissionLine(n, dates, t_.ladder.omissionLine).ok()) return false;
+    if (!n || !tx::omissionLine(n, dates, t_.ladder.omissionLine, bound()).ok()) return false;
     t_.ladder.omitThrough = through;
     return true;
   }
@@ -315,6 +409,7 @@ class TurnRun {
     t_.ctx.startedAt = epoch();
     t_.ctx.startedMs = t_.startMs = d_.platform->nowMs();
     t_.tz = in.tzMinutes;
+    t_.neutralSwitch = in.neutralSwitch;
     // A resumed run's turn is open from its first item (its owner message, calls and results of the
     // run a cut stopped): a drop to make room never takes them (lane RB-X1).
     const uint64_t own = t_.ctx.trigger == Trigger::Resume ? firstQOfTurn(t_.ctx.turn) : 0;
@@ -327,19 +422,29 @@ class TurnRun {
     if (!st.ok()) return st;
     if (!d_.setup) return fail(Status::fail(Err::InvalidArgument, "plain::PlainEngine::runTurn.setup"));
     if (!(st = d_.setup(t_.ctx, t_.setup)).ok() || !(st = sized()).ok()) return fail(st);
-    if (!(st = storeOpen(in)).ok() || !(st = movePointer()).ok()) return st;
+    if (!(st = storeOpen(in)).ok() || !(st = openChanges()).ok()) return st;
+    if (in.startPast.held && !(st = startPast(in)).ok()) return fail(st);   // E2-PARK1
     if (!(st = compose()).ok() || !(st = wired()).ok()) return fail(st);
     clampLimits();
     return Status::success();
   }
 
   // Whatever the scale, every round has a bound and the last round has time before the hard wall.
+  // An attended turn (a person's message started it) has the soft and hard guards; any other keeps
+  // today's limits (ruling 84 items 2 and 9).
   void clampLimits() {
-    if (!guardLimitsFor(t_.setup.storedRounds, t_.setup.cost, t_.limits).ok()) t_.limits = GuardLimits{};
-    applyCeiling(t_.setup.ceiling, t_.limits, t_.hardWallMs);   // an unattended turn's own bounds (RB-U1a)
-    t_.hardWallMs = std::max<uint32_t>(t_.hardWallMs, 3 * kMinRequestMs);
-    t_.limits.rounds = std::max<uint16_t>(1, std::min<uint16_t>(t_.limits.rounds, kMaxRounds));
-    t_.limits.softWallMs = std::min<uint32_t>(t_.limits.softWallMs, t_.hardWallMs - 2 * kMinRequestMs);
+    const bool attended = personTrigger(t_.ctx.trigger);
+    if (!guardLimitsFor(t_.setup.storedRounds, t_.setup.cost, attended, t_.limits).ok()) t_.limits = GuardLimits{};
+    GuardLimits& l = t_.limits;
+    // An unattended turn's own bounds (RB-U1a; a routine's ceiling), applied over the head's limits;
+    // the clamps below only bound them further.
+    applyCeiling(t_.setup.ceiling, l, l.lastRoundWallMs);
+    l.lastRoundWallMs = std::max<uint32_t>(std::min<uint32_t>(l.lastRoundWallMs, attended ? kAttendedHardWallMs : kHardWallMs),
+                                           3 * kMinRequestMs);
+    l.rounds = std::max<uint16_t>(1, std::min<uint16_t>(l.rounds, kMaxRounds));
+    l.hardRounds = std::max<uint16_t>(l.rounds, std::min<uint16_t>(l.hardRounds, kHardRounds));
+    l.timeLimitMs = std::min<uint32_t>(l.timeLimitMs, l.lastRoundWallMs - 2 * kMinRequestMs);
+    l.softWallMs = std::min<uint32_t>(l.softWallMs, l.timeLimitMs);
   }
 
   // A turn that cannot start (setup, composition or the wire refused) is closed with one
@@ -395,8 +500,22 @@ class TurnRun {
     return c_.nextQ;
   }
 
+  // An outside item stored since the last closed turn (a routine's reply after outside content,
+  // appended between turns): this turn is the first whose request carries it, so it is tainted, as
+  // the turn a sub-agent's report arrives in is (lane RB-RL: plain/rails.h itemOutside).
+  bool outsideSinceLastTurn() const {
+    tx::Item& it = t_.read;
+    for (size_t i = 0; i < d_.arena->count(); ++i) {
+      tx::ArenaEntry e;
+      if (!d_.arena->header(i, e).ok() || e.q <= c_.lastClosedQ || e.kind != tx::ItemKind::DeviceNote) continue;
+      if (d_.arena->get(i, it).ok() && itemOutside(it)) return true;
+    }
+    return false;
+  }
+
   // The owner message (u) before any model call; another trigger's text as its device note.
   Status storeInput(const TurnInput& in) {
+    t_.ctx.tainted = t_.ctx.tainted || inputOutside(t_.ctx.trigger, in.parts) || outsideSinceLastTurn();   // RB-RL
     if (in.text.empty() && in.parts.empty()) return Status::success();
     const Trigger tr = t_.ctx.trigger;
     if (tr == Trigger::Routine) return note(in.text, tx::NoteClass::Routine);
@@ -409,8 +528,10 @@ class TurnRun {
     u.src = in.src;
     u.m = in.m;
     u.parts = in.parts;
-    const Status st = put(u);
+    bool stored = false;
+    const Status st = put(u, &stored);
     if (!st.ok()) return st;
+    if (stored) t_.inbound = in.stored;   // a message the card refused carries nothing in (ruling 116)
     for (uint64_t s : in.src) c_.head.hw = std::max(c_.head.hw, s);
     c_.head.mHi = std::max(c_.head.mHi, in.m);
     return st;
@@ -428,10 +549,41 @@ class TurnRun {
     return t_.wire ? Status::success() : Status::fail(Err::NotFound, "plain::wireFor");
   }
 
-  // After the setup: the day start the wires stamp every message with, then the head's budget.
+  // After the setup: the day start the wires stamp every message with, then the head's budget, then
+  // compaction first when it is due (rulings 98 item 1, 105 item 3, 106 item 3; lane RB-C3): before the
+  // system text is composed, so the request carries the new summary.
   Status sized() {
     t_.ctx.dayStartMin = t_.setup.dayStartMin;
-    return budget();
+    t_.ladder.closedThrough = c_.ladderLine;   // rung 1's line from the turns before (lane E2-FIX9)
+    const Status st = budget();
+    if (st.ok()) (void)compactFirst(Urgency::IfDue);
+    return st;
+  }
+
+  // Compaction first: the chat's compaction slot asked by the engine itself (never another idle slot),
+  // at most once a turn. IfDue at turn open (a summary prepared ahead is swapped in with no wait), Now
+  // when a request does not fit; a wait for a request shows the status line. True when thru moved.
+  bool compactFirst(Urgency urgency) {
+    const uint8_t bit = (uint8_t)(1u << (uint8_t)urgency);
+    if (!d_.hooks || (t_.compactAsks & bit)) return false;
+    t_.compactAsks |= bit;
+    IdleCtx ctx;
+    ctx.now = epoch();
+    ctx.nowMs = d_.platform->nowMs();
+    ctx.tzMinutes = t_.tz;
+    ctx.clockSet = ctx.now != 0;
+    ctx.urgency = urgency;
+    ctx.waiting = [this] {
+      event("wait:summary");
+      report(ProgressKind::Summary, "");
+    };
+    if (!d_.hooks->runIdleSlot(HookSlot::Compaction, ctx).worked) return false;
+    c_.ladderLine = t_.ladder.closedThrough = 0;   // a new summary: the request is rebuilt, nothing stays stubbed for it
+    // The summary's s item took a q past everything stored: this turn's next items go after it.
+    c_.nextQ = std::max({c_.nextQ, c_.head.nextQ, d_.arena->lastQ() + 1});
+    event("change:compaction");
+    event(urgency == Urgency::IfDue ? "compact:open" : "compact:turn");   // where it ran (lane RB-C3)
+    return true;
   }
 
   Status budget() {
@@ -448,14 +600,67 @@ class TurnRun {
     if (byDialect)
       agent::hlog::logf("plain(%s): host %s is not a known provider: sized by its dialect as %s", t_.ctx.chatKey.c_str(),
                         (t_.setup.head.host.empty() ? t_.ctx.host : t_.setup.head.host).c_str(), key.host.c_str());
-    t_.bodyCap = b.bodyCap;
-    t_.floorHead = b.floorHead;
+    t_.bodyCap = t_.setup.bodyCapLimit ? std::min(b.bodyCap, t_.setup.bodyCapLimit) : b.bodyCap;
     t_.messageCap = std::max<uint32_t>(b.messageCap, tx::kInlineMessageCap);
     if (b.bulkWholeCap) t_.bulkWholeCap = b.bulkWholeCap;
     t_.ctx.profile = b.profile;
     return Status::success();
   }
-  bool floorHead() const { return t_.floorHead; }
+
+  // A photo part as a candidate, `since` person turns after it arrived (each ref once).
+  static void photoCandidate(tx::PhotoFacts& f, const tx::Part& p, uint32_t since) {
+    if (p.kind != tx::PartKind::Image || std::find(f.candidates.begin(), f.candidates.end(), p.ref) != f.candidates.end())
+      return;
+    f.candidates.push_back(p.ref);
+    f.ownerTurnsSince.push_back(since);
+    f.bytes.push_back(p.bytes);
+  }
+
+  // The earlier messages' photos the request shows (resident, after compaction's pointer, as the
+  // wire renders them), newest first, until the caps could take no more (lane E2-FIX4). Only user
+  // items are read; a resumed turn's own stored message counts as this turn's (since 0).
+  void earlierPhotos(tx::PhotoFacts& f) const {
+    const size_t enough = f.candidates.size() + tx::photosInViewMax(f.mode);
+    uint64_t thru = c_.head.thru;
+    for (size_t i = d_.arena->count(); i-- > 0 && f.candidates.size() < enough;) {
+      tx::ArenaEntry e;
+      if (!d_.arena->header(i, e).ok()) continue;
+      const bool digest = e.kind == tx::ItemKind::Digest;
+      if (!digest && e.kind != tx::ItemKind::User) continue;
+      if (!digest && e.q <= thru) break;   // a digest covers it and everything before it
+      tx::Item it;
+      if (!d_.arena->get(i, it).ok()) continue;
+      if (digest) thru = std::max(thru, it.thru);
+      else
+        for (const tx::Part& p : it.parts) photoCandidate(f, p, e.turn == t_.ctx.turn ? 0 : 1);
+    }
+  }
+
+  // The photos this turn shows as pixels (tx::visiblePhotos, PRD section 5): its own, and those of
+  // the earlier person turns still in the conversation the request shows, newest first, within the
+  // caps (Inline: base64, no provider file ids yet). No clock and no restart take part (lane
+  // E2-FIX4). Any other photo renders as its line.
+  std::vector<std::string> photosAtOpen(const TurnInput& in) const {
+    tx::PhotoFacts f;
+    f.noCard = !d_.log->isOpen();
+    if (t_.ctx.photosBlind) return {};   // E2-P-PHOTO: a head without image input sees none as pixels
+    for (const tx::Part& p : in.parts) photoCandidate(f, p, 0);
+    earlierPhotos(f);
+    // E2-P-PHOTO: a photo a provider refused takes no place in view.
+    const std::vector<std::string>& no = c_.head.refusedPhotos;
+    for (size_t i = f.candidates.size(); i-- > 0;)
+      if (std::find(no.begin(), no.end(), f.candidates[i]) != no.end()) {
+        f.candidates.erase(f.candidates.begin() + (long)i);
+        f.ownerTurnsSince.erase(f.ownerTurnsSince.begin() + (long)i);
+        f.bytes.erase(f.bytes.begin() + (long)i);
+      }
+    std::vector<std::string> out;
+    if (tx::visiblePhotos(f, out).ok()) return out;
+    out.clear();
+    for (const tx::Part& p : in.parts)
+      if (p.kind == tx::PartKind::Image) out.push_back(p.ref);
+    return out;
+  }
 
   Status storeOpen(const TurnInput& in) {
     tx::Item& t = blank(tx::ItemKind::TurnOpen);
@@ -463,8 +668,8 @@ class TurnRun {
     t.head = t_.ctx.host + "/" + t_.ctx.model;
     t.profile = tx::headProfileSlug(t_.ctx.profile);   // a smaller profile is the owner's pin (RB-H81)
     t.attempt = t_.ctx.attempt;
-    for (const tx::Part& p : in.parts)
-      if (p.kind == tx::PartKind::Image) t.photos.push_back(p.ref);
+    t.photos = photosAtOpen(in);
+    t_.photosShown = t.photos;
     c_.head.openTurn = t_.ctx.turn;
     c_.head.attempts = t_.ctx.attempt;
     c_.head.profile = t.profile;
@@ -476,46 +681,17 @@ class TurnRun {
     return c_.afterRestart || now == 0 || last == 0 || now < last || now - last > tx::kColdGapS;
   }
 
-  // Rules (1) and (2) of the stub pointer, once, stored before the first request.
-  Status movePointer() {
-    tx::OpenFacts f;
-    f.now = epoch();
-    f.lastReqAt = c_.head.lastReqAt;
-    f.afterRestart = c_.afterRestart;
-    f.pointer = c_.head.stub;
-    f.lastClosedTurnQ = c_.lastClosedQ;
-    f.wholeBulkAbove = bulkAbove(c_.head.stub);
-    f.floorHead = floorHead();
-    tx::PointerMove m;
-    (void)tx::decideTurnOpen(f, m);
+  // The turn open's change points, stored before the first request. The stub pointer does not move
+  // here (lane E2-VERB, rulings 81, 82 and 106): only the overflow path makes stubs.
+  Status openChanges() {
     const bool wasCold = cold();
     c_.afterRestart = false;
-    if (d_.recentFiles) {
+    if (d_.recentFiles && !d_.stablePrefix) {   // stablePrefix: compose() reads the list itself
       const std::string before = c_.recent.text();
       (void)c_.recent.atOpen(wasCold, d_.recentFiles, t_.tz);
       if (c_.recent.text() != before) event("change:recent-files");
     }
-    if (!m.move) return Status::success();
-    tx::Item& x = blank(tx::ItemKind::PointerMove);
-    x.stub = m.to;
-    x.why = tx::moveWhySlug(m.why);
-    Status st = put(x);
-    if (st.ok()) {
-      c_.head.stub = m.to;
-      event("change:pointer");
-    }
-    return st;
-  }
-
-  uint32_t bulkAbove(uint64_t pointer) const {
-    uint64_t sum = 0;
-    tx::Item& it = t_.read;
-    for (size_t i = 0; i < d_.arena->count(); ++i) {
-      tx::ArenaEntry e;
-      if (!d_.arena->header(i, e).ok() || e.q <= pointer || e.kind != tx::ItemKind::Result) continue;
-      if (d_.arena->get(i, it).ok() && it.cls == tx::ResultClass::Bulk) sum += it.bytes;
-    }
-    return (uint32_t)std::min<uint64_t>(sum, UINT32_MAX);
+    return Status::success();
   }
 
   // The system text and the tools, composed once and kept for every round of the turn.
@@ -525,16 +701,189 @@ class TurnRun {
     std::vector<tx::DigestEntry> archive;
     f.digestBlock.clear();
     if (!c_.live.empty()) (void)tx::digestBlock(c_.live, t_.ctx.profile, f.digestBlock, archive);
-    f.recentFiles = c_.recent.text();
+    if (d_.stablePrefix) loadFrozen();   // first: an unanswered file list falls back to what it saw
+    f.recentFiles = d_.stablePrefix ? filesNow() : c_.recent.text();
     Status st = composeSystem(f, t_.system);
     if (st.ok()) st = toolManifest(f, t_.tools);
     if (!st.ok()) return st;
     t_.wire = t_.setup.wire;
-    t_.end.promptHash = fnv1a(fnv1a(fnv1a(2166136261u, t_.system.core), t_.system.notes), t_.system.digests);
     uint32_t h = 2166136261u;
     for (const ToolSpec& s : t_.tools) h = fnv1a(fnv1a(fnv1a(h, s.name), s.description), s.schemaJson);
     t_.end.manifestHash = h;
+    if (d_.stablePrefix) freeze(f, h);
+    t_.end.promptHash = fnv1a(fnv1a(fnv1a(2166136261u, t_.system.core), t_.system.notes), t_.system.digests);
     return Status::success();
+  }
+
+  // ---- the frozen system part (lane E2-CACHE, plain/prefix.h) -------------------------
+  // The recent-files list as the store holds it now ("" with no list). A store that does not answer is
+  // never an empty list: the list last seen stands for it (ruling 116 item 2).
+  std::string filesNow() const {
+    if (!d_.recentFiles) return std::string();
+    tx::RecentFilesBlock b;
+    if (!b.atOpen(true, d_.recentFiles, t_.tz).ok()) return c_.prefix.valid ? c_.prefix.seenFiles : c_.recent.text();
+    return b.text();
+  }
+  PrefixNow prefixNow(const RequestFacts& f, uint32_t manifest) const {
+    PrefixNow n;
+    n.blocks = t_.system;
+    n.manifestHash = manifest;
+    n.digestText = f.digestBlock;
+    n.files = f.recentFiles;
+    n.stub = c_.head.stub;
+    n.dropped = c_.droppedThru;
+    n.omitted = std::max(c_.droppedThru, t_.ladder.omitThrough);
+    n.now = epoch();
+    n.lastReqAt = c_.head.lastReqAt;
+    n.lifetimeS = kCacheLongS;
+    return n;
+  }
+  bool prefixStorable() const { return d_.files && d_.log->isOpen() && !c_.unloaded; }
+  // The record, read once it can be: a record read back is what was sent before a chat switch or a
+  // restart; one that does not decode is a torn write, replaced; an unanswered read is never "absent".
+  void loadFrozen() {
+    if (c_.prefixStore == PlainEngine::ChatState::PrefixStore::Known || !prefixStorable()) return;
+    FrozenPrefix stored;
+    const Status st = loadPrefix(*d_.files, d_.chatKey, stored);
+    if (st.err == Err::Io) {
+      if (c_.prefixStore != PlainEngine::ChatState::PrefixStore::Unread)
+        hlog::logf("plain(%s): the prefix record could not be read (%s): not written until it can be", d_.chatKey.c_str(),
+                   st.where);
+      c_.prefixStore = PlainEngine::ChatState::PrefixStore::Unread;
+      return;
+    }
+    if (st.err == Err::Torn) hlog::logf("plain(%s): the prefix record does not decode: rendered afresh", d_.chatKey.c_str());
+    c_.prefixStore = PlainEngine::ChatState::PrefixStore::Known;
+    if (c_.prefix.valid) c_.prefixDirty = true;   // RAM went out after it: RAM is what the provider holds
+    else if (st.ok()) c_.prefix = std::move(stored);
+  }
+  void saveFrozen() {
+    if (!c_.prefixDirty || c_.prefixStore != PlainEngine::ChatState::PrefixStore::Known || !prefixStorable()) return;
+    const Status st = savePrefix(*d_.files, d_.chatKey, c_.prefix);
+    if (st.ok()) c_.prefixDirty = false;   // else kept dirty: written again at the next turn open
+    else hlog::logf("plain(%s): the prefix record was not written (%s): tried again next turn", d_.chatKey.c_str(), st.where);
+  }
+  // The turn sends the frozen blocks unless a listed event happened; then they are rendered afresh,
+  // named as a change point.
+  void freeze(const RequestFacts& f, uint32_t manifest) {
+    const PrefixNow now = prefixNow(f, manifest);
+    seeInbound(now.files);
+    const PrefixRender why = decidePrefix(c_.prefix, now);
+    if (why != PrefixRender::None) {
+      renderPrefix(c_.prefix, now);
+      c_.prefixDirty = true;
+      event(std::string("change:") + prefixRenderSlug(why));
+    }
+    t_.system = c_.prefix.blocks;
+    saveFrozen();
+  }
+  // At the close of a turn that ran calls: a change the turn's own calls made (a pinned note added, a
+  // new file) is seen now, so the next open does not take it for an outside change; the blocks stay
+  // as sent. Only a pure addition that this turn's own stored results account for is taken
+  // (plain/prefix.h, lane E2-FIX6); anything else leaves the seen marks, and the next open renders.
+  // Notes changed in a turn whose long arguments show as stubs from now are not taken either: the
+  // conversation may not hold the note's words whole (ruling 81).
+  void seeOwnChanges() {
+    if (!d_.stablePrefix || !c_.prefix.valid || !t_.end.tools || !d_.setup) return;
+    if (t_.storeFailed || t_.notStored) {   // ruling 116: what did not land moves nothing
+      hlog::logf("plain(%s): an item of this turn was not stored: its own changes render at the next open",
+                 d_.chatKey.c_str());
+      return;
+    }
+    std::string notesNow, files;
+    if (!notesBlockNow(notesNow)) return;
+    const bool notes = ownNotes(notesNow);
+    const bool filesOwn = ownFiles(files);
+    if (!notes && !filesOwn) return;
+    if (notes) c_.prefix.seenNotes = notesNow;
+    if (filesOwn) c_.prefix.seenFiles = files;
+    if (!c_.prefix.ownFrom || t_.firstQ < c_.prefix.ownFrom) c_.prefix.ownFrom = t_.firstQ;
+    c_.prefixDirty = true;
+    saveFrozen();
+  }
+  // Lane E2-FIX10, at the open: the files the device stored for the message that opens this turn are
+  // the turn's own (the conversation holds that message), by the same path rule as a call's. The seen
+  // list moves and the turn's first item becomes what the blocks lean on (ownFrom); anything else in the
+  // list's change still renders. Once a turn, and only when every item so far was stored.
+  void seeInbound(const std::string& files) {
+    if (t_.inboundSeen) return;   // the turn's first composition only (later ones are mid-turn)
+    t_.inboundSeen = true;
+    if (!d_.stablePrefix || !c_.prefix.valid || t_.inbound.empty()) return;
+    if (t_.storeFailed || t_.notStored || files == c_.prefix.seenFiles) return;
+    std::string text;
+    std::vector<ListedFile> listing;
+    const bool own = filesListing(text, listing) && text == files &&
+                     ownFilesChange(c_.prefix.seenFiles, files, listing, t_.inbound, t_.ctx.startedAt);
+    if (!own) {
+      hlog::logf("plain(%s): the file list changed beyond this message's own files: rendered now", d_.chatKey.c_str());
+      return;
+    }
+    t_.inboundMoved = true;
+    t_.inboundSeenBefore = c_.prefix.seenFiles;
+    t_.inboundOwnFromBefore = c_.prefix.ownFrom;
+    c_.prefix.seenFiles = files;
+    if (!c_.prefix.ownFrom || t_.firstQ < c_.prefix.ownFrom) c_.prefix.ownFrom = t_.firstQ;
+    c_.prefixDirty = true;
+  }
+  // At the close: a turn with an item the card refused moves nothing (ruling 116), the open's move
+  // included; the next open renders the list afresh.
+  void undoInboundIfRefused() {
+    if (!t_.inboundMoved || !(t_.storeFailed || t_.notStored)) return;
+    c_.prefix.seenFiles = t_.inboundSeenBefore;
+    c_.prefix.ownFrom = t_.inboundOwnFromBefore;
+    c_.prefixDirty = true;
+    saveFrozen();
+  }
+  // The file list changed only in entries of paths this turn's own calls named (`files`: the list now).
+  bool ownFiles(std::string& files) const {
+    std::vector<ListedFile> listing;
+    if (!filesListing(files, listing) || files == c_.prefix.seenFiles) return false;
+    const bool own = ownFilesChange(c_.prefix.seenFiles, files, listing, t_.ownPaths, t_.ctx.startedAt);
+    if (!own)
+      hlog::logf("plain(%s): the file list changed beyond this turn's own files: rendered at the next open", d_.chatKey.c_str());
+    return own;
+  }
+  // The notes block as the binding composes it now (false when it cannot be read).
+  bool notesBlockNow(std::string& out) const {
+    std::unique_ptr<TurnSetup> s(new (std::nothrow) TurnSetup());
+    if (!s || !d_.setup(t_.ctx, *s).ok()) return false;
+    s->facts.turn = &t_.ctx;
+    s->facts.digestBlock.clear();
+    s->facts.recentFiles.clear();
+    SystemBlocks b;
+    if (!composeSystem(s->facts, b).ok()) return false;
+    out = b.notes;
+    return true;
+  }
+  // The notes changed only by this turn's own additions (and none of its long arguments became a stub).
+  bool ownNotes(const std::string& now) const {
+    if (now == c_.prefix.seenNotes) return false;
+    const bool own = !t_.longArgs && ownNotesAddition(c_.prefix.blocks.notes, c_.prefix.seenNotes, now, t_.ownTexts,
+                                                       {texts::core::kNotes, texts::core::kRules, texts::core::kSkills});
+    if (!own)
+      hlog::logf("plain(%s): the notes changed beyond this turn's own additions: rendered at the next open", d_.chatKey.c_str());
+    return own;
+  }
+  // The recent-files list now and, for each file the store holds, its line, path and write time.
+  // False when the store does not answer (nothing is taken as seen then).
+  bool filesListing(std::string& text, std::vector<ListedFile>& listing) const {
+    text.clear();
+    listing.clear();
+    if (!d_.recentFiles) return true;
+    std::vector<tx::RecentFile> all;
+    if (!d_.recentFiles(all)) return false;
+    if (!tx::recentFilesList(all, t_.tz, text).ok()) return false;
+    std::string one;
+    for (const tx::RecentFile& f : all)
+      if (tx::recentFilesList({f}, t_.tz, one).ok() && !one.empty()) listing.push_back(ListedFile{one, f.path, f.lastWrite});
+    return true;
+  }
+  // Mid-turn: the ladder or a full arena left out the turn the frozen blocks lean on; the rest of the
+  // turn goes with blocks rendered afresh (lane E2-FIX6, plain/prefix.h ownFrom).
+  void refreezeIfOmitted() {
+    if (!d_.stablePrefix || !c_.prefix.valid || !c_.prefix.ownFrom) return;
+    if (std::max(c_.droppedThru, t_.ladder.omitThrough) < c_.prefix.ownFrom) return;
+    (void)(compose().ok() && wired().ok());
   }
 
   // ---- one request ----------------------------------------------------------------------
@@ -542,6 +891,7 @@ class TurnRun {
   // round with tool choice none on a trip).
   Status boundary() {
     t_.ctx.roundNo = t_.rounds;
+    refreezeIfOmitted();   // a full arena let the turn the frozen blocks lean on go (E2-FIX6)
     // The gap note: shown once when an episode starts, and owed until one is stored, so the
     // stored transcript names the hole once storage is back.
     if (c_.noteDue && !c_.noteShown) {   // the model sees it once, in RAM if need be
@@ -561,14 +911,11 @@ class TurnRun {
       if (d_.log->append(h, state).ok() && state == tx::StoreState::Stored) c_.noteDue = false;
     }
     if (t_.lastRound) return Status::success();
-    GuardState g;
-    g.rounds = t_.toolRounds;
-    g.elapsedMs = elapsedMs();
-    g.promptTokens = t_.sizeTokens;
-    g.spendMicroUsd = t_.end.microUsd;
-    GuardTrip trip = GuardTrip::None;
-    (void)checkGuards(t_.limits, g, trip);   // the limits are clamped at open: never InvalidArgument
-    if (trip == GuardTrip::None) return Status::success();
+    const GuardTrip trip = guardTrip();
+    if (trip == GuardTrip::None) {
+      report(ProgressKind::ProviderWait, "");
+      return Status::success();
+    }
     t_.trip = trip;
     t_.lastRound = true;
     event(std::string("trip:") + guardTripSlug(trip));
@@ -577,7 +924,43 @@ class TurnRun {
                 tx::NoteClass::Limit);
   }
 
+  GuardState guardState() const {
+    GuardState g;
+    g.rounds = t_.toolRounds;
+    g.elapsedMs = elapsedMs();
+    g.promptTokens = t_.sizeTokens;
+    g.spendMicroUsd = t_.end.microUsd;
+    g.idleRounds = t_.progress.idle;
+    return g;
+  }
+  // The hard guards and the loop first; then, on an attended turn, the soft check: a progressing
+  // turn shows a status line and goes on, one that is not stops at the soft guard it reached.
+  GuardTrip guardTrip() {
+    const GuardState g = guardState();
+    GuardTrip trip = GuardTrip::None;
+    (void)checkGuards(t_.limits, g, trip);   // the limits are clamped at open: never InvalidArgument
+    if (trip != GuardTrip::None) return trip;
+    GuardTrip soft = GuardTrip::None;
+    const SoftCheck c = checkSoftGuards(t_.limits, g, t_.progress, soft);
+    if (c == SoftCheck::Stop) return soft;
+    if (c == SoftCheck::GoOn) {
+      event(std::string("soft:") + guardTripSlug(soft));
+      report(ProgressKind::SoftGuard, guardTripSlug(soft));
+    }
+    return GuardTrip::None;
+  }
+  // Progress the engine reports itself (EngineDeps::progress; RB-E3's status-line class).
+  void report(ProgressKind kind, const char* detail) const {
+    if (!d_.progress) return;
+    ProgressEvent e;
+    e.kind = kind;
+    e.nowMs = d_.platform->nowMs();
+    e.detail = detail;
+    d_.progress(e);
+  }
+
   Status ask() {
+    if (paidStopped()) return Status::success();
     RenderInput& r = t_.render;
     r.turn = &t_.ctx;
     r.head = &t_.setup.head;
@@ -587,15 +970,18 @@ class TurnRun {
     r.stubPointer = c_.head.stub;
     r.toolChoiceNone = t_.lastRound;
     r.photo = t_.setup.photo;
+    r.bound = bound();
+    r.refusedPhotos = &c_.head.refusedPhotos;   // E2-P-PHOTO
     r.ladder = &t_.ladder;
+    r.longCache = d_.stablePrefix;   // the stable points keep 1 hour (lane E2-CACHE)
     tx::TxLog* log = d_.log;
     r.bulk = [log](const std::string& handle, std::string& out) { return log->readBulk(handle, 0, tx::kBulkMaxBytes, out); };
-    // The soft wall for every round; the guard's last round may run to the hard wall.
-    const uint32_t wall = t_.lastRound ? t_.hardWallMs : t_.limits.softWallMs, used = elapsedMs();
+    // The time limit for every round; the guard's last round may run to the turn's hard wall.
+    const uint32_t wall = t_.lastRound ? t_.limits.lastRoundWallMs : t_.limits.timeLimitMs, used = elapsedMs();
     ExchangeRequest req;
     req.wire = t_.wire;
     req.render = &r;
-    req.deadlineMs = used < wall ? wall - used : 1;
+    req.deadlineMs = std::min<uint32_t>(used < wall ? wall - used : 1, kExchangeMaxMs);
     req.bodyCap = t_.bodyCap;
     req.climb = [this](const ClimbAsk& ask) { return climb(ask); };
     if (r.photo) {   // a photo's file id the provider no longer holds: forgotten, sent once more without it
@@ -606,12 +992,241 @@ class TurnRun {
     }
     t_.ex = ExchangeResult{};
     const Status st = runExchange(ExchangeDeps{d_.transport, d_.platform}, req, t_.ex);
+    askAccount(t_.ex);   // E2-PARK1: a refusal no status, type or code explains asks the account first
     account(t_.ex);
     if (!st.ok()) return failed(ExchangeErr::Other, st);
+    if (photosRefused()) return ask();   // E2-P-PHOTO: once, the refused photos as their lines
+    if (failOver()) {   // E2-P-FO: the same round on the next head, the conversation unchanged
+      const Status cs = compose();
+      if (!cs.ok() || !wired().ok()) return failed(ExchangeErr::Other, cs.ok() ? Status::fail(Err::NotFound, "plain::wireFor") : cs);
+      return ask();
+    }
     if (t_.ex.err == ExchangeErr::Cut) return cut();
     if (t_.ex.err != ExchangeErr::None) return failed(t_.ex.err, Status::success());
     ++t_.rounds;
     return Status::success();
+  }
+
+  // ---- lane E2-PARK1: is the request refused, or the account? ---------------------------------------
+  // A 4xx no structured signal explains (a bad request or a refusal by class, or a billing class read from the
+  // message words alone) asks the account with one small known-good request to the same provider and key (the
+  // park's re-check request, at the provider's default effort), at most once per provider per ten minutes
+  // (EngineDeps::accountCheckDue). Never for a 429, a 408, a 5xx, a timeout or a network failure; never twice in
+  // an exchange. A billing class read from text keeps its park unless the check is answered (review R1); a
+  // refusal with no class is parked only when the check is refused with a 4xx too, on the chat seam alone: this
+  // head model's requests are refused (review R6). Answered: the fault is this request's, the bad-request path.
+  enum class Check : uint8_t { NotAsked, Answered, Refused, NoVerdict };
+  static bool clientRefusal(int status) { return status >= 400 && status < 500 && status != 429 && status != 408; }
+  bool unexplained(const ExchangeResult& ex) const {
+    if (ex.parkHost) return ex.byText && clientRefusal(ex.httpStatus);
+    return ex.err == ExchangeErr::Other && clientRefusal(ex.httpStatus) && !ex.modelUnusable && !ex.failOver &&
+           !providers::imageparts::refusedImages(ex.httpStatus, ex.providerBody);
+  }
+  void askAccount(ExchangeResult& ex) {
+    if (!d_.accountCheckDue || !unexplained(ex)) return;
+    const Check c = d_.accountCheckDue(slotNow()) ? accountCheck() : Check::NotAsked;
+    event(c == Check::Refused ? "account:refused" : c == Check::Answered ? "account:answered" : "account:none");
+    hlog::logf("plain(%s): %s refused a request (HTTP %d): account check %s", d_.chatKey.c_str(), slotNow().c_str(),
+               ex.httpStatus, c == Check::Refused ? "refused too" : c == Check::Answered ? "answered" : "not asked or no verdict");
+    if (ex.parkHost) {   // a billing class read from text: only an answered check lifts it
+      ex.byText = false;
+      if (c == Check::Answered) asRequestFault(ex);
+      return;
+    }
+    if (c == Check::Refused) asModelRefused(ex);
+  }
+  // The answered check: this request's fault, the bad-request path (nothing parked).
+  void asRequestFault(ExchangeResult& ex) {
+    const std::string body = ex.parkBody;
+    ex.parkHost = ex.billing = false;
+    ex.err = ExchangeErr::Other;
+    ex.parkBody.clear();
+    ex.providerBody = body;
+    refreshLines(ex);
+  }
+  // A refusal with no class, the check refused too: parked on the chat seam as this model's refusal.
+  void asModelRefused(ExchangeResult& ex) {
+    ex.parkHost = ex.refusesModel = true;
+    ex.billing = false;
+    ex.err = ExchangeErr::KeyRefused;
+    ex.parkBody = ex.providerBody;
+    ex.providerBody.clear();
+    refreshLines(ex);
+  }
+  void refreshLines(ExchangeResult& ex) {
+    const std::string slug = providerSlugOf(t_.ctx, t_.setup.head);
+    if (ex.reason.empty()) ex.reason = refusalReason(ex.parkHost ? ex.parkBody : ex.providerBody);
+    ex.errorLine = exchangeLine(ex.err, slug, ex.httpStatus, ex.reason);
+    ex.errorLineStored = exchangeLine(ex.err, slug, ex.httpStatus);
+  }
+  // The one small request (plain::recheckAsk) on the answering head; its usage is the turn's.
+  Check accountCheck() {
+    SummarizerRung rung;
+    rung.endpoint = t_.setup.head;
+    rung.endpoint.effort.clear();   // R6: the provider's default effort, never the refused request's setting
+    rung.host = slotNow();
+    rung.model = t_.ctx.model;
+    rung.dialect = t_.ctx.dialect;
+    ExchangeResult check;
+    (void)recheckAsk(*d_.platform, *d_.transport, rung, check);
+    const orch::TokenUsage& u = check.step.usage;
+    t_.end.headRequests += check.requests;
+    t_.end.promptTokens += u.promptTokens;
+    t_.end.outputTokens += u.completionTokens;
+    RequestTokens rt{u.promptTokens, u.completionTokens, u.cacheReadTokens, u.cacheWriteTokens, u.cacheWrite1hTokens};
+    t_.end.microUsd = (uint32_t)std::min<uint64_t>((uint64_t)t_.end.microUsd + requestMicroUsd(t_.setup.cost, rt), UINT32_MAX);
+    if (!check.requests) return Check::NoVerdict;
+    if (check.err == ExchangeErr::None || check.err == ExchangeErr::Cut) return Check::Answered;
+    return clientRefusal(check.httpStatus) ? Check::Refused : Check::NoVerdict;
+  }
+
+  // Lane E2-REP1 (review F): a monthly limit crossed by this turn's own answered requests (or reached
+  // meanwhile) stops the turn before its next request, with the device's true line; what it did stays.
+  bool paidStopped() {
+    if (!d_.paidHeld || !t_.end.headRequests) return false;   // the turn's first request: the message gate asked
+    const std::string line = d_.paidHeld(slotNow());
+    if (line.empty()) return false;
+    heldRoundFailed();
+    t_.ex = ExchangeResult{};
+    t_.ex.err = ExchangeErr::Other;
+    t_.cause = "paused";
+    event("paused:" + slotNow());
+    // E2-CFIX1, E2-CFIX3: under the provider's own dollar limit the freeze notice is the pause's one line where it
+    // lands (nothing sent there); any other chat is told here, once per pause (a dollar limit is not a token budget).
+    const LimitChat where = d_.limitChat ? d_.limitChat(t_.ctx.chatId) : LimitChat{};
+    setStatus(StatusLine::PausedSpend, limitTurnLine(slotNow(), t_.ctx.chatId, where, line));
+    return true;
+  }
+
+  // ---- fail-over at the round boundary (lane E2-P-FO, router design section 9) ------------------
+  // The answering head's slot: the setup's, else the target's once a round moved.
+  std::string slotNow() const { return t_.slot.empty() ? headSlugOf(t_.ctx, t_.setup.head) : t_.slot; }
+  // A round that failed on a class engine 1 switches on moves to the first head of the binding's order
+  // that was not tried this turn and whose body budget holds the request it replaces (design 6 item 7);
+  // at most kMaxFailovers a turn. Nothing stored changes: the round is rendered again for the new head
+  // (its own reasoning tag and call ids: the planner), and the person gets one line per switch.
+  bool failOver() {
+    const ExchangeResult& ex = t_.ex;
+    if (!d_.failover || ex.err == ExchangeErr::None || t_.switches >= kMaxFailovers) return false;
+    if (!ex.failOver && !switchesHost(ex.err, ex.httpStatus, ex.providerBody)) return false;
+    FailoverAsk ask;
+    ask.provider = slotNow();
+    ask.model = t_.ctx.model;
+    ask.err = ex.err;
+    ask.httpStatus = ex.httpStatus;
+    std::vector<FailoverTarget> order;
+    d_.failover(ask, order);
+    if (t_.tried.empty()) t_.tried.push_back(ask.provider + "/" + ask.model);
+    for (FailoverTarget& tg : order) {
+      const std::string id = tg.provider + "/" + tg.model;
+      if (std::find(t_.tried.begin(), t_.tried.end(), id) != t_.tried.end()) continue;
+      tx::HeadBudget b;
+      if (!tx::budgetFor(tx::HeadKey{tg.provider, tg.model, tg.head.routed}, t_.ctx.profile, b).ok()) continue;
+      const uint32_t cap = t_.setup.bodyCapLimit ? std::min(b.bodyCap, t_.setup.bodyCapLimit) : b.bodyCap;
+      // E2-CFIX3: by the cap's own measure (a photo's share, not its base64); the target's real limits hold when
+      // it renders its own request.
+      if (cap < ex.capBytes) {   // never to a smaller body
+        hlog::logf("plain(%s): fail-over skips %s: body %u B over its cap %u B", d_.chatKey.c_str(), id.c_str(),
+                   (unsigned)ex.capBytes, (unsigned)cap);
+        continue;
+      }
+      moveTo(tg, cap, ask);
+      return true;
+    }
+    hlog::logf("plain(%s): %s failed (%s): no head to fail over to", d_.chatKey.c_str(), ask.provider.c_str(),
+               exchangeErrSlug(ex.err));
+    return false;
+  }
+  void moveTo(FailoverTarget& tg, uint32_t cap, const FailoverAsk& ask) {
+    closeShare(ask.provider, ask.model);
+    if (!t_.switchLines.empty()) {
+      t_.switchLines += "\n";
+      t_.switchStored += "\n";
+    }
+    t_.switchLines += failoverLine(ask.provider, ask.err, ask.httpStatus, t_.ex.reason, tg.model);
+    t_.switchStored += failoverLine(ask.provider, ask.err, ask.httpStatus, std::string(), tg.model);   // no provider words
+    event("failover:" + ask.provider + ">" + tg.provider + ":" + exchangeErrSlug(ask.err));
+    hlog::logf("plain(%s): %s/%s failed (%s): the round goes to %s/%s", d_.chatKey.c_str(), ask.provider.c_str(),
+               ask.model.c_str(), exchangeErrSlug(ask.err), tg.provider.c_str(), tg.model.c_str());
+    takeHead(tg, cap);
+  }
+  // Lane E2-PARK1 (engine 1's startPastParkedHead): the head is held before the turn's first request, so the
+  // turn starts on the first head of the binding's order (the owner's rules for the held cause) and nothing
+  // is sent to the held one. The person's line is the binding's (the episode's one notice, or none).
+  Status startPast(const TurnInput& in) {
+    const FailoverAsk& ask = in.startPast;
+    std::vector<FailoverTarget> order;
+    if (d_.failover) d_.failover(ask, order);
+    t_.tried.push_back(ask.provider + "/" + ask.model);
+    for (FailoverTarget& tg : order) {
+      tx::HeadBudget b;
+      if (!tx::budgetFor(tx::HeadKey{tg.provider, tg.model, tg.head.routed}, t_.ctx.profile, b).ok()) continue;
+      closeShare(ask.provider, ask.model);   // nothing billed: its share is empty
+      t_.switchLines = in.startLine;
+      t_.switchStored = in.startStored;
+      event("startpast:" + ask.provider + ">" + tg.provider);
+      hlog::logf("plain(%s): %s is held: the turn starts on %s/%s", d_.chatKey.c_str(), ask.provider.c_str(),
+                 tg.provider.c_str(), tg.model.c_str());
+      takeHead(tg, t_.setup.bodyCapLimit ? std::min(b.bodyCap, t_.setup.bodyCapLimit) : b.bodyCap);
+      return Status::success();
+    }
+    hlog::logf("plain(%s): %s is held and no fall-back is open: no request", d_.chatKey.c_str(), ask.provider.c_str());
+    return Status::fail(Err::NotFound, "plain::PlainEngine::startPast");
+  }
+  void takeHead(FailoverTarget& tg, uint32_t cap) {
+    t_.tried.push_back(tg.provider + "/" + tg.model);
+    ++t_.switches;
+    t_.slot = tg.provider;
+    t_.ctx.host = tg.host;
+    t_.ctx.model = tg.model;
+    t_.ctx.dialect = tg.dialect;
+    if (!tg.seesPhotos) t_.ctx.photosBlind = true;   // each photo as its line, never pixels (design 9)
+    t_.setup.head = std::move(tg.head);
+    t_.setup.cost = tg.cost;   // the spend guard prices what follows at the new head's rates
+    t_.setup.wire = nullptr;
+    if (t_.setup.photoInline) t_.setup.photo = t_.setup.photoInline;   // E2-PARK1: no upload for a fall-back
+    t_.bodyCap = cap;
+  }
+  // What the head left was billed since it took over (the turn's totals less `base`).
+  void closeShare(const std::string& provider, const std::string& model) {
+    HeadShare s;
+    s.provider = provider;
+    s.model = model;
+    const tx::TurnEndFacts& e = t_.end;
+    s.promptTokens = e.promptTokens - t_.base.promptTokens;
+    s.outputTokens = e.outputTokens - t_.base.outputTokens;
+    s.cacheReadTokens = e.cacheReadTokens - t_.base.cacheReadTokens;
+    s.cacheWriteTokens = e.cacheWriteTokens - t_.base.cacheWriteTokens;
+    s.cacheWrite1hTokens = e.cacheWrite1hTokens - t_.base.cacheWrite1hTokens;
+    s.requests = (uint16_t)(e.headRequests - t_.base.requests);
+    t_.base.promptTokens = e.promptTokens;
+    t_.base.outputTokens = e.outputTokens;
+    t_.base.cacheReadTokens = e.cacheReadTokens;
+    t_.base.cacheWriteTokens = e.cacheWriteTokens;
+    t_.base.cacheWrite1hTokens = e.cacheWrite1hTokens;
+    t_.base.requests = e.headRequests;
+    t_.shares.push_back(std::move(s));
+  }
+
+  // Lane E2-P-PHOTO: the provider refused the request for its image (imageparts::refusedImages: a
+  // 400 or 422 naming the image, a format it does not take). Engine 1 re-sends with the photos as
+  // text; here the open turn's visible photos join the chat's refused list, render as their true line
+  // (tx::photoAbsentLine Refused) and the round is sent once more, so the turn ends in a reply.
+  bool photosRefused() {
+    if (t_.ex.err != ExchangeErr::Other || t_.photoRefusalResent || t_.photosShown.empty() ||
+        !providers::imageparts::refusedImages(t_.ex.httpStatus, t_.ex.providerBody))
+      return false;
+    t_.photoRefusalResent = true;
+    for (const std::string& ref : t_.photosShown)
+      if (std::find(c_.head.refusedPhotos.begin(), c_.head.refusedPhotos.end(), ref) == c_.head.refusedPhotos.end()) {
+        // E2-REP4: kept in head.json (written at the close), so a restart does not try it again; bounded.
+        if (c_.head.refusedPhotos.size() >= tx::kHeadMaxRefusedPhotos) c_.head.refusedPhotos.erase(c_.head.refusedPhotos.begin());
+        c_.head.refusedPhotos.push_back(ref);
+      }
+    hlog::logf("plain(%s): the provider refused the photos (HTTP %d): sent again with %u as their line",
+               d_.chatKey.c_str(), t_.ex.httpStatus, (unsigned)t_.photosShown.size());
+    t_.photosShown.clear();
+    return true;
   }
 
   void account(const ExchangeResult& ex) {
@@ -621,14 +1236,20 @@ class TurnRun {
       t_.end.exchanges.push_back(exchangeFacts(ex));   // with the request by reference (RB-E3)
     }
     const orch::TokenUsage& u = ex.step.usage;
+    if (ex.requests)   // one line per answered request: the cache split as the provider billed it (E2-CACHE)
+      hlog::logf("plain(%s): usage in=%u cacheR=%u cacheW=%u cacheW1h=%u out=%u", d_.chatKey.c_str(), (unsigned)u.promptTokens,
+                 (unsigned)u.cacheReadTokens, (unsigned)u.cacheWriteTokens, (unsigned)u.cacheWrite1hTokens,
+                 (unsigned)u.completionTokens);
     t_.end.promptTokens += u.promptTokens;
     t_.end.outputTokens += u.completionTokens;
     t_.end.cacheReadTokens += u.cacheReadTokens;
     t_.end.cacheWriteTokens += u.cacheWriteTokens;
+    t_.end.cacheWrite1hTokens += std::min(u.cacheWrite1hTokens, u.cacheWriteTokens);
+    keepServed(t_.end.servedModel, u.servedModel);   // E2-P-SURF: the usage rows name it
     // The guards' inputs: size counts every prompt token (cached ones too); spend prices them. An
     // answer that reports no usage at all still counts: a floor from the request's bytes (about 3.5 B
     // a token, kDefaultRequestTokens' rule) at the input rate, named by an event (ruling 79 item 1).
-    RequestTokens rt{u.promptTokens, u.completionTokens, u.cacheReadTokens, u.cacheWriteTokens};
+    RequestTokens rt{u.promptTokens, u.completionTokens, u.cacheReadTokens, u.cacheWriteTokens, u.cacheWrite1hTokens};
     const bool answered = ex.requests && (ex.err == ExchangeErr::None || ex.err == ExchangeErr::Cut);
     // Compaction's hot trigger reads the last answered request's whole prompt, never the turn's sum
     // (ruling 91 T4-ADV-01): maxRequestIn is input plus cache in every provider's meaning; a wire
@@ -641,8 +1262,49 @@ class TurnRun {
     const uint64_t size = (uint64_t)t_.sizeTokens + rt.prompt + rt.cacheRead + rt.cacheWrite;
     t_.sizeTokens = (uint32_t)std::min<uint64_t>(size, UINT32_MAX);
     t_.end.microUsd = (uint32_t)std::min<uint64_t>((uint64_t)t_.end.microUsd + requestMicroUsd(t_.setup.cost, rt), UINT32_MAX);
-    t_.parkHost |= ex.parkHost;
+    takePark(ex);
+    notePending(ex);
     t_.failOver |= ex.failOver;
+    noteUnusable(ex);
+  }
+
+  // R2: the head that said it does not know its model, never the configured one.
+  void noteUnusable(const ExchangeResult& ex) {
+    if (ex.modelUnusable && !t_.modelUnusable) {
+      t_.unusableProvider = slotNow();
+      t_.unusableModel = t_.ctx.model;
+    }
+    t_.modelUnusable |= ex.modelUnusable;
+  }
+
+  // E2-REP1 (review F): an answered exchange's spend counts toward the limits now (EngineDeps::pendingSpend).
+  void notePending(const ExchangeResult& ex) {
+    const orch::TokenUsage& u = ex.step.usage;
+    if (!d_.pendingSpend || !ex.requests || (u.empty() && !u.cacheReadTokens && !u.cacheWriteTokens)) return;
+    d_.pendingSpend(slotNow(), t_.ctx.model, u);
+  }
+
+  // E2-FIX14: the refusal the binding hands the shared park. E2-P-FO: the first head's in parkHost;
+  // E2-REP1: a fallback head's in fallbackRefusals, so the binding parks it too.
+  void takePark(const ExchangeResult& ex) {
+    if (!ex.parkHost) return;
+    if (t_.switches) {
+      event("park:fallback");
+      TurnOutcome::FallbackRefusal r;
+      r.provider = slotNow();
+      r.keyFp = t_.setup.head.key ? orch::parkKeyFingerprint(t_.setup.head.key()) : 0;
+      r.status = ex.httpStatus;
+      r.text = ex.parkBody;
+      r.billing = ex.billing;
+      r.model = ex.refusesModel;
+      t_.fallbackRefusals.push_back(std::move(r));
+      return;
+    }
+    t_.parkHost = true;
+    t_.parkStatus = ex.httpStatus;
+    t_.parkBilling = ex.billing;
+    t_.parkModel = ex.refusesModel;
+    t_.parkText = ex.parkBody;
   }
 
   // Nothing came from the model: the exchange's one plain line ends the turn.
@@ -655,9 +1317,8 @@ class TurnRun {
       return st;
     }
     t_.cause = std::string("provider:") + exchangeErrSlug(err);   // a held reply goes out: settle()
-    setStatus(StatusLine::ProviderError, t_.ex.errorLine.empty()
-                                             ? exchangeLine(err, providerSlugOf(t_.ctx, t_.setup.head), 0)
-                                             : t_.ex.errorLine);
+    if (t_.ex.errorLine.empty()) setStatus(StatusLine::ProviderError, exchangeLine(err, providerSlugOf(t_.ctx, t_.setup.head), 0));
+    else setStatus(StatusLine::ProviderError, t_.ex.errorLine, &t_.ex.errorLineStored);
     if (err != t_.ex.err) t_.ex.err = err;
     return st;
   }
@@ -679,7 +1340,7 @@ class TurnRun {
     ++t_.rounds;
     t_.answer.swap(t_.ex.step.text);   // in hand before anything is stored, never copied
     t_.cause = "cut";
-    setStatus(t_.ex.status, t_.ex.errorLine);
+    setStatus(t_.ex.status, t_.ex.errorLine, &t_.ex.errorLineStored);
     if (d_.hooks) {   // the truth seam sees a cut answer too; it cannot hold one
       DeliverCtx dc;
       dc.turn = &t_.ctx;
@@ -704,9 +1365,13 @@ class TurnRun {
   bool climb(const ClimbAsk& ask) {
     LadderState& l = t_.ladder;
     const bool over = ask.why == Climb::OverCap;
+    // Compaction first, once a turn, then the prioritized trim (ruling 105 item 3); on a provider's
+    // "too long" it is the one compaction before the one retry (ruling 106 item 4).
+    if (compactInTurn()) return true;
     bool climbed = false;
-    if (over && !l.closedThrough && closedBulkAbovePointer()) {
-      l.closedThrough = c_.lastClosedQ;   // (1) every closed turn as stubs
+    const uint64_t closedTo = over && closedBulkAbovePointer() ? closedStubThrough(ask) : 0;
+    if (closedTo > l.closedThrough) {
+      l.closedThrough = c_.ladderLine = closedTo;   // (1) the closed turns' bulk as stubs, oldest first, as far as needed
       climbed = true;
     } else if (over && openBulkBelow(rungTwoThrough())) {
       l.stubThrough = rungTwoThrough();   // (2) this turn's bulk older than the newest two rounds
@@ -715,11 +1380,19 @@ class TurnRun {
       const size_t need = over && ask.bodyBytes > ask.bodyCap ? ask.bodyBytes - ask.bodyCap + kOmissionLineRoom
                                                              : std::numeric_limits<size_t>::max();
       climbed = omitOldest(need);   // (3) one omission line, never the newest 6 owner turns
+      if (climbed) refreezeIfOmitted();
     }
     if (climbed) event("change:ladder");
     return climbed;
   }
   static constexpr size_t kOmissionLineRoom = 160;   // the line and its block (under 120 B of text)
+
+  // Inside a turn: compaction first, once, before rung 3 omits turns or a provider's "too long" is
+  // retried; the system text is composed again with the new summary (a change point, logged).
+  bool compactInTurn() {
+    if (!compactFirst(Urgency::Now)) return false;
+    return compose().ok() && wired().ok();
+  }
 
   // Rung 2's line: the item before the newest two rounds of the open turn (0: none yet).
   uint64_t rungTwoThrough() const {
@@ -740,16 +1413,67 @@ class TurnRun {
     return false;
   }
 
-  // Tier-2 bulk of a closed turn shown whole above the pointer: what rung 1 would stub.
+  // Tier-2 bulk or a long call argument of a closed turn shown whole above the pointer and rung 1's line: what
+  // rung 1 would stub (lane E2-VERB: long arguments stay whole until the overflow path stubs them).
   bool closedBulkAbovePointer() const {
+    tx::Item& it = t_.read;
+    const uint64_t from = std::max(c_.head.stub, t_.ladder.closedThrough);
+    for (size_t i = 0; i < d_.arena->count(); ++i) {
+      tx::ArenaEntry e;
+      if (!d_.arena->header(i, e).ok() || (e.kind != tx::ItemKind::Result && e.kind != tx::ItemKind::Call)) continue;
+      if (e.q <= from || e.q > c_.lastClosedQ || !d_.arena->get(i, it).ok()) continue;
+      if (e.kind == tx::ItemKind::Call ? !it.st.empty() : it.cls == tx::ResultClass::Bulk) return true;
+    }
+    return false;
+  }
+
+  // Rung 1's line (lane E2-FIX9, ruling 81: nothing leaves the request that does not have to): the closed turns'
+  // bulk results and long arguments become stubs oldest first, only until what they free brings the body down to
+  // kLadderLowPercent of its cap (each counted as its text, a lower bound of what the wire frees: escapes only add);
+  // the next climb goes further when that was not enough. The line then stays (ChatState::ladderLine) while the
+  // turns after it grow back to the cap, so they share one cached prefix instead of a line that moves every turn.
+  // The last closed item when the size is not known.
+  static constexpr size_t kLadderLowPercent = 75;
+  uint64_t closedStubThrough(const ClimbAsk& ask) const {
+    if (ask.bodyBytes <= ask.bodyCap) return c_.lastClosedQ;
+    const size_t need = ask.bodyBytes - ask.bodyCap * kLadderLowPercent / 100;
+    const uint64_t from = std::max(c_.head.stub, t_.ladder.closedThrough);
+    const std::vector<uint64_t> listed = foldListed();
+    size_t freed = 0;
+    uint64_t to = from;
+    for (size_t i = 0; i < d_.arena->count() && freed < need; ++i) {
+      tx::ArenaEntry e;
+      if (!d_.arena->header(i, e).ok() || e.q <= from || e.q > c_.lastClosedQ) continue;
+      const size_t frees = stubFrees(i, e, listed);
+      if (frees == kNotBulk) continue;
+      freed += frees;
+      to = e.q;
+    }
+    return to;
+  }
+  static constexpr size_t kNotBulk = std::numeric_limits<size_t>::max();
+  // The items a tool fold's list already shows as stubs, sorted: stubbing them again frees nothing.
+  std::vector<uint64_t> foldListed() const {
+    std::vector<uint64_t> listed;
     tx::Item& it = t_.read;
     for (size_t i = 0; i < d_.arena->count(); ++i) {
       tx::ArenaEntry e;
-      if (!d_.arena->header(i, e).ok() || e.kind != tx::ItemKind::Result) continue;
-      if (e.q <= c_.head.stub || e.q > c_.lastClosedQ) continue;
-      if (d_.arena->get(i, it).ok() && it.cls == tx::ResultClass::Bulk) return true;
+      if (d_.arena->header(i, e).ok() && e.kind == tx::ItemKind::PointerMove && d_.arena->get(i, it).ok() && tx::stubList(it))
+        listed.insert(listed.end(), it.sup.begin(), it.sup.end());
     }
-    return false;
+    std::sort(listed.begin(), listed.end());
+    return listed;
+  }
+  // What rendering one closed item as its stub frees (its whole text less the stub); kNotBulk for an item rung 1 does
+  // not stub (no bulk result, no long argument, or one a fold already lists).
+  size_t stubFrees(size_t index, const tx::ArenaEntry& e, const std::vector<uint64_t>& listed) const {
+    if (e.kind != tx::ItemKind::Result && e.kind != tx::ItemKind::Call) return kNotBulk;
+    tx::Item& it = t_.read;
+    if (!d_.arena->get(index, it).ok() || std::binary_search(listed.begin(), listed.end(), e.q)) return kNotBulk;
+    const bool bulk = e.kind == tx::ItemKind::Call ? !it.st.empty() : it.cls == tx::ResultClass::Bulk;
+    if (!bulk) return kNotBulk;
+    const size_t whole = e.kind == tx::ItemKind::Call ? it.args.size() : shownBytes(it);
+    return whole > it.st.size() ? whole - it.st.size() : 0;
   }
 
   // What one stored item adds to the request, at least: the text it shows, with no wire's
@@ -764,7 +1488,7 @@ class TurnRun {
     tx::Item& it = t_.read;
     if (!d_.arena->get(index, it).ok()) return 0;
     if (e.kind == tx::ItemKind::User) return it.x.size() + stampBytes(it);
-    if (e.kind == tx::ItemKind::Call) return it.id.size() + it.n.size() + tx::shownArgs(it, t_.ctx.turn, t_.ladder.stubThrough).size();
+    if (e.kind == tx::ItemKind::Call) return it.id.size() + it.n.size() + tx::shownArgs(it, showFacts()).size();
     if (e.kind == tx::ItemKind::Result) return shownBytes(it);
     return it.x.size();
   }
@@ -775,6 +1499,15 @@ class TurnRun {
   size_t stampBytes(const tx::Item& u) const {
     char stamp[tx::kStampMaxBytes];
     return tx::messageStamp(u.t, u.tzMinutes, t_.ctx.dayStartMin, stamp, sizeof stamp).ok() ? std::strlen(stamp) : 0;
+  }
+  // The stub rule's facts for this request as the ladder stands (the stub lists are not read: a
+  // folded item counts whole, as the results always did here).
+  tx::ShowFacts showFacts() const {
+    tx::ShowFacts f;
+    f.pointer = std::max(c_.head.stub, t_.ladder.closedThrough);
+    f.openTurn = t_.ctx.turn;
+    f.ladderStubThrough = t_.ladder.stubThrough;
+    return f;
   }
   // A result as it shows: its stub when stubbed or outside, else the receipt or the whole bulk.
   size_t shownBytes(const tx::Item& r) const {
@@ -866,16 +1599,42 @@ class TurnRun {
       default: return 2;
     }
   }
-  void setStatus(StatusLine s, const std::string& text) {
+  // `stored`: the line as it may be kept or reach a model when it differs from `text` (a provider's
+  // reason rides only in the sent line, E2-FIX11).
+  void setStatus(StatusLine s, const std::string& text, const std::string* stored = nullptr) {
     if (rank(s) <= rank(t_.status)) return;
+    std::string kept = stored && *stored != text ? *stored : std::string();
     t_.statusText = text;   // copied first: a refused copy leaves the earlier line whole
+    t_.statusStored.swap(kept);
     t_.status = s;
     t_.statusRef = &t_.statusText;
+  }
+  // E2-P-FO: the answering head's share, once (settle, also on the refused path).
+  void lastShare() {
+    if (t_.switches && t_.shares.size() == t_.switches) closeShare(slotNow(), t_.ctx.model);
+  }
+  // E2-P-FO: a reply that came from a fallback head carries one line per switch, before any other line
+  // of the turn (a cut's, a guard's): the status line is one message. A failed last head: the plain
+  // failure line alone.
+  void switchedLine() {
+    const bool fromFallback = t_.ex.err == ExchangeErr::None || t_.ex.err == ExchangeErr::Cut;
+    if (t_.switchLines.empty() || !t_.reply || !fromFallback) return;
+    if (t_.neutralSwitch) {   // R11: the catalogued "; this answer came from " as its own sentence, nothing else
+      std::string s = std::string(texts::stubs::kAnswerFrom).substr(2);
+      s[0] = 'T';
+      t_.switchLines = t_.switchStored = s + t_.ctx.model + ".";
+    }
+    if (t_.status == StatusLine::None) return setStatus(StatusLine::ProviderError, t_.switchLines, &t_.switchStored);
+    if (t_.statusRef != &t_.statusText) return;
+    if (t_.statusStored.empty()) t_.statusStored = t_.statusText;
+    t_.statusText.insert(0, t_.switchLines + "\n");
+    t_.statusStored.insert(0, t_.switchStored + "\n");
   }
   // A line kept outside the turn (the memory line): taken with no allocation.
   void setStatusRef(StatusLine s, const std::string& kept) noexcept {
     if (rank(s) <= rank(t_.status)) return;
     t_.status = s;
+    t_.statusStored.clear();
     t_.statusRef = &kept;
   }
   void takeStatus(const DeliverDecision& dd) {
@@ -884,7 +1643,7 @@ class TurnRun {
   }
   // The line for a turn a guard ended before a reply: it names the guard (ruling 79 item 4).
   std::string limitLine() const {
-    return std::string(texts::device_notes::kLimitLine) + guardTripSlug(t_.trip) + texts::device_notes::kLimitLineEnd;
+    return std::string(texts::device_notes::kLimitStopped) + guardTripSlug(t_.trip) + texts::device_notes::kLimitStoppedEnd;
   }
 
   // What the owner gets, decided in one place (close and the refusal path): the model's reply
@@ -894,6 +1653,7 @@ class TurnRun {
   void settle() {
     t_.replyText = replyOf();
     t_.reply = t_.replyText != nullptr;   // a pointer: the reply is never copied to go out
+    lastShare();
     if (t_.reply && t_.trip != GuardTrip::None && personTrigger(t_.ctx.trigger))   // the guard that stopped it
       setStatus(StatusLine::LimitReached, std::string(texts::device_notes::kLimitStopped) + guardTripSlug(t_.trip) +
                                               texts::device_notes::kLimitStoppedEnd);
@@ -946,9 +1706,9 @@ class TurnRun {
   uint64_t callQOf(size_t i) const { return i < t_.callQ.size() ? t_.callQ[i] : 0; }
 
   // Tier 2 for a call's arguments (PRD section 2 as amended by rulings 81 to 83): a string argument
-  // over kTier1CallArgs is whole while its own turn is open, bounded like tier-2 bulk (the head's
-  // bulkWholeCap), and shows as its long-argument stub from the close of the turn or at ladder
-  // rung 2 (tx::shownArgs): the c item keeps the model's arguments in `out` and their stub form in
+  // over kTier1CallArgs is whole in every request, bounded like tier-2 bulk (the head's
+  // bulkWholeCap), and shows as its long-argument stub only on the overflow path (lane E2-VERB,
+  // tx::shownArgs): the c item keeps the model's arguments in `out` and their stub form in
   // `stub`. The whole arguments go to the bulk file first (the stub's view pointer). Over the
   // bound, or when the line would not hold both, `out` is the stub form (arguments that do not
   // parse, cut by the output limit, as one stub). When the bulk file refuses, the arguments stay
@@ -965,6 +1725,7 @@ class TurnRun {
     const bool kept = d_.log->appendBulk(t_.ctx.turn, args, handle).ok();
     if (!kept && args.size() + kLineRoom <= tx::kMaxLineBytes) return Status::success();   // inline whole
     std::string stubbed;
+    t_.again = parsed ? tx::wayBack(name, args) : std::string();   // a file write: the file it wrote
     if (!parsed) {
       if (!longStub(name, args, kept, stubbed).ok()) return Status::fail(Err::InvalidArgument, "plain::tierArgs");
     } else {
@@ -978,32 +1739,45 @@ class TurnRun {
   }
   static constexpr size_t kLineRoom = 1024;   // a line's keys and crc beside its text
 
-  static bool hasLongString(ArduinoJson::JsonVariantConst v) {
-    if (v.is<ArduinoJson::JsonObjectConst>()) {
-      for (ArduinoJson::JsonPairConst kv : v.as<ArduinoJson::JsonObjectConst>())
-        if (hasLongString(kv.value())) return true;
-    } else if (v.is<ArduinoJson::JsonArrayConst>()) {
-      for (ArduinoJson::JsonVariantConst e : v.as<ArduinoJson::JsonArrayConst>())
-        if (hasLongString(e)) return true;
-    } else if (v.is<const char*>()) {
-      return std::strlen(v.as<const char*>()) > tx::kTier1CallArgs;
+  // Both walks keep their own work list in the working set instead of recursing: the arguments nest
+  // as deep as the parse allows (64), and a frame per level landed on the Telegram task's deepest
+  // chain (lane E2-STACK2). stubLongStrings visits the strings in the order the recursion did.
+  static bool hasLongString(ArduinoJson::JsonVariantConst root) {
+    orch::WorkingVector<ArduinoJson::JsonVariantConst> todo{root};
+    while (!todo.empty()) {
+      const ArduinoJson::JsonVariantConst v = todo.back();
+      todo.pop_back();
+      if (v.is<ArduinoJson::JsonObjectConst>()) {
+        for (ArduinoJson::JsonPairConst kv : v.as<ArduinoJson::JsonObjectConst>()) todo.push_back(kv.value());
+      } else if (v.is<ArduinoJson::JsonArrayConst>()) {
+        for (ArduinoJson::JsonVariantConst e : v.as<ArduinoJson::JsonArrayConst>()) todo.push_back(e);
+      } else if (v.is<const char*>() && std::strlen(v.as<const char*>()) > tx::kTier1CallArgs) {
+        return true;
+      }
     }
     return false;
   }
-  void stubLongStrings(const std::string& name, ArduinoJson::JsonVariant v, bool kept) {
-    if (v.is<ArduinoJson::JsonObject>()) {
-      for (ArduinoJson::JsonPair kv : v.as<ArduinoJson::JsonObject>()) stubLongStrings(name, kv.value(), kept);
-    } else if (v.is<ArduinoJson::JsonArray>()) {
-      for (ArduinoJson::JsonVariant e : v.as<ArduinoJson::JsonArray>()) stubLongStrings(name, e, kept);
-    } else if (v.is<const char*>() && std::strlen(v.as<const char*>()) > tx::kTier1CallArgs) {
-      std::string stub;
-      if (longStub(name, v.as<const char*>(), kept, stub).ok()) v.set(stub);
+  void stubLongStrings(const std::string& name, ArduinoJson::JsonVariant root, bool kept) {
+    orch::WorkingVector<ArduinoJson::JsonVariant> todo{root};
+    while (!todo.empty()) {
+      ArduinoJson::JsonVariant v = todo.back();
+      todo.pop_back();
+      const size_t at = todo.size();
+      if (v.is<ArduinoJson::JsonObject>()) {
+        for (ArduinoJson::JsonPair kv : v.as<ArduinoJson::JsonObject>()) todo.push_back(kv.value());
+      } else if (v.is<ArduinoJson::JsonArray>()) {
+        for (ArduinoJson::JsonVariant e : v.as<ArduinoJson::JsonArray>()) todo.push_back(e);
+      } else if (v.is<const char*>() && std::strlen(v.as<const char*>()) > tx::kTier1CallArgs) {
+        std::string stub;
+        if (longStub(name, v.as<const char*>(), kept, stub).ok()) v.set(stub);
+      }
+      std::reverse(todo.begin() + (std::ptrdiff_t)at, todo.end());   // first child on top
     }
   }
   // A long text's stub: with the bulk file kept, the long-argument stub (view); without it,
   // the internal stub's no-card form, which promises nothing.
   Status longStub(const std::string& name, const std::string& text, bool kept, std::string& out) {
-    if (kept) return tx::longArgStub((uint32_t)text.size(), hex8(text), c_.nextQ, out);
+    if (kept) return tx::longArgStub((uint32_t)text.size(), hex8(text), c_.nextQ, out, t_.again, bound());
     return stubOf(name, text, false, out);
   }
   Status stubOf(const std::string& tool, const std::string& text, bool kept, std::string& out) {
@@ -1016,6 +1790,7 @@ class TurnRun {
     f.preview = text.substr(0, tx::kStubPreviewBytes + 4);
     f.cls = tx::ResultClass::Bulk;
     f.noCard = !kept;
+    f.bound = bound();
     return tx::stubText(f, out);
   }
   static std::string hex8(const std::string& s) {
@@ -1039,7 +1814,7 @@ class TurnRun {
     const bool kept = d_.log->appendBulk(t_.ctx.turn, text, a.handle).ok();
     if (!kept) a.handle.clear();
     if (!kept && text.size() + kLineRoom <= tx::kMaxLineBytes) return Status::success();
-    return tx::longTextHead(text, cap, kept ? tx::viewPointer(c_.nextQ) : std::string(), a.x);
+    return tx::longTextHead(text, cap, kept ? tx::viewPointer(c_.nextQ, bound()) : std::string(), a.x, kept);
   }
 
   Status meta(const ParsedStep& step, uint16_t beforeCall) {
@@ -1048,6 +1823,7 @@ class TurnRun {
       tx::Item& k = blank(tx::ItemKind::RoundMeta);
       k.x = m.bytes;
       k.rd = a_round();
+      k.wr = replayTag(t_.ctx.dialect, t_.setup.head.routed, t_.ctx.model);   // replayed only to its writer (E2-R4b)
       t_.sawMeta = true;
       Status st = put(k);
       if (!st.ok()) return st;
@@ -1065,6 +1841,8 @@ class TurnRun {
     orch::ToolClass cls;   // its class; a router that reaches nothing knowable: the fail-closed default
     bool unresolved = false;   // a router call with no target (a listing, an unknown or refused name)
   };
+  // E2-FIX5: the tools this turn's texts may name: registered for the turn (none without a registry).
+  tx::BoundTools bound() const { return boundTools(t_.setup.facts.reg); }
   CallView viewOf(const std::string& name, const std::string& argsJson) const {
     CallView v;
     v.name = name;
@@ -1077,6 +1855,8 @@ class TurnRun {
     const std::string regName = reg->resolveName(name);
     if (regName.empty() || !reg->isRouter(regName)) {
       v.cls = reg->classOf(regName.empty() ? name : regName);
+      // A tool server's tool spelled directly (mcp_x_y) is judged by its registry name, as through `more` (E2-REP2).
+      if (!regName.empty() && !orch::mcp::serverOf(regName).empty()) v.name = regName;
       return v;
     }
     v.unresolved = true;   // until the target is known: the fail-closed class (outside, effect)
@@ -1098,22 +1878,25 @@ class TurnRun {
   // Outside content by class: a tool with a taint row that says so, a tool nothing classes at
   // all, or a router call that reaches nothing knowable (each reads as outside). The engine-2
   // names have class rows but no taint rows yet: their own result says whether it is outside
-  // (ToolOutput::outside).
+  // (ToolOutput::outside). A read of a device-written folder (inbox/, agents/) is outside whatever
+  // its class (RB-RL: plain/rails.h).
   static bool outsideByClass(const CallView& v) {
+    if (readsOutsidePath(v.name, v.args)) return true;
     if (v.cls.taint != orch::Taint::External) return false;
     return v.unresolved || orch::toolTaintRow(v.name) != nullptr || orch::toolClassRow(v.name) == nullptr;
   }
 
   // ---- one call -----------------------------------------------------------------------------
-  // The round's calls in order; past the soft wall no further call starts.
+  // The round's calls in order; past the time limit no further call starts.
   Status runCalls(const ParsedStep& step) {
     Status st = Status::success();
     for (size_t i = 0; st.ok() && i < step.calls.size(); ++i) {
       t_.curCallQ = callQOf(i);
-      st = elapsedMs() < t_.limits.softWallMs ? runCall(step.calls[i])
-                                              : answerUnrun(step.calls[i], texts::tool_results::kNotRunLimit);
+      st = elapsedMs() < t_.limits.timeLimitMs ? runCall(step.calls[i])
+                                               : answerUnrun(step.calls[i], texts::tool_results::kNotRunLimit);
     }
     ++t_.toolRounds;
+    t_.progress.endRound();
     return st;
   }
 
@@ -1140,6 +1923,7 @@ class TurnRun {
       dd = d_.hooks->runBeforeDispatch(dc);
     }
     ToolOutput out;
+    t_.callRan = false;
     if (dd.verdict != DispatchVerdict::Run) {
       out.text = dd.text;
       out.isError = dd.verdict == DispatchVerdict::Refuse;
@@ -1157,6 +1941,7 @@ class TurnRun {
       }
       if (recorded) {
         dispatchOne(call, out);
+        t_.callRan = true;
         ++t_.end.tools;
       } else {
         out.text = texts::tool_results::kNotRunUnrecorded;
@@ -1166,6 +1951,8 @@ class TurnRun {
     out.id = call.id;
     out.name = call.name;
     out.outside |= outsideByClass(view);
+    t_.progress.noteCall(view.name, view.args, dd.verdict == DispatchVerdict::Answer && dd.by == HookSlot::Suppression,
+                         out.isError, out.text);
     return storeResult(call, out, view);
   }
 
@@ -1210,6 +1997,7 @@ class TurnRun {
       t_.ctx.tainted = true;   // the request now carries an outside result whole
     }
     if (r.ok && orch::tx::changesFileSet(view.name)) t_.fileSetChanged = true;
+    if (r.ok && stored && t_.callRan && view.cls.effect == orch::EffectClass::Effect) keepOwn(out.text, view.args);
     if (r.ok && stored && out.deferred != Deferred::None) {   // a stored success only; run once the turn is closed
       const size_t kind = static_cast<size_t>(out.deferred);
       if (kind < kDeferredKinds) {
@@ -1253,10 +2041,30 @@ class TurnRun {
     (void)tx::stubTime(epoch(), t_.tz, f.hhmm);
     f.preview = text.substr(0, tx::kStubPreviewBytes + 4);
     f.args = call ? call->argsJson : std::string();
+    // A file read: read_file again (E2-VERB). Lane E2-FIX9: a write's result is not brought back by reading the file
+    // (it shows the file as it is, not what the write answered), so only a read's result names it.
+    if (r.cls != tx::ResultClass::Outside && r.n == "read_file") f.again = tx::wayBack(r.n, f.args);
     f.cls = r.cls;
     f.noCard = r.cls != tx::ResultClass::Receipt && r.handle.empty();
+    f.bound = bound();
     if (!tx::stubText(f, r.st).ok()) r.st.clear();
     return put(r, stored);
+  }
+
+  // A successful, stored effect call's evidence for the frozen system part (seeOwnChanges): its result
+  // when short (a note's stored line; a long result is never a note line) and the path it wrote. A read
+  // or a listing is never evidence: it can show what another writer added.
+  static constexpr size_t kOwnTextMax = 1024;
+  void keepOwn(const std::string& text, const std::string& args) {
+    if (!d_.stablePrefix) return;
+    if (text.size() <= kOwnTextMax) t_.ownTexts.push_back(text);
+    ArduinoJson::JsonDocument doc;
+    if (deserializeJson(doc, args, ArduinoJson::DeserializationOption::NestingLimit(8))) return;
+    const char* path = doc["path"] | (const char*)nullptr;
+    if (!path || !*path) return;
+    t_.ownPaths.push_back(path);
+    const nimbus::orch::StorePath stored = nimbus::orch::storePathFor(path);   // the path as the store lists it
+    if (stored.ok() && stored.str() != path) t_.ownPaths.push_back(stored.str());
   }
 
   // A successful effect's call and result, kept for the superseded-read rule in the view of
@@ -1281,12 +2089,17 @@ class TurnRun {
   // reply in hand has gone out.
   Status close() {
     settle();
+    switchedLine();
+    (void)d_.log->flushHeld(*d_.arena);   // E2-BFIX1: the turn's buffers are gone; what storage refused goes now, in order
+    heldWritten();
     closingFacts();
     deliver();
     Status st = storeDelivery();   // the d item and afterDeliver, before the scan below allocates
     afterDeliver();
     if (!t_.storeFailed) supersede();
     if (!t_.storeFailed) st = storeEnd();
+    undoInboundIfRefused();
+    seeOwnChanges();   // after delivery: it reads the notes and the file list once more
     if (!t_.storeFailed) c_.head.openTurn = 0;   // a turn with no e item stays open
     c_.head.nextQ = c_.nextQ;
     if (d_.log->isOpen()) (void)d_.log->writeHead(c_.head);   // a cache: Io loses nothing
@@ -1297,11 +2110,12 @@ class TurnRun {
   void closingFacts() {
     if (t_.cause.empty()) t_.cause = "stopped";
     if (t_.storeFailed) refusedLine();
-    else if (t_.storageLineDue) setStatus(StatusLine::StorageState, texts::device_notes::kStorageLine);
+    else if (t_.storageLineDue && !c_.unloaded && turnUnstored())
+      setStatus(StatusLine::StorageState, texts::device_notes::kStorageLine);
     if (t_.sawOutside) event("change:outside");
     if (t_.sawMeta) event("change:thinking");   // closed-turn thinking is not replayed (ruling 13)
     if (t_.longArgs) event("change:long-args");   // its long arguments show as stubs from now (RB-H81)
-    if (d_.recentFiles && t_.fileSetChanged) {
+    if (d_.recentFiles && t_.fileSetChanged && !d_.stablePrefix) {
       const std::string before = c_.recent.text();
       (void)c_.recent.atClose(true, d_.recentFiles, t_.tz);
       if (c_.recent.text() != before) event("change:recent-files");
@@ -1438,7 +2252,36 @@ class TurnRun {
     Status st = put(e);
     if (st.ok()) c_.lastClosedQ = e.q;
     t_.endStored = st.ok();
+    if (st.ok()) keepForInspector(e);
     return st;
+  }
+
+  // Lane E2-P-SURF: what a render of this turn's requests needs, kept until the next turn closes. A
+  // refused allocation keeps nothing (the inspector then says there is no turn): never a failed turn.
+  void keepForInspector(const tx::Item& e) {
+    c_.last.reset();
+    try {
+      std::unique_ptr<LastTurn> l(new LastTurn());
+      l->ctx = t_.ctx;
+      l->ctx.who = nullptr;
+      l->system = t_.system;
+      l->tools = t_.tools;
+      l->head = t_.setup.head;
+      l->head.key = [] { return std::string(); };   // the key is never copied
+      l->head.bearer = nullptr;   // nor a connector's token (lane E2-P-CONN2)
+      l->wire = t_.wire;
+      l->end = e.end;
+      l->end.promptHash = t_.end.promptHash;
+      l->end.manifestHash = t_.end.manifestHash;
+      l->endQ = e.q;
+      l->bound = bound();
+      l->photo = t_.setup.photo;
+      l->longCache = d_.stablePrefix;
+      l->refusedPhotos = c_.head.refusedPhotos;
+      c_.last = std::move(l);
+    } catch (const std::bad_alloc&) {
+      c_.last.reset();
+    }
   }
 
  public:
@@ -1524,11 +2367,38 @@ void syncClosed(PlainEngine::ChatState& c, const tx::TxArena& arena) {
 }  // namespace
 
 PlainEngine::PlainEngine(const EngineDeps& deps) : deps_(deps), chat_(new (std::nothrow) ChatState()) {}
+
+bool PlainEngine::unloaded() const { return chat_ && chat_->booted && chat_->unloaded; }
 PlainEngine::~PlainEngine() = default;
 
 tx::HeadState* PlainEngine::head() { return chat_ && chat_->booted ? &chat_->head : nullptr; }
 std::vector<tx::DigestEntry>* PlainEngine::digests() { return chat_ && chat_->booted ? &chat_->live : nullptr; }
 uint64_t PlainEngine::omittedThru() const { return chat_ && chat_->booted ? chat_->droppedThru : 0; }
+
+const LastTurn* PlainEngine::lastTurn() const { return chat_ && chat_->booted ? chat_->last.get() : nullptr; }
+
+Status PlainEngine::rebuildLast(size_t exchange, HttpRequest& out, tx::ArenaAllocFn alloc, tx::ArenaFreeFn release) const {
+  const LastTurn* l = lastTurn();
+  if (!l || !l->wire || !deps_.arena || !deps_.log) return Status::fail(Err::NotFound, "plain::PlainEngine::rebuildLast");
+  RebuildInput in;
+  in.end = &l->end;
+  in.exchange = exchange;
+  in.turn = &l->ctx;
+  in.head = &l->head;
+  in.wire = l->wire;
+  in.system = &l->system;
+  in.tools = &l->tools;
+  in.items = deps_.arena;
+  tx::TxLog* log = deps_.log;
+  in.bulk = [log](const std::string& handle, std::string& o) { return log->readBulk(handle, 0, tx::kBulkMaxBytes, o); };
+  in.photo = l->photo;
+  in.bound = l->bound;
+  in.longCache = l->longCache;
+  in.refusedPhotos = &l->refusedPhotos;
+  in.alloc = alloc;
+  in.release = release;
+  return rebuildRequest(in, out);
+}
 
 Status PlainEngine::runTurn(const TurnInput& in, TurnOutcome& out) {
   out = TurnOutcome{};
@@ -1565,7 +2435,14 @@ Status PlainEngine::runTurn(const TurnInput& in, TurnOutcome& out) {
   out.trip = t->trip;
   out.status = t->status;
   out.parkHost = t->parkHost;
+  out.parkStatus = t->parkStatus;
+  out.parkBilling = t->parkBilling;
+  out.parkModel = t->parkModel;
   out.failOver = t->failOver;
+  out.modelUnusable = t->modelUnusable;
+  out.unusableProvider = t->unusableProvider;
+  out.unusableModel = t->unusableModel;
+  out.switches = t->switches;
   // A deferred effect's bit is set only once its argument is copied: never a head switch without its head.
   for (size_t k = 0; k < kDeferredKinds; ++k) {
     if (!((t->deferred.mask >> k) & 1u)) continue;
@@ -1577,35 +2454,46 @@ Status PlainEngine::runTurn(const TurnInput& in, TurnOutcome& out) {
   }
   try {
     if (t->replyText) out.text = *t->replyText;
-    if (t->statusRef) out.statusText = *t->statusRef;
+    if (t->statusRef) {
+      out.statusText = *t->statusRef;
+      out.statusStored = t->storedLine();
+    }
     out.end = t->end;
     out.end.cause = t->cause;   // also when no e item could be stored
+    out.parkText = t->parkText;
+    out.shares = t->shares;
+    out.fallbackRefusals = t->fallbackRefusals;
   } catch (const std::bad_alloc&) {
   }
   return st;
 }
 
+Status PlainEngine::flushHeld() {
+  if (!chat_ || !chat_->booted || !deps_.log || !deps_.arena || !deps_.log->heldCount()) return Status::success();
+  const Status st = deps_.log->flushHeld(*deps_.arena);
+  if (deps_.log->isOpen() && !deps_.log->heldCount()) {   // written whole: the episode is over, no hole to name
+    chat_->storageEpisode = false;
+    if (chat_->noteDue && deps_.log->lostCount() == chat_->lostAtEpisode) chat_->noteDue = false;
+  }
+  return st;
+}
+
+uint32_t PlainEngine::heldItems() const { return deps_.log ? deps_.log->heldCount() : 0; }
+
 Status PlainEngine::idle(const IdleCtx& ctx, IdleOutcome& out) {
   out = IdleOutcome{};
   if (!chat_ || !chat_->booted) return Status::fail(Err::InvalidArgument, "plain::PlainEngine::idle");
+  if (chat_->unloaded) return Status::success();   // no compaction over RAM-only numbers
+  (void)flushHeld();   // E2-BFIX1: what storage refused goes first, in order
   if (deps_.hooks) out = deps_.hooks->runIdleStep(ctx);
   return Status::success();
 }
 
 namespace {
 
-// The chat from storage at boot: the log opened (Io: no card, the chat runs from RAM), the arena
-// filled after thru, the next q and the last turn, the digests in force.
-Status loadChat(const EngineDeps& deps, PlainEngine::ChatState& c) {
-  c = PlainEngine::ChatState{};
-  c.memoryLine = texts::device_notes::kNoMemory;
-  Status st = deps.log->open(c.head);
-  if (!st.ok() && st.err != Err::Io) return st;
-  if (st.ok()) {
-    tx::FillReport report;
-    if (!(st = deps.log->fill(c.head, *deps.arena, report)).ok()) return st;
-    c.droppedThru = report.droppedThru;
-  }
+// What the filled arena says about the chat: the next q, the last turn, the last closed turn
+// and the digests in force.
+void settleLoaded(const EngineDeps& deps, PlainEngine::ChatState& c) {
   c.nextQ = std::max<uint64_t>(std::max<uint64_t>(c.head.nextQ, deps.arena->lastQ() + 1), 1);
   for (size_t i = 0; i < deps.arena->count(); ++i) {
     tx::ArenaEntry e;
@@ -1613,12 +2501,161 @@ Status loadChat(const EngineDeps& deps, PlainEngine::ChatState& c) {
     c.lastTurn = std::max(c.lastTurn, e.turn);
     if (e.kind == tx::ItemKind::TurnEnd) c.lastClosedQ = e.q;
   }
+  c.live.clear();
   if (deps.files && deps.log->isOpen() && tx::loadDigests(*deps.files, deps.chatKey, c.head, c.live).ok()) {
     std::string block;
     tx::SettleReport rep;
     (void)tx::settleDigests(*deps.files, deps.chatKey, tx::profileOfHead(c.head.profile), c.live, block, rep);
   }
+}
+
+// The chat from storage at boot: the log opened, the arena filled after thru, then
+// settleLoaded. Io: on a device with no card fitted (EngineDeps::noCard) the chat runs from RAM
+// by design; with a card fitted the chat is marked unloaded (the stored conversation exists or
+// cannot be ruled out) and reopen() loads it later.
+Status loadChat(const EngineDeps& deps, PlainEngine::ChatState& c) {
+  c = PlainEngine::ChatState{};
+  c.memoryLine = texts::device_notes::kNoMemory;
+  if (deps.holdUnloaded && deps.holdUnloaded()) {   // P3: nothing is stored before the import's Done
+    c.unloaded = true;
+    hlog::logf("plain(%s): the earlier conversation is not imported yet: held in RAM", deps.chatKey.c_str());
+    settleLoaded(deps, c);
+    c.booted = true;
+    return Status::success();
+  }
+  Status st = deps.log->open(c.head);
+  if (!st.ok() && st.err != Err::Io) return st;
+  if (st.ok()) {
+    tx::FillReport report;
+    if (!(st = deps.log->fill(c.head, *deps.arena, report)).ok()) return st;
+    c.droppedThru = report.droppedThru;
+  } else {
+    c.unloaded = !(deps.noCard && deps.noCard());
+    if (c.unloaded) hlog::logf("plain(%s): the stored conversation could not be loaded: held in RAM", deps.chatKey.c_str());
+  }
+  settleLoaded(deps, c);
   c.booted = true;
+  return Status::success();
+}
+
+// A RAM item's own numbers moved past the stored ones, and the pointers its stub or long-text
+// head wrote ("r<q>", "view id=r<q>") moved with them. Only device-written fields are touched;
+// the owner's and the model's words are never rewritten.
+bool isDigit(char ch) { return ch >= '0' && ch <= '9'; }
+
+// "r<digits>" at `i`, after a space, '=' or '(' and not followed by a digit: its number and end.
+bool pointerAt(const std::string& s, size_t i, size_t& end, uint64_t& q) {
+  if (s[i] != 'r' || i == 0 || (s[i - 1] != ' ' && s[i - 1] != '=' && s[i - 1] != '(')) return false;
+  end = i + 1;
+  while (end < s.size() && isDigit(s[end])) ++end;
+  if (end == i + 1 || end - i > 20) return false;
+  q = std::strtoull(s.substr(i + 1, end - i - 1).c_str(), nullptr, 10);
+  return true;
+}
+
+void shiftPointers(std::string& s, uint64_t lastRamQ, uint64_t shift) {
+  if (!shift || s.empty()) return;
+  std::string out;
+  out.reserve(s.size() + 16);
+  for (size_t i = 0; i < s.size();) {
+    size_t end = 0;
+    uint64_t q = 0;
+    if (pointerAt(s, i, end, q) && q >= 1 && q <= lastRamQ) {
+      out += 'r';
+      out += std::to_string(q + shift);
+      i = end;
+      continue;
+    }
+    out += s[i++];
+  }
+  s.swap(out);
+}
+
+uint32_t turnRoom(uint64_t shift) { return static_cast<uint32_t>(std::min<uint64_t>(shift, UINT32_MAX / 2)); }
+
+// The RAM items after the stored conversation, in order, each once (lane E2-STORE, finding S5).
+// The first append fixes the shifts: q past the stored next q, turn past it too (a turn number
+// is never above its items' q). A refusal stops the merge with what is left still in RAM; the
+// next reopen() resumes after mergedThru.
+Status mergeRam(const EngineDeps& deps, PlainEngine::ChatState& c) {
+  const uint64_t lastRamQ = c.nextQ ? c.nextQ - 1 : 0;
+  for (size_t i = 0; i < deps.arena->count(); ++i) {
+    tx::Item it;
+    Status st = deps.arena->get(i, it);
+    if (!st.ok()) return st;
+    if (it.q <= c.mergedThru) continue;
+    const uint64_t storedNext = deps.log->lastQ() + 1;
+    if (!c.shiftSet) {
+      c.qShift = storedNext > it.q ? storedNext - it.q : 0;
+      c.turnShift = it.turn && storedNext > it.turn ? turnRoom(storedNext - it.turn) : 0;
+      c.shiftSet = true;
+    } else if (it.q + c.qShift < storedNext) {   // a line the log counted that is not ours
+      const uint64_t extra = storedNext - (it.q + c.qShift);
+      c.qShift += extra;
+      c.turnShift = turnRoom(c.turnShift + extra);
+    }
+    const uint64_t ramQ = it.q;
+    it.q += c.qShift;
+    if (it.turn) it.turn += c.turnShift;
+    shiftPointers(it.st, lastRamQ, c.qShift);
+    if (it.kind == tx::ItemKind::Assistant && !it.handle.empty()) shiftPointers(it.x, lastRamQ, c.qShift);
+    tx::StoreState state = tx::StoreState::NotStored;
+    st = deps.log->append(it, state);
+    if (!st.ok()) return st;
+    if (state != tx::StoreState::Stored) return Status::fail(Err::NotStored, "plain::reopen.merge");
+    c.mergedThru = ramQ;
+  }
+  return Status::success();
+}
+
+// reopen(): open the log, merge, refill the arena from the log. Any refusal closes the log again
+// (nothing more is written until the merge can finish) and leaves the chat unloaded.
+Status reopenChat(const EngineDeps& deps, PlainEngine::ChatState& c) {
+  tx::HeadState h;
+  Status st = deps.log->open(h);
+  if (st.ok()) st = mergeRam(deps, c);
+  if (!st.ok()) {
+    deps.log->close();
+    return st;
+  }
+  // Every RAM item is on the card now: the arena is refilled from the log, so it holds the
+  // stored conversation and the merged turns under their stored numbers.
+  const uint32_t lastTurn = c.lastTurn + c.turnShift;
+  h.nextQ = std::max<uint64_t>(h.nextQ, deps.log->lastQ() + 1);
+  deps.arena->clear();
+  tx::FillReport report;
+  try {
+    st = deps.log->fill(h, *deps.arena, report);
+  } catch (const std::bad_alloc&) {
+    st = Status::fail(Err::TooLarge, "plain::reopen.fill");
+  }
+  if (!st.ok()) {
+    // A partial fill: what the arena holds is stored, what it misses is on the card. The chat
+    // stays unloaded (closed log) with every q up to the log's last counted as merged.
+    deps.log->close();
+    c.mergedThru = std::max(deps.log->lastQ(), deps.arena->lastQ());
+    c.qShift = 0;
+    c.turnShift = 0;
+    c.shiftSet = false;
+    c.lastTurn = lastTurn;
+    c.nextQ = std::max<uint64_t>(c.nextQ, c.mergedThru + 1);
+    return st;
+  }
+  const std::string memoryLine = c.memoryLine;
+  tx::RecentFilesBlock recent = c.recent;
+  for (const std::string& ref : c.head.refusedPhotos)   // E2-REP4: refused in RAM, kept (bounded, oldest out)
+    if (std::find(h.refusedPhotos.begin(), h.refusedPhotos.end(), ref) == h.refusedPhotos.end()) h.refusedPhotos.push_back(ref);
+  while (h.refusedPhotos.size() > tx::kHeadMaxRefusedPhotos) h.refusedPhotos.erase(h.refusedPhotos.begin());
+  c = PlainEngine::ChatState{};   // afterRestart: the next turn opens cold over the whole conversation
+  c.memoryLine = memoryLine;
+  c.recent = recent;
+  c.head = h;
+  c.droppedThru = report.droppedThru;
+  settleLoaded(deps, c);
+  c.lastTurn = std::max(c.lastTurn, lastTurn);
+  c.booted = true;
+  (void)deps.log->writeHead(c.head);   // a cache: Io loses nothing
+  hlog::logf("plain(%s): the stored conversation is loaded again; the RAM turns follow it", deps.chatKey.c_str());
   return Status::success();
 }
 
@@ -1639,6 +2676,32 @@ Status PlainEngine::boot(const BootCtx& ctx) {
     return deps_.hooks ? deps_.hooks->runBootResume(ctx) : Status::success();
   } catch (const std::bad_alloc&) {
     return Status::fail(Err::TooLarge, "plain::PlainEngine::boot.memory");
+  }
+}
+
+Status PlainEngine::reopen() {
+  if (!depsReady(deps_) || !chat_ || !chat_->booted) return Status::fail(Err::InvalidArgument, "plain::PlainEngine::reopen");
+  if (!chat_->unloaded) return Status::success();
+  try {
+    return reopenChat(deps_, *chat_);
+  } catch (const std::bad_alloc&) {
+    deps_.log->close();   // a refusal before the refill: the arena still holds every RAM item
+    return Status::fail(Err::TooLarge, "plain::PlainEngine::reopen.memory");
+  }
+}
+
+Status PlainEngine::reopenAs(tx::TxLog& log, const std::string& chatKey) {
+  if (!depsReady(deps_) || !chat_ || !chat_->booted || !chat_->unloaded || !tx::chatKeyOk(chatKey) || chatKey == deps_.chatKey)
+    return Status::fail(Err::InvalidArgument, "plain::PlainEngine::reopenAs");
+  std::unique_ptr<EngineDeps> d(new (std::nothrow) EngineDeps(deps_));   // off the poll task's stack
+  if (!d) return Status::fail(Err::TooLarge, "plain::PlainEngine::reopenAs.memory");
+  d->log = &log;
+  d->chatKey = chatKey;
+  try {
+    return reopenChat(*d, *chat_);
+  } catch (const std::bad_alloc&) {
+    log.close();
+    return Status::fail(Err::TooLarge, "plain::PlainEngine::reopenAs.memory");
   }
 }
 

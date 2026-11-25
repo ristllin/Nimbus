@@ -183,6 +183,29 @@ const Expect kExpect[] = {
     {"image.look", kTurn},
     {"image.note", kTurn},
     {"calc", kOpen},   // RB-REC8
+    // engine 2's plain tools (RB-N2b, E2-TOOLS): the handler's own line decides whose file
+    {"read_file", kOpen},
+    {"write_file", kOpen},
+    {"append_file", kOpen},
+    {"edit_file", kOpen},
+    {"list_files", kOpen},
+    {"delete_file", kOpen},
+    {"web_search", kTurn},
+    {"search", kTurn},   // E2-SRCH: the turn's own conversation
+    {"view", kTurn},
+    {"send", kTurn},                   // E2-REP1: engine 1's reply.telegram and files.send
+    {"send.other_chat", kOwnerNow},
+    {"agent_start", kTurn},            // E2-REP1: engine 1's session.spawn
+    // E2-P-OUT2: engine 1's handlers under engine-2 names, their engine-1 rules
+    {"file_stat", kOpen},
+    {"share_file", kOpen},
+    {"fetch_url", kOpen},
+    {"pdf_write", kOpen},
+    {"image_generate", kTurn},
+    {"media_play", kOwner},
+    {"media_pause", kOwner},
+    {"media_stop", kOwner},
+    {"media_list", kOpen},
     // docs, routines, replies, skills, people
     {"docs.list", kOpen},
     {"docs.read", kOpen},
@@ -226,7 +249,7 @@ const Expect* expectFor(const std::string& key) {
 bool argumentKey(const std::string& key) {
   static const char* const kKeys[] = {"memory.config.update", "models.list.refresh", "device.selftest.audible",
                                       "prefs.edit.change",    "reply.telegram.other_chat", "files.send.other_chat",
-                                      "files.share.owner",    "openq.edit.change"};
+                                      "files.share.owner",    "openq.edit.change", "send.other_chat"};
   for (const char* k : kKeys)
     if (key == k) return true;
   return false;
@@ -265,12 +288,21 @@ void walk(const std::string& dir, std::vector<std::string>& out) {
   closedir(d);
 }
 
-// Old-engine tools registered under an undotted name (RB-REC8: calc, always on on both
-// engines). Engine-2-only names (read_file, ...) stay out: they have no rows here.
-const std::set<std::string> kUndottedTools = {"calc"};
+// Tools registered under an undotted name: calc (RB-REC8, always on on both engines) and every
+// engine-2 snake_case name (read_file, web_search, ...: words joined by '_'; RB-N2b, E2-TOOLS), so a new
+// engine-2 tool with no row fails here too.
+const std::set<std::string> kUndottedTools = {"calc", "search", "view"};   // E2-SRCH: one-word engine-2 names
+
+bool snakeName(const std::string& s) {
+  if (s.empty() || s.front() == '_' || s.back() == '_' || s.find('_') == std::string::npos) return false;
+  if (s.find("__") != std::string::npos) return false;
+  for (char c : s)
+    if (!((c >= 'a' && c <= 'z') || c == '_')) return false;
+  return true;
+}
 
 bool toolNameShape(const std::string& s) {
-  if (kUndottedTools.count(s)) return true;
+  if (kUndottedTools.count(s) || snakeName(s)) return true;
   const size_t dot = s.find('.');
   if (dot == std::string::npos || dot == 0 || dot + 1 >= s.size()) return false;
   for (char c : s)
@@ -406,6 +438,9 @@ static void test_every_registered_tool_has_a_rule() {
   for (size_t i = 0; i < count; i++) {
     const std::string k = rows[i].key;
     if (deviceOrTurnKey(k) || argumentKey(k)) continue;
+    // Engine 2's send and agent_start register through bindDeclared and a local add() (tools_plain_send,
+    // plain_agents.cpp), which the ".add(" scan does not see.
+    if (k == "send" || k == "agent_start") continue;
     TEST_ASSERT_TRUE_MESSAGE(names.count(k) == 1, ("rule for a tool nothing registers: " + k).c_str());
   }
   TEST_MESSAGE(("property: " + std::to_string(names.size()) + " registered tools, each with an access rule").c_str());
@@ -672,7 +707,7 @@ static void test_a_chat_without_a_row_follows_the_owner_rule() {
 // The command gate on the device reads the tenant role, never the Telegram owner list
 // alone (a demoted or revoked chat kept /model, /budget, /update and /mcp).
 static void test_owner_commands_follow_the_tenant_role() {
-  const std::string src = readFile("src/agent/orchestrator.cpp");
+  const std::string src = readFile("src/agent/orchestrator_e1.cpp");
   const size_t at = src.find("const bool ownerCmd = nimbus::orch::isOwnerVerb(v);");
   TEST_ASSERT_TRUE(at != std::string::npos);
   const std::string gate = src.substr(at, 700);
@@ -859,7 +894,7 @@ static void test_results_ring_scoped_by_caller_class() {
 // With no principalFor a job engine treats no chat as the owner's (it fails closed), so a
 // product that forgets it would quietly take the owner's connectors and results away.
 static void test_every_product_wires_the_spawn_principal() {
-  const std::string device = readFile("src/agent/orchestrator.cpp");
+  const std::string device = readFile("src/agent/orchestrator_e1.cpp");
   const size_t jd = device.find("static JobEngine::Deps buildJobDeps()");
   TEST_ASSERT_TRUE(jd != std::string::npos);
   const size_t end = device.find("\n}\n", jd);
@@ -903,10 +938,11 @@ static void test_files_send_without_a_chat_resolves_before_the_check() {
 // list); the post-update system turn runs on the owner's chat, not merely the first
 // allow-listed one.
 static void test_device_wiring_of_the_owner_chat_rules() {
-  const std::string orch = readFile("src/agent/orchestrator.cpp");
-  const size_t role = orch.find("nimbus::orch::Role roleOfChat(const String& chatId) {");
+  const std::string orch = readFile("src/agent/orchestrator_e1.cpp");
+  const std::string common = readFile("src/agent/orchestrator_common.cpp");   // the tenant table (RB-SEAM1b)
+  const size_t role = common.find("nimbus::orch::Role roleOfChat(const String& chatId) {");
   TEST_ASSERT_TRUE(role != std::string::npos);
-  const std::string body = orch.substr(role, orch.find("\n}\n", role) - role);
+  const std::string body = common.substr(role, common.find("\n}\n", role) - role);
   TEST_ASSERT_TRUE_MESSAGE(body.find("tableHasAdmin = g_tenants.adminCount() > 0;") != std::string::npos, body.c_str());
   // The no-row fallback resolves the Telegram owner rule from NVS (thread-safe), never
   // from telegram's poll-task-owned g_owners/g_allowlist Strings: roleOfChat also runs on
@@ -937,7 +973,7 @@ static void test_device_wiring_of_the_owner_chat_rules() {
 
 // The turn's [ACTIVE SESSIONS] digest is built from the sessions its chat may see.
 static void test_the_device_digest_shows_only_visible_sessions() {
-  const std::string src = readFile("src/agent/orchestrator.cpp");
+  const std::string src = readFile("src/agent/orchestrator_e1.cpp");
   const size_t at = src.find("in.sessions   =");
   TEST_ASSERT_TRUE_MESSAGE(at != std::string::npos, "the digest's sessions line moved: re-pin this test");
   const std::string line = src.substr(at, 200);
@@ -957,6 +993,24 @@ static void test_the_device_registry_installs_the_rule_table() {
   const std::string between = src.substr(policy, install - policy);
   TEST_ASSERT_TRUE_MESSAGE(between.find("return;") == std::string::npos, "an early return skips the install");
   TEST_ASSERT_TRUE_MESSAGE(between.find("\n}\n") == std::string::npos, "the install left the setup function");
+}
+
+// E2-REP1 (review D): engine 2's send and agent_start follow engine 1's reply.telegram, files.send and
+// session.spawn rows: a member sends to their own chat and starts a job; another chat stays the owner's.
+static void test_engine2_send_and_agent_start_follow_the_released_rows() {
+  const ActionCaller member = actionCaller(principalForRole("2002", Role::User), false);
+  const ActionCaller owner = actionCaller(principalForRole("1001", Role::Admin), false, "1001");
+  JsonDocument own, other, none;
+  own["chat"] = "2002";
+  other["chat"] = "1001";
+  none["text"] = "hi";
+  auto key = [](const JsonDocument& a, const ActionCaller& c) { return toolActionKey("send", a.as<ArduinoJson::JsonObjectConst>(), c); };
+  TEST_ASSERT_EQUAL_STRING("", actionRefusal(key(own, member), member).c_str());
+  TEST_ASSERT_EQUAL_STRING("", actionRefusal(key(none, member), member).c_str());
+  TEST_ASSERT_EQUAL_STRING("send.other_chat", key(other, member).c_str());
+  TEST_ASSERT_FALSE(actionRefusal(key(other, member), member).empty());
+  TEST_ASSERT_EQUAL_STRING("", actionRefusal(key(own, owner), owner).c_str());   // the owner may send to another chat
+  TEST_ASSERT_EQUAL_STRING("", actionRefusal("agent_start", member).c_str());
 }
 
 int main(int, char**) {
@@ -983,5 +1037,6 @@ int main(int, char**) {
   RUN_TEST(test_session_tools_hide_other_chats_sub_agents);
   RUN_TEST(test_results_ring_scoped_by_caller_class);
   RUN_TEST(test_every_product_wires_the_spawn_principal);
+  RUN_TEST(test_engine2_send_and_agent_start_follow_the_released_rows);
   return UNITY_END();
 }

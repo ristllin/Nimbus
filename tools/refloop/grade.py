@@ -21,6 +21,7 @@ import hashlib
 import json
 import random
 import re
+from datetime import date
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -49,7 +50,9 @@ def _ints(text: str) -> set:
 
 
 def _memory_text(state: dict) -> str:
-    return "\n".join([*state.get("memories", []), state.get("rules", ""), state.get("scratchpad", "")])
+    return "\n".join(
+        [*state.get("memories", []), state.get("rules", ""), state.get("scratchpad", ""), state.get("notes", "")]
+    )
 
 
 def _difference_from_turn(arg: dict, step: dict, turns: list) -> tuple:
@@ -82,8 +85,19 @@ def _file_matching(arg: dict, state: dict) -> tuple:
     return False, f"no file fits; files: {sorted(state.get('files', {}))}"
 
 
+# Engine 2's file tools by the names the scenarios check (the old engine's): the same act, another name.
+ENGINE2_NAMES = {
+    "read_file": "files_read",
+    "write_file": "artifact_save",
+    "append_file": "files_append",
+    "edit_file": "files_edit",
+    "list_files": "files_list",
+}
+
+
 def _tool_names(step: dict) -> list:
-    return [t["name"].replace(".", "_") for t in step.get("tools") or []]
+    names = [t["name"].replace(".", "_") for t in step.get("tools") or []]
+    return [ENGINE2_NAMES.get(n, n) for n in names]
 
 
 def _one_file(arg: dict, state: dict) -> str | None:
@@ -313,12 +327,16 @@ def judge_pair(client, sc: dict, rec_a: dict, rec_b: dict, a_is_x: bool) -> dict
     """One blind judgment of both arms. Returns per-arm scores, the verdict and the order used."""
     first, second = (rec_a, rec_b) if a_is_x else (rec_b, rec_a)
     if rec_a.get("day0"):
+        dated = "{D" in json.dumps(sc) or "{RD}" in json.dumps(sc)  # only a dated scenario needs the note
         sc = fill_days(sc, rec_a["day0"])
-        if rec_b.get("day0", rec_a["day0"]) != rec_a["day0"]:  # the arms started either side of 04:00
+        if dated and rec_b.get("day0", rec_a["day0"]) != rec_a["day0"]:  # the arms started on different days
+            # Stored transcripts from another day are judged against new runs (lane E2-H2H), so the gap can be
+            # days, not only the one day either side of 04:00: state the real one.
+            days = abs((date.fromisoformat(rec_b["day0"]) - date.fromisoformat(rec_a["day0"])).days)
             sc = {
                 **sc,
                 "judge_notes": sc["judge_notes"] + f" (Dates above are for a run whose day 0 is {rec_a['day0']}; "
-                f"one transcript ran with day 0 = {rec_b['day0']}, so its dates are one day off from these.)",
+                f"one transcript ran with day 0 = {rec_b['day0']}, so its dates are {days} day(s) off from these.)",
             }
     prompt = (
         f"SCENARIO: {sc['title']}\nWHAT IT TESTS: {sc.get('pain', '')}\nGROUND TRUTH: {sc['judge_notes']}\n\n"

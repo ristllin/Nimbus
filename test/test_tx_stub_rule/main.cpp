@@ -10,11 +10,13 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <map>
 #include <string>
 #include <vector>
 
 #include "../support/tx_battery/items.h"
 #include "../support/tx_battery/pending.h"
+#include "nimbus/orch/tx/result_text.h"
 #include "nimbus/orch/tx/rules.h"
 
 namespace tx = nimbus::orch::tx;
@@ -23,6 +25,7 @@ void setUp() {}
 void tearDown() {}
 
 namespace {
+const tx::BoundTools kAllBound{true, true};   // E2-FIX5: search and view registered
 
 bool validUtf8(const std::string& s) {
   size_t i = 0;
@@ -37,12 +40,16 @@ bool validUtf8(const std::string& s) {
   return true;
 }
 
-// The internal stub's frame: '[stub <tool> r<q> <bytes>B <lines>L <HH:MM>] ... (full: view id=r<q>)',
-// one line, at most 400 B, valid UTF-8.
+// The internal stub's frame: '[stub <tool> r<q> <bytes>B <lines>L <HH:MM>] (removed from this history after you read
+// it in full and replied; view id=r<q> shows it again)' (lanes E2-FIX9, E2-BFIX3), one line, at most 400 B, valid UTF-8.
+const std::string kKept = tx::kResultShownInFull;
+std::string viewTail(uint64_t q) {
+  return "(" + kKept + "; view id=r" + std::to_string(q) + " shows it again)";
+}
 bool internalStubOk(const tx::StubFacts& f, const std::string& s, std::string& why) {
   const std::string head = "[stub " + f.tool + " r" + std::to_string(f.q) + " " + std::to_string(f.bytes) + "B " +
                            std::to_string(f.lines) + "L " + f.hhmm + "] ";
-  const std::string tail = " ... (full: view id=r" + std::to_string(f.q) + ")";
+  const std::string tail = viewTail(f.q);
   if (s.rfind(head, 0) != 0) why = "does not start with '" + head + "': " + s.substr(0, 80);
   else if (s.size() < tail.size() || s.compare(s.size() - tail.size(), tail.size(), tail) != 0)
     why = "does not end with the view hint '" + tail + "'";
@@ -52,11 +59,11 @@ bool internalStubOk(const tx::StubFacts& f, const std::string& s, std::string& w
   return why.empty();
 }
 
-// The outside stub: the call and its size only, never a byte of the result.
+// The outside stub: what is true of it first, then the call only (no size, never a byte of the result; E2-BFIX3).
 bool outsideStubOk(const tx::StubFacts& f, const std::string& marker, const std::string& s, std::string& why) {
-  const std::string want = "[stub " + f.tool + "(" + f.args.substr(0, tx::kStubArgsPreviewBytes) + ") r" +
-                           std::to_string(f.q) + " " + std::to_string(f.bytes) +
-                           "B outside content, not shown: view id=r" + std::to_string(f.q) + "]";
+  const std::string want = "[stub " + kKept + ": " + f.tool + "(" + f.args.substr(0, tx::kStubArgsPreviewBytes) +
+                           ") r" + std::to_string(f.q) + " outside content; view id=r" + std::to_string(f.q) +
+                           " shows it again]";
   if (s.find(marker) != std::string::npos) why = "outside stub carries outside bytes ('" + marker + "')";
   else if (s != want) why = "outside stub is '" + s + "', want '" + want + "'";
   return why.empty();
@@ -71,6 +78,7 @@ tx::StubFacts internalFacts(const std::string& preview) {
   f.hhmm = "13:02";
   f.preview = preview;
   f.cls = tx::ResultClass::Bulk;
+  f.bound.view = true;   // the forms below are the view-bound ones (E2-FIX5: unbound in its own test)
   return f;
 }
 
@@ -84,6 +92,7 @@ tx::StubFacts outsideFacts(const std::string& args, const std::string& preview) 
   f.args = args;
   f.preview = preview;
   f.cls = tx::ResultClass::Outside;
+  f.bound.view = true;
   return f;
 }
 
@@ -98,20 +107,20 @@ std::vector<std::string> previews() {
 void test_checker_rejects_wrong_internal_stubs() {
   const tx::StubFacts f = internalFacts("hello");
   std::string why;
-  TEST_ASSERT_TRUE(internalStubOk(f, "[stub read_file r42 15204B 310L 13:02] hello ... (full: view id=r42)", why));
-  const char* bad[] = {
+  TEST_ASSERT_TRUE(internalStubOk(f, "[stub read_file r42 15204B 310L 13:02] hello" + viewTail(42), why));
+  const std::string bad[] = {
       "[stub read_file r42 15204B 310L 13:02] hello",                                  // no view hint
-      "[stub read_file r43 15204B 310L 13:02] hello ... (full: view id=r42)",          // wrong q
-      "[stub read_file r42 15204B 310L 13:02] hel\nlo ... (full: view id=r42)",        // two lines
-      "[stub read_file r42 15204B 310L 13:02] \xC3 ... (full: view id=r42)",           // cut UTF-8
+      "[stub read_file r43 15204B 310L 13:02] hello" + viewTail(42),                   // wrong q
+      "[stub read_file r42 15204B 310L 13:02] hel\nlo" + viewTail(42),                 // two lines
+      "[stub read_file r42 15204B 310L 13:02] \xC3" + viewTail(42),                    // cut UTF-8
+      "[stub read_file r42 15204B 310L 13:02] hello ... (full: view id=r42)",          // the old tail (E2-FIX9)
   };
-  for (const char* s : bad) {
+  for (const std::string& s : bad) {
     why.clear();
-    TEST_ASSERT_FALSE_MESSAGE(internalStubOk(f, s, why), s);
+    TEST_ASSERT_FALSE_MESSAGE(internalStubOk(f, s, why), s.c_str());
   }
   why.clear();
-  TEST_ASSERT_FALSE(internalStubOk(f, "[stub read_file r42 15204B 310L 13:02] " + std::string(400, 'z') +
-                                         " ... (full: view id=r42)", why));
+  TEST_ASSERT_FALSE(internalStubOk(f, "[stub read_file r42 15204B 310L 13:02] " + std::string(400, 'z') + viewTail(42), why));
 }
 
 void test_checker_rejects_leaking_outside_stubs() {
@@ -119,13 +128,46 @@ void test_checker_rejects_leaking_outside_stubs() {
   std::string why;
   TEST_ASSERT_TRUE(outsideStubOk(
       f, "OUTSIDE-SECRET",
-      R"([stub web_search({"q":"train times"}) r7 3000B outside content, not shown: view id=r7])", why));
+      "[stub " + kKept + R"(: web_search({"q":"train times"}) r7 outside content; view id=r7 shows it again])", why));
   why.clear();
   TEST_ASSERT_FALSE(outsideStubOk(
       f, "OUTSIDE-SECRET",
       R"([stub web_search({"q":"train times"}) r7 3000B OUTSIDE-SECRET page: view id=r7])", why));
   why.clear();
   TEST_ASSERT_FALSE(outsideStubOk(f, "OUTSIDE-SECRET", "[stub web_search r7 3000B]", why));
+}
+
+// Lane E2-BFIX3: an outside result's stub says first that the head read it in full and replied, and gives no byte
+// count. "<n>B outside content, not shown: view id=r<q>" read on Haiku as a call that returned nothing, and the count
+// (the tool's whole output) differed from the size its answer had quoted, so it called its right answer made up.
+void test_outside_stub_says_it_was_read_in_full_and_gives_no_size() {
+  tx::StubFacts f = outsideFacts(R"({"path":"inbox/memo.md"})", "Memo: the code is 4417");
+  f.tool = "read_file";
+  std::string s;
+  TXB_OK(tx::stubText(f, s));
+  TEST_ASSERT_EQUAL_STRING(("[stub " + kKept + R"(: read_file({"path":"inbox/memo.md"}) r7 outside content; view id=r7 )"
+                            "shows it again]").c_str(), s.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(s.find("not shown") == std::string::npos && s.find("3000") == std::string::npos, s.c_str());
+  TEST_ASSERT_TRUE(tx::looksLikeStub(s));
+  f.bound.view = false;   // no way back (E2-FIX5): the facts and the call
+  TXB_OK(tx::stubText(f, s));
+  TEST_ASSERT_EQUAL_STRING(("[stub " + kKept + R"(: read_file({"path":"inbox/memo.md"}) r7 outside content])").c_str(),
+                           s.c_str());
+  f.noCard = true;   // kept inline up to a cap: "shown earlier", not "in full"
+  TXB_OK(tx::stubText(f, s));
+  TEST_ASSERT_EQUAL_STRING(R"([stub shown earlier in this conversation; not attached to this request: read_file({"path":)"
+                           R"("inbox/memo.md"}) r7 outside content; full result not kept: no storage card])",
+                           s.c_str());
+  // The longest tool, arguments, q and way back still make one stub line within 400 B.
+  tx::StubFacts w = outsideFacts(std::string(400, 'a'), "x");
+  w.tool = std::string(tx::kStubToolMaxBytes, 't');
+  w.q = 18446744073709551615ULL;
+  w.bound.view = false;
+  w.again = std::string(400, 'g');
+  TXB_OK(tx::stubText(w, s));
+  TEST_ASSERT_TRUE_MESSAGE(s.size() <= tx::kStubMaxBytes, s.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(tx::looksLikeStub(s), s.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(s.find(" shows it again]") != std::string::npos, s.c_str());
 }
 
 // ---- stub texts ------------------------------------------------------------------
@@ -136,11 +178,16 @@ void test_internal_stub_has_the_prd_shape() {
     std::string s, why;
     TXB_OK(tx::stubText(f, s));
     TEST_ASSERT_TRUE_MESSAGE(internalStubOk(f, s, why), why.c_str());
-    // The preview is the result's first bytes on one line (at most 200 B of it).
+    // Lane E2-FIX9: a result the card kept carries no preview (a head read the first bytes as all the tool had
+    // returned); with no card the preview is all that is left, and it is the result's first bytes on one line.
     std::string first = p.substr(0, 40);
     for (char& c : first)
       if (c == '\n') c = ' ';
-    TEST_ASSERT_TRUE_MESSAGE(s.find(first) != std::string::npos, "the preview's first bytes are not in the stub");
+    TEST_ASSERT_TRUE_MESSAGE(p.size() < 8 || s.find(first) == std::string::npos, "a kept result's stub carries a preview");
+    tx::StubFacts lost = f;
+    lost.noCard = true;
+    TXB_OK(tx::stubText(lost, s));
+    TEST_ASSERT_TRUE_MESSAGE(s.find(first) != std::string::npos, "the preview's first bytes are not in the no-card stub");
   }
 }
 
@@ -187,16 +234,54 @@ void test_file_tool_stub_names_path_and_sha() {
   TEST_ASSERT_TRUE_MESSAGE(s.find("sha8=ab12cd34") != std::string::npos, s.c_str());
   TEST_ASSERT_TRUE_MESSAGE(s.find("view id=r42") != std::string::npos, s.c_str());
   TEST_ASSERT_TRUE(s.size() <= tx::kStubMaxBytes);
+  // E2-VERB: a file read's stub names the read that brings it back, path and range.
+  f.again = tx::wayBack("read_file", R"({"path":"notes/boat.md","offset":32761,"limit":4000})");
+  TEST_ASSERT_EQUAL_STRING("read_file path=notes/boat.md offset=32761 limit=4000", f.again.c_str());
+  TXB_OK(tx::stubText(f, s));
+  // Lane E2-FIX9: with view bound the stub names view (the bytes the head was shown, not the file as it is now).
+  TEST_ASSERT_TRUE_MESSAGE(s.find(viewTail(42)) != std::string::npos, s.c_str());
+  TEST_ASSERT_TRUE(s.size() <= tx::kStubMaxBytes);
+  TEST_ASSERT_TRUE(tx::looksLikeStub(s));
+  f.bound.view = false;   // no view: the file read's call
+  TXB_OK(tx::stubText(f, s));
+  TEST_ASSERT_TRUE_MESSAGE(s.find("] (" + kKept + "; read_file path=notes/boat.md offset=32761 limit=4000 shows it again)") !=
+                               std::string::npos,
+                           s.c_str());
+  TEST_ASSERT_TRUE(s.size() <= tx::kStubMaxBytes);
+  TEST_ASSERT_TRUE(tx::looksLikeStub(s));
+  // Lane E2-FIX9: the longest tool, path and range with no view still make a stub within 400 B that reads as one.
+  tx::StubFacts worst = internalFacts("p");
+  worst.tool = std::string(tx::kStubToolMaxBytes, 't');
+  worst.q = 18446744073709551615ULL;
+  worst.bytes = worst.lines = 4294967295u;
+  worst.path = std::string(tx::kStubPathMaxBytes, 'p');
+  worst.sha8 = "ab12cd34";
+  worst.bound.view = false;
+  worst.again = tx::wayBack("read_file", "{\"path\":\"" + std::string(90, 'p') + "\",\"offset\":18446744073709551615,"
+                                         "\"limit\":18446744073709551615,\"from\":\"" + std::string(60, 'f') + "\"}");
+  TXB_OK(tx::stubText(worst, s));
+  TEST_ASSERT_TRUE_MESSAGE(s.size() <= tx::kStubMaxBytes, s.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(tx::looksLikeStub(s), s.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(s.find(kKept) != std::string::npos, s.c_str());
+  TEST_ASSERT_EQUAL_STRING("", tx::wayBack("calc", R"({"path":"notes/boat.md"})").c_str());
+  TEST_ASSERT_EQUAL_STRING("", tx::wayBack("read_file", "[stub 15204B sha:ab12cd34: view id=r9]").c_str());
 }
 
 void test_long_argument_and_photo_stubs_have_the_prd_shape() {
   TXB_WAITS_FOR("PENDING RB-T3");
   std::string s;
-  TXB_OK(tx::longArgStub(15204, "ab12cd34", 9, s));
-  TEST_ASSERT_EQUAL_STRING("[stub 15204B sha:ab12cd34: view id=r9]", s.c_str());
+  TXB_OK(tx::longArgStub(15204, "ab12cd34", 9, s, std::string(), kAllBound));
+  TEST_ASSERT_EQUAL_STRING("[stub 15204B sha:ab12cd34: an argument sent earlier, not content; view id=r9]", s.c_str());
+  // E2-VERB: a file write's argument names the file it wrote, and every stub is refused as content.
+  TXB_OK(tx::longArgStub(15204, "ab12cd34", 9, s, tx::wayBack("write_file", R"({"path":"notes/a.md","content":"x"})")));
+  TEST_ASSERT_EQUAL_STRING("[stub 15204B sha:ab12cd34: an argument sent earlier, not content; read_file path=notes/a.md shows the file]", s.c_str());
+  TEST_ASSERT_TRUE(tx::looksLikeStub(s));
+  TEST_ASSERT_TRUE(tx::looksLikeStub("  [stub 1720B sha:c4091c8e: view id=r4]\n"));
+  TEST_ASSERT_FALSE(tx::looksLikeStub("[stub] is how the parser marks a placeholder.\nSecond line."));
+  TEST_ASSERT_FALSE(tx::looksLikeStub("Journal, day 1 [stub 1720B sha:c4091c8e: view id=r4]"));
   TXB_OK(tx::photoStub("ab12cd34", "Tue 17 Nov 13:02", s));
-  TEST_ASSERT_EQUAL_STRING("[photo pab12cd34 Tue 17 Nov 13:02 not shown: view id=pab12cd34]", s.c_str());
-  TXB_OK(tx::omissionLine(3, "15-16 Nov", s));
+  TEST_ASSERT_EQUAL_STRING("[photo pab12cd34 Tue 17 Nov 13:02: shown earlier in this conversation; not attached to this request]", s.c_str());
+  TXB_OK(tx::omissionLine(3, "15-16 Nov", s, kAllBound));
   TEST_ASSERT_EQUAL_STRING("[3 earlier turns, 15-16 Nov, not shown: search finds them]", s.c_str());
 }
 
@@ -215,74 +300,18 @@ void test_stub_text_is_a_pure_function() {
 }
 
 // ---- the pointer -------------------------------------------------------------------
-tx::OpenFacts openFacts(uint64_t gapS) {
-  tx::OpenFacts f;
-  f.lastReqAt = txb::kT0;
-  f.now = txb::kT0 + gapS;
-  f.pointer = 10;
-  f.lastClosedTurnQ = 40;
-  return f;
-}
-
-// Rule (1): over 270 s since the last request, no clock, or after a restart, the pointer
-// moves to the last closed turn; rule (2): otherwise it stays.
-void test_cold_open_moves_to_the_last_closed_turn() {
-  TXB_WAITS_FOR("PENDING RB-T3");
-  const uint64_t gaps[] = {0, 1, 60, 269, 270, 271, 600, 86400};
-  for (uint64_t gap : gaps)
-    for (int variant = 0; variant < 3; ++variant) {
-      tx::OpenFacts f = openFacts(gap);
-      if (variant == 1) f.now = 0;              // clock not set
-      if (variant == 2) f.afterRestart = true;
-      tx::PointerMove m;
-      TXB_OK(tx::decideTurnOpen(f, m));
-      const bool cold = gap > tx::kColdGapS || variant > 0;
-      char msg[96];
-      std::snprintf(msg, sizeof msg, "gap %llu s variant %d", (unsigned long long)gap, variant);
-      TEST_ASSERT_EQUAL_MESSAGE(cold, m.move, msg);
-      if (cold) {
-        TEST_ASSERT_EQUAL_UINT64_MESSAGE(40, m.to, msg);
-        TEST_ASSERT_TRUE_MESSAGE(m.why == tx::MoveWhy::ColdOpen, msg);
-      }
-    }
-}
-
-void test_warm_open_moves_only_past_the_bulk_threshold() {
-  TXB_WAITS_FOR("PENDING RB-T3");
-  struct Row {
-    bool floor;
-    uint32_t bulk;
-    bool move;
-  } rows[] = {{false, 0, false},    {false, 24576, false}, {false, 24577, true},
-              {true, 8192, false},  {true, 8193, true},    {true, 24577, true}};
-  for (const Row& r : rows) {
-    tx::OpenFacts f = openFacts(60);
-    f.floorHead = r.floor;
-    f.wholeBulkAbove = r.bulk;
-    tx::PointerMove m;
-    TXB_OK(tx::decideTurnOpen(f, m));
-    char msg[64];
-    std::snprintf(msg, sizeof msg, "floor %d bulk %u", r.floor, r.bulk);
-    TEST_ASSERT_EQUAL_MESSAGE(r.move, m.move, msg);
-    if (r.move) TEST_ASSERT_TRUE_MESSAGE(m.why == tx::MoveWhy::WarmBulk && m.to == 40, msg);
-  }
-}
-
-// One monotonic pointer: whatever the facts, a move never goes backwards.
-void test_pointer_never_moves_backwards() {
-  TXB_WAITS_FOR("PENDING RB-T3");
-  const uint64_t gaps[] = {10, 600};
-  const uint64_t closed[] = {0, 5, 10, 11, 1000};
-  for (uint64_t gap : gaps)
-    for (uint64_t c : closed)
-      for (uint32_t bulk : {0u, 100000u}) {
-        tx::OpenFacts f = openFacts(gap);
-        f.lastClosedTurnQ = c;
-        f.wholeBulkAbove = bulk;
-        tx::PointerMove m;
-        TXB_OK(tx::decideTurnOpen(f, m));
-        if (m.move) TEST_ASSERT_TRUE_MESSAGE(m.to > f.pointer, "the pointer moved backwards or nowhere");
-      }
+// Lane E2-VERB (rulings 81, 82 and 106): the pointer has no default move any more (the cold and warm
+// opens are gone); test_tx_verbatim pins that a request under the due mark replays every earlier
+// call and result whole. What is left here: which x items' lists make stubs.
+void test_only_the_tool_fold_lists_make_stubs() {
+  tx::Item x;
+  x.kind = tx::ItemKind::PointerMove;
+  x.why = tx::moveWhySlug(tx::MoveWhy::Superseded);
+  TEST_ASSERT_FALSE_MESSAGE(tx::stubList(x), "a superseded-read list stubbed the stale read");
+  x.why = tx::moveWhySlug(tx::MoveWhy::ToolFold);
+  TEST_ASSERT_TRUE(tx::stubList(x));
+  x.kind = tx::ItemKind::Result;
+  TEST_ASSERT_FALSE(tx::stubList(x));
 }
 
 // ---- superseded reads ----------------------------------------------------------------
@@ -308,15 +337,16 @@ void test_a_write_supersedes_earlier_reads_of_that_path_only() {
   TEST_ASSERT_EQUAL_UINT64(ra2, sup[1]);
 }
 
-// ---- photos ----------------------------------------------------------------------------
-tx::PhotoFacts photoFacts(tx::PhotoMode mode, size_t n, uint32_t since, uint64_t idleS) {
+// ---- photos (lane E2-FIX4: in view until compaction's pointer or a cap, never by the clock) ----
+// n candidates, newest first: `arrivals` of them this turn's, then one per earlier person turn, each
+// of `size` stored bytes.
+tx::PhotoFacts photoFacts(tx::PhotoMode mode, size_t n, size_t arrivals = 0, uint32_t size = 60000) {
   tx::PhotoFacts f;
   f.mode = mode;
-  f.lastOwnerTurnAt = txb::kT0;
-  f.now = txb::kT0 + idleS;
   for (size_t i = 0; i < n; ++i) {
     f.candidates.push_back("p0000000" + std::to_string(i));
-    f.ownerTurnsSince.push_back(since);
+    f.ownerTurnsSince.push_back(i < arrivals ? 0 : (uint32_t)(i - arrivals + 1));
+    f.bytes.push_back(size);
   }
   return f;
 }
@@ -328,30 +358,113 @@ void expectVisible(const tx::PhotoFacts& f, size_t want, const char* msg) {
   for (size_t i = 0; i < v.size(); ++i) TEST_ASSERT_EQUAL_STRING_MESSAGE(f.candidates[i].c_str(), v[i].c_str(), msg);
 }
 
-// File-reference heads: the photos stay for the next two owner turns, at most 4 (newest
-// first), until 60 minutes idle or a restart.
-void test_file_reference_photos_follow_the_table() {
-  TXB_WAITS_FOR("PENDING RB-T3");
-  expectVisible(photoFacts(tx::PhotoMode::FileRef, 3, 0, 0), 3, "the arrival turn");
-  expectVisible(photoFacts(tx::PhotoMode::FileRef, 3, 1, 60), 3, "next owner turn");
-  expectVisible(photoFacts(tx::PhotoMode::FileRef, 3, 2, 600), 3, "second owner turn");
-  expectVisible(photoFacts(tx::PhotoMode::FileRef, 3, 3, 60), 0, "third owner turn");
-  expectVisible(photoFacts(tx::PhotoMode::FileRef, 6, 1, 60), 4, "at most 4");
-  expectVisible(photoFacts(tx::PhotoMode::FileRef, 3, 1, 3601), 0, "60 minutes idle");
-  tx::PhotoFacts r = photoFacts(tx::PhotoMode::FileRef, 3, 1, 60);
-  r.afterRestart = true;
-  expectVisible(r, 0, "after a restart");
+// D1 over the class: for every head mode with vision, every number of earlier photos, every photo
+// size and every person-turn distance, the visible set is exactly the newest prefix that fits both
+// caps: a photo stays on every later turn until a cap pushes it out, the oldest falls out first, and
+// nothing else (no distance in turns) takes part. None shows nothing.
+void test_photos_stay_in_view_until_a_cap_pushes_the_oldest_out() {
+  size_t cases = 0;
+  for (tx::PhotoMode mode : {tx::PhotoMode::Inline, tx::PhotoMode::FileRef, tx::PhotoMode::None})
+    for (size_t n = 0; n <= tx::kFileRefPhotosInViewMax + 3; ++n)
+      for (uint32_t size : {1000u, 60000u, 120000u, 200000u, 400000u, 700000u})
+        for (uint32_t gap : {1u, 2u, 13u, 400u}) {   // person turns between two photos
+          tx::PhotoFacts f = photoFacts(mode, n, 0, size);
+          for (size_t i = 0; i < n; ++i) f.ownerTurnsSince[i] = 1 + (uint32_t)i * gap;
+          size_t want = 0, bytes = 0;
+          while (want < n && want < tx::photosInViewMax(mode) && bytes + size <= tx::photoBytesInViewMax(mode)) {
+            bytes += size;
+            ++want;
+          }
+          char msg[96];
+          std::snprintf(msg, sizeof msg, "mode %d n %u size %u gap %u", (int)mode, (unsigned)n, (unsigned)size, (unsigned)gap);
+          expectVisible(f, want, msg);
+          ++cases;
+        }
+  TEST_ASSERT_TRUE(cases > 500);
+  // The caps hold: never more than the count, never more than the bytes, on any head.
+  TEST_ASSERT_EQUAL(0, (int)tx::photosInViewMax(tx::PhotoMode::None));
+  expectVisible(photoFacts(tx::PhotoMode::Inline, 9), tx::kInlinePhotosInViewMax, "inline count cap");
+  expectVisible(photoFacts(tx::PhotoMode::FileRef, 12), tx::kFileRefPhotosInViewMax, "file-reference count cap");
+  // An older, smaller photo never takes the place of a newer one that does not fit.
+  tx::PhotoFacts mixed = photoFacts(tx::PhotoMode::Inline, 3);
+  mixed.bytes = {200000, (uint32_t)tx::kInlinePhotoBytesInViewMax, 1000};
+  expectVisible(mixed, 1, "the second does not fit: the third stays out too");
 }
 
-// Inline heads (routed included): the next owner turn only, inside 270 s, newest 2.
-void test_inline_photos_follow_the_table() {
-  TXB_WAITS_FOR("PENDING RB-T3");
-  expectVisible(photoFacts(tx::PhotoMode::Inline, 2, 0, 0), 2, "the arrival turn");
-  expectVisible(photoFacts(tx::PhotoMode::Inline, 1, 1, 270), 1, "next turn inside 270 s");
-  expectVisible(photoFacts(tx::PhotoMode::Inline, 1, 1, 271), 0, "next turn after 270 s");
-  expectVisible(photoFacts(tx::PhotoMode::Inline, 1, 2, 30), 0, "second owner turn");
-  expectVisible(photoFacts(tx::PhotoMode::Inline, 3, 1, 30), 2, "newest 2");
-  expectVisible(photoFacts(tx::PhotoMode::None, 2, 1, 30), 0, "a head without vision");
+// Photo after photo, turn after turn: a photo once shown stays shown until a cap pushes it out, and
+// once out it never comes back (no oscillation: the line, then pixels, then the line again).
+void test_a_photo_leaves_view_once_and_in_arrival_order() {
+  for (tx::PhotoMode mode : {tx::PhotoMode::Inline, tx::PhotoMode::FileRef}) {
+    std::vector<std::string> refs;   // newest first
+    std::vector<uint32_t> since;
+    std::map<std::string, int> changes;
+    std::map<std::string, bool> was;
+    for (int turn = 0; turn < 30; ++turn) {
+      for (uint32_t& k : since) ++k;
+      if (turn % 3 == 0) {   // a photo every third turn
+        refs.insert(refs.begin(), "p" + std::to_string(10000000 + turn));
+        since.insert(since.begin(), 0);
+      }
+      tx::PhotoFacts f;
+      f.mode = mode;
+      f.candidates = refs;
+      f.ownerTurnsSince = since;
+      f.bytes.assign(refs.size(), 120000);
+      std::vector<std::string> v;
+      TXB_OK(tx::visiblePhotos(f, v));
+      for (const std::string& r : refs) {
+        const bool shown = std::find(v.begin(), v.end(), r) != v.end();
+        if (was.count(r) && was[r] != shown) ++changes[r];
+        was[r] = shown;
+      }
+      for (size_t i = 1; i < v.size(); ++i) TEST_ASSERT_TRUE(v[i - 1] > v[i]);   // newest first, a prefix
+    }
+    for (const auto& c : changes) TEST_ASSERT_TRUE_MESSAGE(c.second <= 1, c.first.c_str());
+  }
+}
+
+// The arrival turn and the device facts the rule still reads: the arrival shows its album whole (at
+// most kArrivalPhotosMax, lane E2-P-PHOTO) and counts first against the caps; no card carries nothing
+// earlier; a head without vision sees nothing.
+void test_rules_photo_table_edges() {
+  expectVisible(photoFacts(tx::PhotoMode::FileRef, 6, 6), 6, "arrival whole");
+  expectVisible(photoFacts(tx::PhotoMode::Inline, 6, 6), 6, "inline arrival whole");
+  // An album of ten 200 KB photos: all ten as pixels when it arrives (engine 1 shows ten), the
+  // earlier photo behind it waits; one turn later the four-photo and 600,000 B caps hold again.
+  expectVisible(photoFacts(tx::PhotoMode::Inline, 11, 10, 200000), 10, "album of ten whole on arrival");
+  TEST_ASSERT_EQUAL(10, (int)tx::kArrivalPhotosMax);
+  expectVisible(photoFacts(tx::PhotoMode::Inline, 10, 0, 200000), 3, "the album one turn later: 600,000 B");
+  expectVisible(photoFacts(tx::PhotoMode::Inline, 10, 0, 60000), tx::kInlinePhotosInViewMax, "one turn later: four");
+  expectVisible(photoFacts(tx::PhotoMode::Inline, 12, 12), tx::kArrivalPhotosMax, "arrival at most ten");
+  expectVisible(photoFacts(tx::PhotoMode::Inline, 6, 2), tx::kInlinePhotosInViewMax, "two arrivals, then the newest earlier");
+  expectVisible(photoFacts(tx::PhotoMode::Inline, 3, 1, (uint32_t)(tx::kInlinePhotoBytesInViewMax / 2 + 1)), 1,
+                "the arrival's bytes count first");
+  expectVisible(photoFacts(tx::PhotoMode::None, 2, 2), 0, "no vision: not even on arrival");
+  expectVisible(photoFacts(tx::PhotoMode::None, 2), 0, "no vision: nothing earlier");
+  tx::PhotoFacts noCard = photoFacts(tx::PhotoMode::FileRef, 3, 1);
+  noCard.noCard = true;
+  expectVisible(noCard, 1, "no card: the arrival turn only");
+  tx::PhotoFacts unknown = photoFacts(tx::PhotoMode::Inline, 3);
+  unknown.bytes.clear();
+  expectVisible(unknown, 3, "sizes unknown: the count cap alone");
+  tx::PhotoFacts bad = photoFacts(tx::PhotoMode::FileRef, 2);
+  bad.ownerTurnsSince.pop_back();
+  std::vector<std::string> v;
+  TEST_ASSERT_TRUE(tx::visiblePhotos(bad, v).err == tx::Err::InvalidArgument);
+  bad = photoFacts(tx::PhotoMode::FileRef, 2);
+  bad.bytes.pop_back();
+  TEST_ASSERT_TRUE(tx::visiblePhotos(bad, v).err == tx::Err::InvalidArgument);
+}
+
+// Counter-test, rule side: the rule's facts are the mode, the card and the per-photo lists, nothing
+// else (no clock, idle time or restart flag; written as an aggregate so a field added in front of
+// these fails to compile here). The engine side (test_plain_conformance, photo_tests) renders one
+// conversation at every gap around the old 270 s and 3,600 s marks and across restarts.
+void test_the_photo_rule_reads_no_clock() {
+  const tx::PhotoFacts f{tx::PhotoMode::Inline, false, {"p00000001"}, {5}, {60000}};
+  std::vector<std::string> v;
+  TXB_OK(tx::visiblePhotos(f, v));
+  TEST_ASSERT_EQUAL(1, (int)v.size());
 }
 
 // ---- the ladder --------------------------------------------------------------------------
@@ -445,12 +558,13 @@ void test_rules_no_card_stub_says_not_kept() {
   f.noCard = true;
   std::string s;
   TXB_OK(tx::stubText(f, s));
-  TEST_ASSERT_EQUAL_STRING("[stub read_file r42 15204B 310L 13:02] abc ... (full result not kept: no storage card)",
+  TEST_ASSERT_EQUAL_STRING("[stub read_file r42 15204B 310L 13:02] abc ... (shown earlier in this conversation; not "
+                           "attached to this request; full result not kept: no storage card)",
                            s.c_str());
   f.hhmm = "";
   f.noCard = false;
   TXB_OK(tx::stubText(f, s));
-  TEST_ASSERT_TRUE_MESSAGE(s.rfind("[stub read_file r42 15204B 310L --:--] abc", 0) == 0, s.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(s.rfind("[stub read_file r42 15204B 310L --:--] (" + kKept, 0) == 0, s.c_str());
 }
 
 // Every path write supersedes reads of its path; nothing else does.
@@ -601,37 +715,6 @@ void test_rules_show_result_table() {
   TEST_ASSERT_TRUE(tx::showResult(tx::Item{}, tx::ShowFacts{}, got).err == tx::Err::InvalidArgument);
 }
 
-// The rest of the photo table: floor heads are inline heads with the base64 bound; no card
-// and no clock carry nothing; a file-reference head keeps the last two photo turns; the
-// arrival turn shows at most 4.
-void test_rules_photo_table_edges() {
-  tx::PhotoFacts floor = photoFacts(tx::PhotoMode::Inline, 2, 1, 30);
-  floor.b64Bytes = {150000, 150000};
-  expectVisible(floor, 1, "floor head: base64 bound");
-  floor.b64Bytes = {90000, 90000};
-  expectVisible(floor, 2, "floor head: both fit");
-  floor.b64Bytes = {250000, 1000};
-  expectVisible(floor, 0, "floor head: the newest does not fit");
-  tx::PhotoFacts noCard = photoFacts(tx::PhotoMode::FileRef, 2, 1, 60);
-  noCard.noCard = true;
-  expectVisible(noCard, 0, "no card: carried photos");
-  noCard.ownerTurnsSince = {0, 0};
-  expectVisible(noCard, 2, "no card: the arrival turn");
-  tx::PhotoFacts noClock = photoFacts(tx::PhotoMode::FileRef, 2, 1, 60);
-  noClock.now = 0;
-  expectVisible(noClock, 0, "clock not set");
-  tx::PhotoFacts ages = photoFacts(tx::PhotoMode::FileRef, 3, 1, 60);
-  ages.ownerTurnsSince = {0, 1, 2};
-  expectVisible(ages, 2, "the last two photo turns");
-  expectVisible(photoFacts(tx::PhotoMode::FileRef, 6, 0, 0), 4, "arrival at most 4");
-  expectVisible(photoFacts(tx::PhotoMode::Inline, 6, 0, 0), 4, "inline arrival at most 4");
-  expectVisible(photoFacts(tx::PhotoMode::None, 2, 0, 0), 0, "no vision: not even on arrival");
-  tx::PhotoFacts bad = photoFacts(tx::PhotoMode::FileRef, 2, 1, 60);
-  bad.ownerTurnsSince.pop_back();
-  std::vector<std::string> v;
-  TEST_ASSERT_TRUE(tx::visiblePhotos(bad, v).err == tx::Err::InvalidArgument);
-}
-
 // Rung 3 over its class: the omitted prefix never reaches the newest 6 owner turns, frees
 // enough when it can, and omits no more turns than it needs.
 void test_rules_omission_span_keeps_the_newest_six_owner_turns() {
@@ -706,16 +789,18 @@ void test_rules_stamps_carry_the_year() {
   TEST_ASSERT_EQUAL_STRING("17 Nov 2026", s.c_str());
   TXB_OK(tx::omissionDates(0, 0, 0, s));
   TEST_ASSERT_EQUAL_STRING("", s.c_str());
-  TXB_OK(tx::omissionLine(2, std::string(), s));
+  TXB_OK(tx::omissionLine(2, std::string(), s, kAllBound));
   TEST_ASSERT_EQUAL_STRING("[2 earlier turns, not shown: search finds them]", s.c_str());
   s = "16-17 Nov 2026";   // the output may be the input
-  TXB_OK(tx::omissionLine(2, s, s));
+  TXB_OK(tx::omissionLine(2, s, s, kAllBound));
   TEST_ASSERT_EQUAL_STRING("[2 earlier turns, 16-17 Nov 2026, not shown: search finds them]", s.c_str());
   s = "Tue 17 Nov 2026 13:02";
   TXB_OK(tx::photoStub("ab12cd34", s, s));
-  TEST_ASSERT_EQUAL_STRING("[photo pab12cd34 Tue 17 Nov 2026 13:02 not shown: view id=pab12cd34]", s.c_str());
+  TEST_ASSERT_EQUAL_STRING("[photo pab12cd34 Tue 17 Nov 2026 13:02: shown earlier in this conversation; not attached to this request]", s.c_str());
   TXB_OK(tx::photoStub("ab12cd34", "", s));
-  TEST_ASSERT_EQUAL_STRING("[photo pab12cd34 not shown: view id=pab12cd34]", s.c_str());
+  TEST_ASSERT_EQUAL_STRING("[photo pab12cd34: shown earlier in this conversation; not attached to this request]", s.c_str());
+  TXB_OK(tx::photoStub("ab12cd34", "", s, true));   // only when the engine has bound view (E2-SRCH)
+  TEST_ASSERT_EQUAL_STRING("[photo pab12cd34: shown earlier in this conversation; not attached to this request; view id=pab12cd34 shows it again]", s.c_str());
 }
 
 // The bodies answer typed errors for inputs the contract rules out, never crash (the
@@ -728,13 +813,10 @@ void test_rules_bad_inputs_are_typed() {
   TEST_ASSERT_TRUE(tx::photoStub("", "x", s).err == tx::Err::InvalidArgument);
   TEST_ASSERT_TRUE(tx::photoStub("ab 12", "x", s).err == tx::Err::InvalidArgument);
   TEST_ASSERT_TRUE(tx::omissionLine(0, "17 Nov 2026", s).err == tx::Err::InvalidArgument);
-  TXB_OK(tx::omissionLine(1, "17 Nov 2026\n[device] x", s));
+  TXB_OK(tx::omissionLine(1, "17 Nov 2026\n[device] x", s, kAllBound));
   TEST_ASSERT_EQUAL_STRING("[1 earlier turns, 17 Nov 2026 (device) x, not shown: search finds them]", s.c_str());
   tx::LadderRung r;
   TEST_ASSERT_TRUE(tx::nextRung(tx::LadderFacts{}, r).err == tx::Err::InvalidArgument);
-  tx::PointerMove m;
-  TXB_OK(tx::decideTurnOpen(tx::OpenFacts{}, m));
-  TEST_ASSERT_FALSE(m.move);
   std::vector<std::string> v;
   TXB_OK(tx::visiblePhotos(tx::PhotoFacts{}, v));
   TEST_ASSERT_EQUAL(0, (int)v.size());
@@ -778,8 +860,9 @@ void test_rules_fields_cannot_forge_the_frame() {
   TEST_ASSERT_EQUAL_MESSAGE(1, (int)std::count(s.begin(), s.end(), ']'), s.c_str());
   // Line and paragraph separators and bidi controls in a preview; a cut sequence at its end.
   tx::StubFacts u = internalFacts("a\xE2\x80\xA8" "b\xE2\x80\xA9" "c\xC2\x85" "d\xE2\x80\xAE" "e\xE2\x81\xA6" "f\xF0\x9F\x8D");
+  u.noCard = true;   // the one stub that still carries a preview (lane E2-FIX9)
   TXB_OK(tx::stubText(u, s));
-  TEST_ASSERT_TRUE_MESSAGE(s.find("] a b c d?e?f ... (full") != std::string::npos, s.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(s.find("] a b c d?e?f ... (shown earlier") != std::string::npos, s.c_str());
   tx::StubFacts longTool = internalFacts("p");
   longTool.tool = std::string(80, 'k');
   TXB_OK(tx::stubText(longTool, s));
@@ -809,12 +892,12 @@ void test_rules_show_result_needs_a_sorted_list() {
 // then names the rest and where it is; at or under the cap it is returned untouched.
 void test_rules_long_text_keeps_the_cap_then_points_at_the_rest() {
   std::string out;
-  TEST_ASSERT_TRUE(tx::longTextHead("short", 12288, tx::viewPointer(7), out).ok());
+  TEST_ASSERT_TRUE(tx::longTextHead("short", 12288, tx::viewPointer(7, kAllBound), out).ok());
   TEST_ASSERT_EQUAL_STRING("short", out.c_str());
   std::string text(12287, 'a');
   text += "\xc3\xa9";   // a two-byte character across the cap
   text += std::string(100, 'b');
-  TEST_ASSERT_TRUE(tx::longTextHead(text, 12288, tx::viewPointer(42), out).ok());
+  TEST_ASSERT_TRUE(tx::longTextHead(text, 12288, tx::viewPointer(42, kAllBound), out).ok());
   TEST_ASSERT_EQUAL_STRING((std::string(12287, 'a') + "\n[text continues: 102B more: view id=r42]").c_str(), out.c_str());
   TEST_ASSERT_TRUE(tx::longTextHead(std::string(7000, 'p'), 6144, tx::pathPointer("inbox/991.txt"), out).ok());
   TEST_ASSERT_EQUAL_STRING((std::string(6144, 'p') + "\n[text continues: 856B more: read_file path=inbox/991.txt]").c_str(), out.c_str());
@@ -824,62 +907,88 @@ void test_rules_long_text_keeps_the_cap_then_points_at_the_rest() {
 }
 
 
-// RB-H81: a long argument shows whole while its own turn is open, as its stub from the close of the
-// turn or at ladder rung 2; a call with no stub form always shows its arguments.
-void test_rules_long_arguments_are_whole_only_in_their_open_turn() {
+// E2-VERB (rulings 81, 82 and 106): a long argument shows whole in every turn; its stub only on the
+// overflow path: at or below the pointer (ladder rung 1), rung 2's line in its own open turn, or a
+// tool fold's list. A call with no stub form always shows its arguments.
+void test_rules_long_arguments_are_whole_until_the_overflow_path() {
   tx::Item c;
   c.kind = tx::ItemKind::Call;
   c.q = 10;
   c.turn = 3;
   c.args = "{\"text\":\"whole\"}";
   c.st = "{\"text\":\"[stub 5000B sha:0123abcd: view id=r10]\"}";
-  TEST_ASSERT_EQUAL_STRING(c.args.c_str(), tx::shownArgs(c, 3, 0).c_str());
-  TEST_ASSERT_EQUAL_STRING(c.args.c_str(), tx::shownArgs(c, 3, 9).c_str());
-  TEST_ASSERT_EQUAL_STRING(c.st.c_str(), tx::shownArgs(c, 3, 10).c_str());   // rung 2
-  TEST_ASSERT_EQUAL_STRING(c.st.c_str(), tx::shownArgs(c, 4, 0).c_str());    // the turn closed
+  tx::ShowFacts f;
+  f.openTurn = 3;
+  TEST_ASSERT_EQUAL_STRING(c.args.c_str(), tx::shownArgs(c, f).c_str());
+  f.ladderStubThrough = 9;
+  TEST_ASSERT_EQUAL_STRING(c.args.c_str(), tx::shownArgs(c, f).c_str());
+  f.ladderStubThrough = 10;
+  TEST_ASSERT_EQUAL_STRING(c.st.c_str(), tx::shownArgs(c, f).c_str());   // rung 2
+  f = tx::ShowFacts{};
+  f.openTurn = 4;
+  TEST_ASSERT_EQUAL_STRING_MESSAGE(c.args.c_str(), tx::shownArgs(c, f).c_str(), "the close of its turn stubbed it");
+  f.ladderStubThrough = 99;
+  TEST_ASSERT_EQUAL_STRING_MESSAGE(c.args.c_str(), tx::shownArgs(c, f).c_str(), "rung 2 reached a closed turn");
+  f.pointer = 10;
+  TEST_ASSERT_EQUAL_STRING(c.st.c_str(), tx::shownArgs(c, f).c_str());   // rung 1 (or a stored pointer)
+  f.pointer = 9;
+  const std::vector<uint64_t> folded = {4, 10};
+  f.superseded = &folded;
+  TEST_ASSERT_EQUAL_STRING(c.st.c_str(), tx::shownArgs(c, f).c_str());   // a tool fold
   c.st.clear();
-  TEST_ASSERT_EQUAL_STRING(c.args.c_str(), tx::shownArgs(c, 4, 99).c_str());
+  TEST_ASSERT_EQUAL_STRING(c.args.c_str(), tx::shownArgs(c, f).c_str());
 }
 
 
-// RB-H81 (DoD 5, ruling 84 item 5): a photo stub keeps its view pointer, and carries the photo's note
+// RB-H81 (DoD 5, ruling 84 item 5) as lane E2-FIX4 left it: a photo's line carries the photo's note
 // (a migrated v5.1.2 note or a blind host's transcription, at most kPhotoNoteMax) on one line that
-// cannot close the stub; with no note it is the plain stub.
-void test_rules_a_photo_stub_carries_its_note_and_its_view_pointer() {
+// cannot close it, says the photo was shown earlier and is not attached to this request, and names
+// the view tool only when the engine has bound it; with no note it is the plain line.
+void test_rules_a_photo_stub_carries_its_note_and_names_view_only_when_bound() {
   std::string out;
   TEST_ASSERT_TRUE(tx::photoStub("a1b2c3d4", "Tue 17 Nov 2026 13:02", "", out).ok());
   std::string plain;
   TEST_ASSERT_TRUE(tx::photoStub("a1b2c3d4", "Tue 17 Nov 2026 13:02", plain).ok());
   TEST_ASSERT_EQUAL_STRING(plain.c_str(), out.c_str());
   TEST_ASSERT_TRUE(tx::photoStub("a1b2c3d4", "Tue 17 Nov 2026 13:02", "A receipt: [total] 12.40\nfor bread", out).ok());
-  TEST_ASSERT_EQUAL_STRING("[photo pa1b2c3d4 Tue 17 Nov 2026 13:02: A receipt: (total) 12.40 for bread; not shown: view id=pa1b2c3d4]",
+  TEST_ASSERT_EQUAL_STRING("[photo pa1b2c3d4 Tue 17 Nov 2026 13:02: A receipt: (total) 12.40 for bread; shown earlier in this "
+                           "conversation; not attached to this request]",
                            out.c_str());
   const std::string longNote(600, 'n');
-  TEST_ASSERT_TRUE(tx::photoStub("a1b2c3d4", "", longNote, out).ok());
-  TEST_ASSERT_TRUE(out.find(std::string(tx::kPhotoNoteMax, 'n')) != std::string::npos);
-  TEST_ASSERT_TRUE(out.find(std::string(tx::kPhotoNoteMax + 1, 'n')) == std::string::npos);
-  TEST_ASSERT_TRUE(out.find("view id=pa1b2c3d4]") != std::string::npos);
+  for (bool bound : {false, true})
+    for (const std::string& note : {std::string(), longNote}) {
+      TEST_ASSERT_TRUE(tx::photoStub("a1b2c3d4", "", note, out, bound).ok());
+      TEST_ASSERT_EQUAL_MESSAGE(!note.empty(), out.find(std::string(tx::kPhotoNoteMax, 'n')) != std::string::npos, out.c_str());
+      TEST_ASSERT_TRUE(out.find(std::string(tx::kPhotoNoteMax + 1, 'n')) == std::string::npos);
+      TEST_ASSERT_TRUE_MESSAGE(out.find("shown earlier in this conversation; not attached to this request") != std::string::npos,
+                               out.c_str());
+      TEST_ASSERT_EQUAL_MESSAGE(bound, out.find("view") != std::string::npos, "view named while unbound, or not when bound");
+      if (bound) TEST_ASSERT_TRUE(out.find("; view id=pa1b2c3d4 shows it again]") != std::string::npos);
+      TEST_ASSERT_TRUE(out.find('\n') == std::string::npos && out.back() == ']');
+      TEST_ASSERT_TRUE_MESSAGE(out.find("not shown") == std::string::npos && out.find("cannot") == std::string::npos,
+                               "the line reads as if the head never saw the photo");
+    }
 }
 
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_rules_long_text_keeps_the_cap_then_points_at_the_rest);
-  RUN_TEST(test_rules_long_arguments_are_whole_only_in_their_open_turn);
-  RUN_TEST(test_rules_a_photo_stub_carries_its_note_and_its_view_pointer);
+  RUN_TEST(test_rules_long_arguments_are_whole_until_the_overflow_path);
+  RUN_TEST(test_rules_a_photo_stub_carries_its_note_and_names_view_only_when_bound);
   RUN_TEST(test_checker_rejects_wrong_internal_stubs);
   RUN_TEST(test_checker_rejects_leaking_outside_stubs);
+  RUN_TEST(test_outside_stub_says_it_was_read_in_full_and_gives_no_size);
   RUN_TEST(test_internal_stub_has_the_prd_shape);
   RUN_TEST(test_stub_text_is_bounded_for_every_tool_and_size);
   RUN_TEST(test_outside_stub_holds_no_outside_bytes);
   RUN_TEST(test_file_tool_stub_names_path_and_sha);
   RUN_TEST(test_long_argument_and_photo_stubs_have_the_prd_shape);
   RUN_TEST(test_stub_text_is_a_pure_function);
-  RUN_TEST(test_cold_open_moves_to_the_last_closed_turn);
-  RUN_TEST(test_warm_open_moves_only_past_the_bulk_threshold);
-  RUN_TEST(test_pointer_never_moves_backwards);
+  RUN_TEST(test_only_the_tool_fold_lists_make_stubs);
   RUN_TEST(test_a_write_supersedes_earlier_reads_of_that_path_only);
-  RUN_TEST(test_file_reference_photos_follow_the_table);
-  RUN_TEST(test_inline_photos_follow_the_table);
+  RUN_TEST(test_photos_stay_in_view_until_a_cap_pushes_the_oldest_out);
+  RUN_TEST(test_a_photo_leaves_view_once_and_in_arrival_order);
+  RUN_TEST(test_the_photo_rule_reads_no_clock);
   RUN_TEST(test_ladder_climbs_one_rung_at_a_time);
   RUN_TEST(test_rules_stub_survives_a_restart);
   RUN_TEST(test_rules_outside_stub_never_carries_result_bytes);

@@ -204,6 +204,21 @@ static void test_changed_key_is_a_new_start() {
   TEST_ASSERT_TRUE(orch::billingNoticeDue("openai"));   // a new key: a new episode
 }
 
+// E2-CFIX3 (review of E2-CFIX1): a latch left on a record by a dollar-limit pause with nothing parked (E2-CFIX1's
+// short answer took them) is cleared when the pause lifts: a later billing park is told.
+static void test_a_new_park_episode_starts_with_clear_latches() {
+  providerPark().pause("anthropic", orch::kPauseProviderLimit);
+  TEST_ASSERT_TRUE(providerPark().shortAnswerDue("anthropic"));   // noticed and answered set, nothing parked
+  providerPark().resume("anthropic", orch::kPauseProviderLimit);
+  providerPark().park("anthropic", PaidSeam::Chat, kFp, ParkKind::Billing, 400, 1000);
+  TEST_ASSERT_TRUE(orch::billingNoticeDue("anthropic"));          // the new episode's notice
+  TEST_ASSERT_TRUE(providerPark().shortAnswerDue("anthropic"));
+  // A refusal again inside the same episode keeps them: no second notice.
+  providerPark().park("anthropic", PaidSeam::Chat, kFp, ParkKind::Billing, 400, 2000);
+  TEST_ASSERT_FALSE(orch::billingNoticeDue("anthropic"));
+  TEST_ASSERT_FALSE(providerPark().shortAnswerDue("anthropic"));
+}
+
 // ---- 3. durable: the park, its re-check time and the latch survive a restart ----------
 
 static void test_park_and_latch_survive_a_restart() {
@@ -844,5 +859,6 @@ int main(int, char**) {
   RUN_TEST(test_recheck_in_reads_without_taking_the_probe);
   RUN_TEST(test_short_answer_words_carry_no_second_notice);
   RUN_TEST(test_sub_dispatch_refusal_parks_for_every_seam);
+  RUN_TEST(test_a_new_park_episode_starts_with_clear_latches);
   return UNITY_END();
 }

@@ -8,15 +8,23 @@
 # A lane that adds an engine-2 source adds its line here in the same commit.
 
 lib/core/src/orch_file_tools.cpp
+lib/core/src/orch_file_card_io.cpp
 lib/core/src/orch_intents.cpp
+lib/core/src/orch_model_caps.cpp
+lib/core/src/orch_notes.cpp
 lib/core/src/orch_path_rules.cpp
+lib/core/src/orch_schedule_tool.cpp
+lib/core/src/orch_seen_index.cpp
 lib/core/src/orch_tx_arena.cpp
 lib/core/src/orch_tx_budget.cpp
 lib/core/src/orch_tx_digest.cpp
 lib/core/src/orch_tx_item.cpp
 lib/core/src/orch_tx_log.cpp
 lib/core/src/orch_tx_migrate.cpp
+lib/core/src/orch_tx_old_engine.cpp
 lib/core/src/orch_tx_rules.cpp
+lib/core/src/orch_tx_search.cpp
+lib/core/src/tg_inbox.cpp
 
 
 lib/harness/src/plain_agents.cpp
@@ -26,14 +34,62 @@ lib/harness/src/plain_docs.cpp
 lib/harness/src/plain_engine.cpp
 lib/harness/src/plain_exchange.cpp
 lib/harness/src/plain_guards.cpp
+lib/harness/src/plain_history.cpp
 lib/harness/src/plain_media.cpp
+lib/harness/src/plain_prefix.cpp
 lib/harness/src/plain_rails.cpp
 lib/harness/src/plain_request.cpp
 lib/harness/src/plain_resume.cpp
+lib/harness/src/plain_route.cpp
+lib/harness/src/plain_surface.cpp
 lib/harness/src/plain_truth.cpp
 lib/harness/src/plain_unattended.cpp
+lib/harness/src/plain_waiting.cpp
 lib/harness/src/plain_wire.cpp
+lib/harness/src/schedule_fire.cpp
 lib/harness/src/providers/plain_wire_anthropic.cpp
+# E2-R6 and E2-R7: the Chat and Responses codecs.
+lib/harness/src/providers/plain_wire_chat.cpp
+lib/harness/src/providers/plain_wire_openai.cpp
+# E2-R2b: the shared planner and the strict JSON reader of the wires.
+lib/harness/src/providers/plain_json_reader.cpp
+lib/harness/src/providers/plain_plan.cpp
 
 # RB-C2: the device binding of the engine-2 compaction driver.
 src/agent/plain_fold_device.cpp
+src/net/web_engine2.cpp
+
+# RB-N1: the device binding of engine 2's notes (the owner on flash, members on the card).
+src/agent/notes_device.cpp
+src/agent/schedule_device.cpp
+
+# RB-I0: the engine-2 device seam (a stub until RB-I1/RB-I2) and its tool-family hooks.
+src/agent/orchestrator_plain.cpp
+src/agent/tools_plain.cpp
+src/agent/file_tools_device.cpp
+
+# E2-DEV: the transcript store on the card (the RB-I3 minimum).
+src/agent/tx_store_device.cpp
+
+# E2-CHAT: the owner's slash commands and skill files on engine 2.
+src/agent/commands_plain.cpp
+src/agent/skills_device.cpp
+
+# E2-P-SKILL: skill tools, /skill, /prefs and the held notes on engine 2.
+src/agent/tools_plain_skills.cpp
+
+# E2-MIG: the earlier engine's conversation and standing rules, read at engine-2 start.
+src/agent/migrate_device.cpp
+
+# E2-SRCH: the device binding of search and view.
+src/agent/history_tools_device.cpp
+src/agent/tools_plain_send.cpp
+
+# E2-P-OUT2: the files_admin and media tools over engine 1's handlers.
+src/agent/tools_plain_files.cpp
+
+# E2-P-TOOLS: the device, people, models and docs groups over engine 1's handlers.
+src/agent/tools_plain_device.cpp
+
+# E2-P-CONN1: engine 2's binding of the remote tool servers.
+src/agent/tools_plain_connectors.cpp

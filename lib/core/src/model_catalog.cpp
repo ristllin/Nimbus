@@ -299,6 +299,14 @@ void overlayMistral(JsonObjectConst m, ModelInfo& mi, bool& keep) {
 // shared name-tier predicate) overrides the id heuristic - API-supplied beats
 // guessed, same as the Anthropic/Mistral overlays.
 void overlayCumulo(JsonObjectConst m, ModelInfo& mi) {
+  // Lane E2-R8a (router design section 3.4 item 2): the row's own "vision" says whether the routed
+  // model takes images, a narrowing or a widening of the id heuristic; a row without it keeps the guess.
+  if (m["vision"].is<bool>()) {
+    const bool vision = m["vision"].as<bool>();
+    mi.caps = vision ? (uint16_t)(mi.caps | CapVision) : (uint16_t)(mi.caps & ~CapVision);
+    mi.roles = vision ? (uint16_t)(mi.roles | RoleVision) : (uint16_t)(mi.roles & ~RoleVision);
+    mi.apiCaps = true;
+  }
   const char sc = ((const char*)(m["size_class"] | ""))[0];
   if (sc != 's' && sc != 'm' && sc != 'l') return;
   mi.size = sc == 's' ? 'S' : (sc == 'm' ? 'M' : 'L');

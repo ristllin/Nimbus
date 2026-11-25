@@ -1,0 +1,4 @@
+synthetic: cumulo-nimbus docs/llm-router.md and packages/shared/src/router-refusals.ts (the cloud repo; no public page), read 2026-11-24
+status: 400
+expect: class=provider retry=no
+{"type":"error","error":{"type":"invalid_request_error","message":"messages: at least one message is required"}}

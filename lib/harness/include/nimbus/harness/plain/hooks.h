@@ -141,6 +141,13 @@ struct DeliveredCtx {
 };
 
 // ---- idleStep --------------------------------------------------------------------
+// Why the engine itself asks one slot to work inside a turn (lane RB-C3, rulings 98, 105 and 106):
+// compaction first, before the prioritized trim. Idle steps ask with None.
+enum class Urgency : uint8_t {
+  None = 0,    // an idle step: quiet, windows and every gate apply
+  IfDue = 1,   // turn open: compact now if compaction is due (a summary prepared ahead is swapped in)
+  Now = 2,     // the request does not fit (the body cap, the provider's "too long"): compact what may go
+};
 struct IdleCtx {
   uint64_t now = 0;              // epoch seconds; 0 = clock not set
   uint32_t nowMs = 0;
@@ -148,6 +155,9 @@ struct IdleCtx {
   uint32_t quietForS = 0;        // seconds since the last turn ended
   int16_t tzMinutes = 0;         // local offset from UTC (the 03:00 to 05:00 window, local days)
   bool clockSet = false;         // false: no local-time rule may fire
+  Urgency urgency = Urgency::None;
+  // Urgent only: called once before the turn waits for a request (the status line says so).
+  std::function<void()> waiting;
 };
 struct IdleOutcome {
   bool worked = false;           // this handler did one unit of work
@@ -190,6 +200,8 @@ class PlainHooks {
   DeliverDecision runBeforeDeliver(const DeliverCtx& ctx) const;
   void runAfterDeliver(const DeliveredCtx& ctx) const;
   IdleOutcome runIdleStep(const IdleCtx& ctx) const;
+  // One slot's idle handler alone (the engine's urgent compaction); worked false when none is there.
+  IdleOutcome runIdleSlot(HookSlot slot, const IdleCtx& ctx) const;
   Status runBootResume(const BootCtx& ctx) const;
 
   // How many handlers a seam holds, and whether a slot is taken (tests, boot log).
@@ -314,6 +326,14 @@ inline IdleOutcome PlainHooks::runIdleStep(const IdleCtx& ctx) const {
     return o;
   }
   return IdleOutcome{};
+}
+
+inline IdleOutcome PlainHooks::runIdleSlot(HookSlot slot, const IdleCtx& ctx) const {
+  const size_t i = static_cast<size_t>(slot);
+  if (i >= kHookSlotCount || !idleStep_[i]) return IdleOutcome{};
+  IdleOutcome o = idleStep_[i](ctx);
+  if (o.worked) o.by = slot;
+  return o;
 }
 
 inline Status PlainHooks::runBootResume(const BootCtx& ctx) const {

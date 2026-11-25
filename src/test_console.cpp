@@ -60,10 +60,14 @@
 #include "nimbus/clock_skew.h"         // CLOCK - parse, cap, next local HH:MM (host-tested)
 #include <nvs.h>                       // NVSFILL - raw scratch-namespace writes (bypass the reserve)
 #include "nimbus/tg_updates.h"         // TGINJECT - parse a raw getUpdates page (host-tested)
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: HISTV2, TOOLS?, AIDREAD (tools/engine/guard_files.txt)
 #include "nimbus/harness/turn_inbox.h"  // HISTV2 - the turn-structured history switch
+#endif
 #include "nimbus/harness/output_caps.h"  // CAPTEST - the first-attempt cap (test builds)
 #include "nimbus/harness/providers.h"    // PROVFAULT, BUDGET - the canned answer, the budget pin (test builds)
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
 #include "nimbus/harness/compose.h"      // TOOLS? - loopToolHidden / loopToolName, as the head advertises
+#endif
 #include "agent/spend_ceiling_store.h"   // SPENDSET - seed the monthly spend ceiling's count
 #include <solide/selftest.h>
 #include "hw/selftest.h"               // SELFTEST - firmware health-check engine
@@ -79,7 +83,12 @@
 #include "nimbus/orch/provider_slots.h"
 #include "nimbus/orch/provider_park.h"   // PARK? / PARK clear - the one per-provider park (L19-8)
 #include "agent/transport_tls.h"          // LINKX - the device's one provider transport (lane RB-M2)
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
 #include "nimbus/orch/file_aids_e1.h"     // AIDREAD: the query, as files.read reads it
+#endif
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+#include "agent/migrate_device.h"        // TXASIDE - a chat's engine-2 transcript set aside (E2-MIG bench)
+#endif
 #include "agent/files_subsystem.h"       // CARDTIME replace - the file store's whole-file replace; CUTARM
 #include "nimbus/orch/psram_alloc.h"     // ALLOCREFUSE - the working allocator hooks
 #include "sys/link_time.h"               // LINKX phase marks, LOGMS serial stamps (lane RB-M2)
@@ -437,6 +446,7 @@ void budgetTest(String arg) {
   reply(String("BUDGET ") + n);
 }
 
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
 // AIDREAD <project> <name> <column> <from> <to> <sum>: files.read's CSV form run the way the tool
 // runs it (files::tableReadNow: the scan takes the card lock per 4 KB read, never across it);
 // prints the reply's tail line and the longest hold of one read (RB-REC4's bench row: under
@@ -502,6 +512,7 @@ void toolsManifest() {
   Serial.print("TOOLS END\n");
   Serial.flush();
 }
+#endif
 
 // CAPTEST <tokens> | CAPTEST 0: cap the first attempt of every provider request, so a
 // live turn is cut on demand and the retry-with-headroom path runs; 0 ends the cap.
@@ -2707,7 +2718,14 @@ void dispatch(String line) {
   }
   if (line.startsWith("LINKX ")) { linkTimeCmd(line.substring(6)); return; }
   if (line.startsWith("CARDTIME ")) { cardTimeCmd(line.substring(9)); return; }
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+  // TXASIDE <chat>: the chat's /mem/tx folder renamed into /mem/tx-aside (kept whole), so the next
+  // boot of that chat is a first engine-2 start (E2-MIG bench: a unit an earlier test image ran on).
+  if (line.startsWith("TXASIDE ")) { Serial.println(agent::migratedev::setAside(line.substring(8).c_str()).c_str()); return; }
+#endif
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
   if (line.startsWith("AIDREAD ")) { aidReadCmd(line.substring(8)); return; }
+#endif
   if (line == "LOGMS on" || line == "LOGMS off") {
     nimbus::linkTime::linkTimeLogMs = (line == "LOGMS on");
     Serial.printf("LOGMS %s now=%lu\n", nimbus::linkTime::linkTimeLogMs ? "on" : "off", (unsigned long)millis());
@@ -2735,10 +2753,12 @@ void dispatch(String line) {
     budgetTest(line.substring(7));
     return;
   }
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
   if (line == "TOOLS?") {
     toolsManifest();
     return;
   }
+#endif
   if (line.startsWith("PROVFAULT ")) {
     provFault(line.substring(10));
     return;
@@ -2884,6 +2904,7 @@ void dispatch(String line) {
   if (line == "TGGUARD?") { tgGuardStatus(); return; }
   if (line == "WEBGUARD?") { webGuardStatus(); return; }
   if (line == "MODELS?" || line == "MODELS passive") { modelsTest(line.substring(line.indexOf(' ') + 1)); return; }
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
   if (line == "HISTV2" || line.startsWith("HISTV2 ")) {
     // HISTV2 [0|1]: the turn-structured history switch (RAM only, on at boot).
     // 0 restores the previous window and capture byte for byte (the bench's
@@ -2895,6 +2916,7 @@ void dispatch(String line) {
     Serial.flush();
     return;
   }
+#endif
 
   if (line.startsWith("HISTADD ")) {
     // HISTADD <chat> <n> <text>: capture <n> owner rows of <text> in <chat>, as a

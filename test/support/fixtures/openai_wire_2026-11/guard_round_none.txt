@@ -1,0 +1,154 @@
+recorded: lane E2-R10 tools/harness-lab r10 (29-guard_round), read 2026-11-24
+status: 200
+expect: stop=end complete=true calls=0
+{
+  "access_programs": null,
+  "background": false,
+  "billing": {
+    "payer": "developer"
+  },
+  "completed_at": 1795548388,
+  "created_at": 1795548387,
+  "error": null,
+  "frequency_penalty": 0.0,
+  "id": "resp_scrubbed",
+  "image": {
+    "context_compression": "disabled"
+  },
+  "incomplete_details": null,
+  "input_transformations": [],
+  "instructions": "You are a test assistant for the route goldens. Answer briefly.",
+  "max_output_tokens": null,
+  "max_tool_calls": null,
+  "model": "gpt-5.6-luna",
+  "moderation": null,
+  "object": "response",
+  "output": [
+    {
+      "content": [],
+      "encrypted_content": "gAAAAABrBeTkfgHbuZmqn3tJZpY9BruOv6G5v99ucmsijpmDfhbIityzHS6CqFbIsvVGupWSRSdytuM71_Ioj_ZiA1BWaxW6Q931JE0maOp4VophFGm-ukfIA-Gzv5yfVb9tju18svnZg5bwbMsMury_TYbzutFkOO66sZQYGEud5ztAr8v1tDBQXVuTCmEu2VLnCi2t7mE9XHFogXzRwPGo4_oeZdiLHw0JKq16Aegac3hQpR4-LXTMmfZAiEc0cXxDeGFUNMP9hGwiYiXxto2p22tZ3p9gf8EcIknbzF2T1Y_QZiLkEk1tCkP16IATnReaGOQZL-xIQoIIfWd52oWUH5UpSzFNWr5WswT3CgHCcQYE3F0fv8QI6IDA_QpitWdepNT8u8Dy2auDMAg3eSwYdlavFE-umW2NxmWYLJao_FHgsBt0PMsZIPqhwBpO_5r0swIzDDuIZ-gXaGYf4QFrxvs58_-Fi9aZthNJORjPKKC5LtSEVCTStC0mqurIdvwWoHwp4PV-K0tHKSDUX-75pP3dCCsQ253bMZVpaIDEeEF3AHHVCm5RCXwHdbHciXxs8lBqDL51eLlzk5l_MfjfJhpQowcrOSwc1ocQKWzc0GHdjFqpf9PzdMFembiKq3q3lCfTJfS0nLHMWRac-H6l68xbGytJwZlqXwhECl4Sw_PAmShOqJyb-k5eK-f4sCBC9rv05wLtR3yjaGRGhDDwbdG1tGLv0vTZq2SPYFdFT9DUOt8zQmm131H2mtEInHpfUhjV9kj-OkN6ti91qGus0UvhrmruFLAa6VwJx8TJ7V85cV8AvDPH1GurWzpL3wWrQV9kFcEOcxiRorPS9bbKTKtdgjizfpSspPPrVPx_Hl_gx5ZfzY_1roN8456EzdrDQWbASdSS1TseWFs3kSGOvnYJwdY3cxWip3dw-Mx4RH1zxjeDMWP0XikqpeJ87ABaXI3MBtUsFBAvmsGsK3a4iDP7KW-ZcOqehM9uwcMqmtUC8-au3-ttrpRziI87pdaqO_kxlzs6QYtISfbopdsxu7CuosE73mIjhYtJyhvVu8cSKnUkY_SzA8moyxvPGqO3pS4pBtvdNc58dobXRdKt2pOs30mIPnztw7VaKdyGU6cwI-3l6UjkEd_Pc52mD7ooh6meK1ogs5a6l0bg5OenuJjH3Ym9Pmif4xrWIShIvIkt_eH82fwVCoPz2Z6upNtPhMXq6LoM-_KOde89VkL76Cxgyn5rnZlG7sq2IFCMPOCXvbwtabsGoFro3WGcv5Bx-tnEmCaTGJ56Ohz0cdWfBsUrMzbbx6U8jsuw91gIMQlnRi9intbIdLa_STpuo5PfG-yF2Ti-C7W206KBuS0_qrIgBAkNteqSezJ-0STDAVkZPC8naAja_xNHNsuXW1eD1DrgxDLcG_5M17jPbCgcqXrWNwtewfGiY61Ml6hIxxYUTXK-leV9MWgyD-vDnbVu0ARZehnTJNJF8kKue2Uh8IXB32uLMlGBTanVPSucD-p8GaVqWggEqpCdv64fAAaXwDCl8OzfvH_tsZA-dWBnZXnIb5iz2Nf7gdbs0pv9zMpl796VJBW5dnHGuOTzWKWf5A0AXfMvOiB2hc_Gu1itnAF4dOTSGZmu2T0AVuTd-H0bceULm-jwyXDK4DjxJBkQ7PNlsRfS_9qvp_TWzUeOw2P3jfBTuOwr3qFTwpPFFw5IL278hDRTquDnCWwwdLUO2CF99SEUs_410wjmDHuxyHr8ZHdrOwrNQFqC0UC_xJImN-1fQ07F2vg9sfalK5F4OU1Xa-9tHV--vcYkEOx3cEw-tHmo9eN9ThRSJnyuqPy9_h7G2MB6jq1HKqqkWujIXW2-KugQaZRuz1VnpqxOkcTQIbFjP31mHe0zXCWziLU5OxNI69OXk1RqlmOg_NuKx-BH6bKYJB-k6TPTGFt2_4HSGuhc9yaGMOqriKeh2OL6n9ZLkghFXZo1jMC0ZHW8DR7TB-3OxZsQ-7IvczVQxwbBuMRCccak8JlGOMZhaAhe1UYGdfkMvlABArX1dOJAApnt4YIk8e3NdnWWAf0WRescDFtDndxtEzfuqVaUqBSVLHZuEBu5WAdB9pT9UA_h7zM86FLeiHT6oaf_-HYrE6HoX5XLowV50N5kK3WPcY9b9m8Z75lC7XOjROSzIz5CCrPQgdjsVx07IMlMzVym7xNcHMkVAw==",
+      "id": "rs_scrubbed",
+      "summary": [],
+      "type": "reasoning"
+    },
+    {
+      "content": [
+        {
+          "annotations": [],
+          "logprobs": [],
+          "text": "I checked notes n1–n3; none contains the seed list, and I can’t access further notes right now.",
+          "type": "output_text"
+        }
+      ],
+      "id": "msg_scrubbed",
+      "phase": "final_answer",
+      "role": "assistant",
+      "status": "completed",
+      "type": "message"
+    }
+  ],
+  "parallel_tool_calls": true,
+  "presence_penalty": 0.0,
+  "previous_response_id": null,
+  "prompt_cache_key": "nb-8fefae20ef9b4bcb",
+  "prompt_cache_options": {
+    "mode": "implicit",
+    "ttl": "30m"
+  },
+  "prompt_cache_retention": "24h",
+  "reasoning": {
+    "context": "all_turns",
+    "effort": "medium",
+    "mode": "standard",
+    "summary": null
+  },
+  "safety_identifier": null,
+  "service_tier": "default",
+  "status": "completed",
+  "store": false,
+  "temperature": 1.0,
+  "text": {
+    "format": {
+      "type": "text"
+    },
+    "verbosity": "medium"
+  },
+  "tool_choice": "none",
+  "tool_usage": {
+    "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "total_tokens": 0
+    },
+    "web_search": {
+      "num_requests": 0
+    }
+  },
+  "tools": [
+    {
+      "description": "Read one note by its path.",
+      "name": "read_note",
+      "output_schema": null,
+      "parameters": {
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Show an earlier result or photo again by its id.",
+      "name": "view",
+      "output_schema": null,
+      "parameters": {
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    }
+  ],
+  "top_logprobs": 0,
+  "top_p": 0.98,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 243,
+    "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cache_write_tokens_details": {
+        "ttl_12h_tokens": 0,
+        "ttl_30m_tokens": 0
+      },
+      "cached_tokens": 0
+    },
+    "output_tokens": 82,
+    "output_tokens_details": {
+      "reasoning_tokens": 51
+    },
+    "total_tokens": 325
+  },
+  "user": null,
+  "metadata": {}
+}

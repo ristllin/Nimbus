@@ -23,7 +23,7 @@ and does not run through `agent::FoldDriver`.
 
 `agent::FoldDriver` (`lib/harness/{include/nimbus/harness/fold_driver.h,
 src/fold_driver.cpp}`) is the only fold logic. The device's `compactTick()`
-(`src/agent/orchestrator.cpp`) and the Virtual Nimbus's `foldTick()`
+(`src/agent/orchestrator_e1.cpp`) and the Virtual Nimbus's `foldTick()`
 (`nimbusd/src/rig.h`) are bindings: they pass the clock, the network and quiet gates,
 the trigger, the fold step, the slice, and where notices go.
 

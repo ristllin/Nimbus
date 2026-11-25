@@ -1,0 +1,96 @@
+{
+  "about": "Feature groups for image_projection.py: each object of a device map belongs to the first group whose pattern (a Python regex over the object name with the build folder stripped, as image_projection.object_name prints it) matches it; the rest are 'other'. 'returns' says whether the group comes back when engine 2 reaches feature parity with the released engine (yes, partly, no); the projection adds the engine-1 bytes of the yes and partly groups. The groups and their answers are those of the 24 Nov 2026 measurement (program analysis ram-flash.md, section 1.4). A parity lane that brings a feature back names its group in its brief and its PR; a lane that moves an object between groups edits this file in the same change.",
+  "groups": [
+    {
+      "name": "provider loops (openai, mistral, custom, shared loop)",
+      "returns": "partly",
+      "why": "Engine 2 speaks to these providers through new wires and one router (ruling 120), not through engine 1's loops: the bytes are an upper bound for what the router adds.",
+      "patterns": ["^harness/providers/(openai|mistral|custom|loop_common|wire_budget|output_caps|model_override)\\.cpp\\.o$", "^src/agent/adapters/(openai|mistral)_adapter\\.cpp\\.o$"]
+    },
+    {
+      "name": "anthropic engine-1 loop extras",
+      "returns": "partly",
+      "why": "Managed-agent sub-agents and the hosted MCP path inside engine 1's Anthropic loop: back only if those connectors are wanted.",
+      "patterns": ["^harness/providers/anthropic\\.cpp\\.o$", "^src/agent/adapters/anthropic_adapter\\.cpp\\.o$"]
+    },
+    {
+      "name": "images, vision, image generation, provider files",
+      "returns": "yes",
+      "why": "Photos as native media and image tools are owner features (rulings on vision).",
+      "patterns": ["^harness/providers/image_parts\\.cpp\\.o$", "^src/agent/adapters/(image_gen|image_vision|provider_file_fetch)\\.cpp\\.o$", "^core/orch_(turn_images|image_dims)\\.cpp\\.o$", "^harness/vision_caption\\.cpp\\.o$"]
+    },
+    {
+      "name": "sub-agents and jobs",
+      "returns": "yes",
+      "why": "jobs.cpp and the sub-agent provenance; engine 2's plain_agents.cpp is a stub.",
+      "patterns": ["^harness/jobs\\.cpp\\.o$", "^core/orch_sub_provenance\\.cpp\\.o$"]
+    },
+    {
+      "name": "MCP client, connectors, OAuth",
+      "returns": "yes",
+      "why": "Connectors the owner configured on engine 1.",
+      "patterns": ["^core/orch_mcp_(client|resilience)\\.cpp\\.o$", "^src/agent/connectors\\.cpp\\.o$", "^core/orch_connectors_wire\\.cpp\\.o$"]
+    },
+    {
+      "name": "memory tools, vector memory, web search",
+      "returns": "partly",
+      "why": "Engine 2's notes and search replace part of it.",
+      "patterns": ["^core/orch_(memory_tools|vector_memory|vector_archive|memory|pending_embed|scratchpad)\\.cpp\\.o$", "^src/agent/memory_subsystem\\.cpp\\.o$", "^src/net/web_memory\\.cpp\\.o$", "^harness/turn_memory\\.cpp\\.o$"]
+    },
+    {
+      "name": "skills",
+      "returns": "yes",
+      "why": "Store, attach, built-ins, commands and the web page; skills_device.cpp is already in engine 2.",
+      "patterns": ["^harness/(skill_store|skill_attach|skill_commands|skill_md|builtin_skills)\\.cpp\\.o$", "^src/agent/skills\\.cpp\\.o$", "^src/net/web_skills\\.cpp\\.o$"]
+    },
+    {
+      "name": "PDF writer and tool",
+      "returns": "yes",
+      "why": "An owner tool.",
+      "patterns": ["^core/orch_pdf_writer\\.cpp\\.o$", "^src/agent/pdf_tool\\.cpp\\.o$"]
+    },
+    {
+      "name": "URL fetch and fetch policy",
+      "returns": "yes",
+      "why": "An owner tool.",
+      "patterns": ["^src/agent/adapters/url_fetch\\.cpp\\.o$", "^core/orch_fetch_policy\\.cpp\\.o$"]
+    },
+    {
+      "name": "owner tools (models, prefs, device log, open questions, self wakeups)",
+      "returns": "yes",
+      "why": "Tools the owner uses on engine 1.",
+      "patterns": ["^core/orch_(models_tool|prefs_tools|device_log|open_questions|openq_tools|self_wakeup|owner_prefs|model_choices|session_tools)\\.cpp\\.o$", "^src/agent/(device_log_tool|prefs_subsystem|budget_command)\\.cpp\\.o$"]
+    },
+    {
+      "name": "dream",
+      "returns": "partly",
+      "why": "Probably back, in engine 2's own form.",
+      "patterns": ["^harness/dream\\.cpp\\.o$", "^src/agent/dream_subsystem\\.cpp\\.o$"]
+    },
+    {
+      "name": "engine-1 file tools",
+      "returns": "no",
+      "why": "Engine 2 has its own file tools (orch_file_tools.cpp).",
+      "patterns": ["^core/orch_(file_edit|file_append|file_aids_e1|file_store)\\.cpp\\.o$", "^src/agent/files_subsystem\\.cpp\\.o$"]
+    },
+    {
+      "name": "engine-1 prompt machinery",
+      "returns": "no",
+      "why": "The old engine itself: engine 2 replaces it.",
+      "patterns": ["^src/agent/(orchestrator_e1|tools_e1)\\.cpp\\.o$", "^harness/(engine|engine_history|engine_fold|conversation|apply|fold_driver|compose|turn_fit|turn_contract|prompt_layout|conv_cache|turn_inbox|turn_progress)\\.cpp\\.o$"]
+    },
+    {
+      "name": "engine-1 turn machinery in shared objects",
+      "returns": "no",
+      "why": "The old turn's code inside files both engines link; the linker drops it from engine 2.",
+      "patterns": ["^core/orch_(turn|truth|head_loop|compact|transcript|journal|result_store|turn_effects|world|effect_ring|reply_markup|failure_rows|failure_chain|head_switch|unattended_policy|turn_journal|provider_park|storage_state|spend_guard|seam_meter|trace_rows|degraded|capture|served_model|request_budget|servedby|row_overlay|gradient|spend_ceiling|loops|usage_ledger|moderation|model_store|head_qual|action_rules|rbac|turn_spend|router_route|safety_activity|voice_notes|voice)\\.cpp\\.o$", "^harness/(turn_anatomy|day_context)\\.cpp\\.o$", "^src/agent/(truth_device|orch_persist|effect_ring_device|orchestrator_common|store|store_config|transport_tls|loops_subsystem)\\.cpp\\.o$"]
+    },
+    {
+      "name": "merged strings without an owner",
+      "returns": "partly",
+      "apportion": true,
+      "why": "The linker lists the merged string blob of the objects linked before it on the first object that contributes (Adafruit NeoPixel esp.c.o on these images); its engine-1 surplus is the strings of the groups above, so the projection adds it in proportion: the share of the other missing bytes that return.",
+      "patterns": ["^Adafruit NeoPixel/esp\\.c\\.o$"]
+    }
+  ]
+}

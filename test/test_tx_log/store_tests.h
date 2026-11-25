@@ -203,6 +203,7 @@ void test_restart_fill_is_one_bounded_sequential_read() {
 
 // The persist point: a refused write keeps the item in RAM flagged not stored, the status
 // is ok and the transcript goes on; after a restart only stored items come back.
+// Lane E2-BFIX1: the refused item is held (flagged) and written before the next one, in q order.
 void test_store_keeps_a_refused_item_in_ram_as_not_stored() {
   txb::MemFiles files;
   txb::Convo c;
@@ -223,15 +224,20 @@ void test_store_keeps_a_refused_item_in_ram_as_not_stored() {
     TEST_ASSERT_EQUAL((i == refused) ? tx::kItemNotStored : 0, e.flags & tx::kItemNotStored);
   }
   TEST_ASSERT_EQUAL((int)c.items.size(), (int)arena.count());
+  tx::ArenaEntry was;
+  TXB_OK(arena.header(refused, was));
+  TEST_ASSERT_EQUAL(0, was.flags & tx::kItemNotStored);   // written with the next item
+  TEST_ASSERT_EQUAL(0u, log.heldCount());
+  TEST_ASSERT_EQUAL(0u, log.lostCount());
   files.clearFaults();
   tx::TxLog again(files, kKey);
   TXB_OK(again.open(head));
   tx::TxArena filled;
   initArena(filled);
   TXB_OK(again.fill(head, filled));
-  TEST_ASSERT_EQUAL((int)c.items.size() - 1, (int)filled.count());
+  TEST_ASSERT_EQUAL((int)c.items.size(), (int)filled.count());
   size_t idx = 0;
-  TEST_ASSERT_TRUE(filled.find(c.items[refused].q, idx).err == tx::Err::NotFound);
+  TXB_OK(filled.find(c.items[refused].q, idx));
   // An arena refusal writes nothing anywhere.
   tx::Item back = c.items.front();
   tx::StoreState st;

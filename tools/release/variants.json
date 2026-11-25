@@ -1,0 +1,11 @@
+{
+  "about": "The one release variant table. .github/workflows/release.yml reads every list from it through tools/release/publish_candidate.py plan: the envs it builds, the image each env becomes, the gates per image, the signed manifest pairs, the web-flash images and the published assets. variants: the stable rows in build order; type is the device TYPE (NVS otaType, the typed-manifest key, frozen), env the PlatformIO env that builds it, image the release asset name. candidate: shipped empty; a tag equal to candidate.tag builds only candidate.variants (each a stable type and the env that builds it), publishes a pre-release with no manifest.json and no web-flash, and attaches manifest-candidate.json to the latest full release. hold_line: empty, e1 or e2 (holdHeads only when set). releases_repo: the one place the releases repository is named; a run from any repository but ristllin/Nimbus that would publish to ristllin/nimbus-fw-releases is refused. Writers: RB-REL0 (the table), RB-R2 (the candidate entry), RB-FLIP (no row: the [engine_default] switch in platformio.ini moves the plain env names to engine 2; the *-e1 envs keep the earlier engine buildable).",
+  "releases_repo": "ristllin/nimbus-fw-releases",
+  "variants": [
+    {"type": "nimbus-tft", "env": "esp32s3", "image": "firmware-nimbus-tft.bin", "webflash": true},
+    {"type": "freenove-28", "env": "esp32s3-cyd", "image": "firmware-freenove.bin", "webflash": true},
+    {"type": "freenove-35", "env": "esp32s3-cyd-35", "image": "firmware-freenove-35.bin", "webflash": true},
+    {"type": "freenove-40", "env": "esp32s3-cyd-40", "image": "firmware-freenove-40.bin", "webflash": true}
+  ],
+  "candidate": {"tag": "", "variants": [], "hold_line": ""}
+}

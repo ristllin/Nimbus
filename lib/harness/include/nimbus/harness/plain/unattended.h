@@ -78,6 +78,7 @@ struct RoutineDef {
   std::vector<std::string> tools;   // the tools it names; empty: kDefaultRoutineTools
   std::vector<std::string> paths;   // the files it may write; an entry ending in '/' lists a folder
   uint32_t holdS = 0;               // a held note's expiry in seconds; 0: kHeldNoteExpiryS
+  bool wakeup = false;              // a wakeup the assistant set (lane E2-P-MEM): the policy row TurnClass::Wakeup
 };
 // The default tools of a routine with none named (PRD section 6), before the policy row cuts them.
 extern const char* const kDefaultRoutineTools[3];
@@ -205,6 +206,10 @@ struct QuietHours {
 };
 // Is `now` (local offset tzMinutes) inside quiet hours? No clock (0): yes (a note waits for one).
 bool inQuiet(const QuietHours& q, uint64_t now, int16_t tzMinutes);
+// The first moment after `now` at which quiet hours end (local minute endMinute); `now` when not
+// quiet or no clock. Lane E2-FIX2B (finding P8): a note held for quiet hours expires no earlier than
+// its hold after this, so quiet hours longer than the hold never drop it.
+uint64_t quietEndAfter(const QuietHours& q, uint64_t now, int16_t tzMinutes);
 
 // ---- one fire ------------------------------------------------------------------------
 // What the binding gives a fire. The routine's engine is built for the fire on `files` under its
@@ -224,6 +229,10 @@ struct RoutineDeps {
   HeldStore* held = nullptr;
   OwnerSink owner;
   QuietHours quiet;
+  // Review R8: the head is held and a stand-in is open: the fire starts on it (TurnInput::startPast), no line of
+  // its own, no latch. failover: the binding's fall-back order (EngineDeps::failover). Unset: on the head.
+  FailoverFn failover;
+  FailoverAsk startPast;
 };
 
 enum class FireResult : uint8_t {
@@ -251,7 +260,9 @@ Status runRoutine(const RoutineDeps& deps, const RoutineFire& fire, FireReport& 
 Status deliverHeld(HeldStore& held, const OwnerSink& owner, const std::string& id, uint64_t now, int16_t tzMinutes,
                    uint16_t dayStartMin);
 // What reaches the owner's transcript for a note: routineNoteText of its text, then on a new line
-// the stop line when it stopped at a limit.
+// the stop line when it stopped at a limit. A note whose fire read outside content (outside) has its
+// text whole inside the outside-content fence (jobs.h fenceOutsideContent; lane RB-RL), so it taints
+// the owner's next turn (plain/rails.h itemOutside).
 std::string heldNoteText(const HeldNote& n, int16_t tzMinutes, uint16_t dayStartMin);
 
 // The owner engine's side, registered once at boot in HookSlot::Routines: bootResume loads the

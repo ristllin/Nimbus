@@ -139,5 +139,23 @@ std::string armSelfWakeupNote(const nimbus::orch::WakeNote& note);
 void stageWebMutation(const String& json);
 void drainWebMutations();
 
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+// Lane E2-FIX5: a staged web mutation waits for drainWebMutations (any task; it ends tg_poll's idle
+// wait, so the change is applied within about a second unless a turn is running).
+bool webMutationsWaiting();
+// --- engine 2: the schedule tool's view (lane RB-U1b, schedule_device.cpp) -------------------
+// Run `fn` over the live table with the loops lock held (recursive; tg_poll or the turn task).
+void withTable(const std::function<void(std::vector<nimbus::orch::LoopRecord>&)>& fn);
+// /data/loops.json from `loops` (dumpLoops, atomic). Call inside withTable.
+bool saveTable(const std::vector<nimbus::orch::LoopRecord>& loops);
+uint64_t firstRun(const nimbus::orch::LoopRecord& l, uint64_t nowEpoch);   // the device's next-run math
+bool wallClockValid();
+nimbus::orch::CivilTime localOf(uint64_t epoch);              // libc local time (the device's zone)
+uint64_t epochOfLocal(const nimbus::orch::CivilTime& local);
+std::string freshId(const std::vector<nimbus::orch::LoopRecord>& loops);   // "lp" + 6 hex, unused
+int maxCount();                                                // the owner-tightened cap
+uint32_t minIntervalSec();
+#endif
+
 }  // namespace loops
 }  // namespace agent

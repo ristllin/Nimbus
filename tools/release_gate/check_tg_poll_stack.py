@@ -40,17 +40,28 @@ How it measures (coverage/STACK-2026-11.md has the full method):
 The verdict is the worst case from the task entry (vPortTaskWrapper -> pollTask) and, per
 named path (turn start, head round, each tool, STT, OTA, archive...), the worst case of
 any chain through that path. Each must leave at least `min_free_bytes` of `stack_bytes`.
+A path under the engine's target (`target_free_bytes_by_engine`: 6,000 B on engine 2, the
+PRD's target) passes with a WARN line, and whenever a path warns or fails the deepest chain
+of the worst case is printed, even with --quiet, with its largest frames: what a lane would
+move off the task (lane E2-GATE, 24 Nov 2026).
 
 Usage:
     python3 tools/release_gate/check_tg_poll_stack.py                 # .pio/build/esp32s3-cyd
     python3 tools/release_gate/check_tg_poll_stack.py --elf <firmware.elf> [--report out.md]
-Exit 0 = every path leaves the floor; 1 = a path is under it, or the analysis is not
+Exit 0 = every path leaves the floor (a path under the target warns); 1 = a path is under it, or the analysis is not
 sound (an undeclared cycle or dynamic frame, a path that names nothing, a missing tool or
 ELF). A config row the image does not use is reported, not failed: the four release
 images share one config. The config is tg_poll_stack.json plus each fragment in
 tg_poll_stack.d/ (one file per lane, merged in name order; a fragment only adds rows).
 A release's last lane folds the fragments into the config and removes them (v5.1.2: lane
 F's fold paths and lane H's history paths), so two releases' fragments never pile up.
+
+Engines (lane RB-I0). An image builds engine 1 or engine 2 (platformio.ini's
+custom_nimbus_engine of the env whose .pio/build/<env>/ holds the ELF, or --engine). A `paths`
+row names the engine it measures with "engine" (default 1: every row written before engine 2
+measures the old engine's turn); only the rows of the image's engine are checked, so an
+engine-2 image is never failed for not reaching TurnEngine, and an engine-1 image is checked
+exactly as before. tg_poll_stack.d/RB-E2.json adds the engine-2 envs and rows.
 """
 
 from __future__ import annotations
@@ -1819,6 +1830,7 @@ def verdict(model: Model) -> dict:
     stack = cfg["stack_bytes"]
     fixed = sum(v for k, v in cfg["fixed_overhead"].items() if not k.startswith("_"))
     floor = cfg["min_free_bytes"]
+    target = cfg.get("target_free_bytes")
     paths = named_paths(model)
     chains = {name: model.chain_up(fn)[:-1] + model.chain_down(fn) for name, (_t, fn) in paths}
     locs = chain_locations(model, chains)
@@ -1831,6 +1843,7 @@ def verdict(model: Model) -> dict:
                 "used": used,
                 "free": stack - used,
                 "ok": stack - used >= floor,
+                "warn": stack - used >= floor and target is not None and stack - used < target,
                 "chain": describe(model, chains[name], locs),
             }
         )
@@ -1839,6 +1852,7 @@ def verdict(model: Model) -> dict:
         "stack": stack,
         "fixed": fixed,
         "floor": floor,
+        "target": target,
         "rows": rows,
         "reach": len(model.reach),
         "edges": sum(len(v) for v in model.edges.values()),
@@ -1852,12 +1866,18 @@ def verdict(model: Model) -> dict:
     }
 
 
+def row_verdict(r: dict) -> str:
+    return "UNDER FLOOR" if not r["ok"] else "UNDER TARGET" if r.get("warn") else "ok"
+
+
 def render(v: dict, elf: str, chain_rows: int = 60) -> str:
     how = ", ".join(f"{k} {n}" for k, n in sorted(v["how"].items()))
     lines = [
         f"tg_poll stack budget for {elf}",
         "",
-        f"Stack {v['stack']} B, floor {v['floor']} B free, fixed overhead {v['fixed']} B (coprocessor save "
+        f"Stack {v['stack']} B, floor {v['floor']} B free"
+        + (f", target {v['target']} B free" if v.get("target") is not None else "")
+        + f", fixed overhead {v['fixed']} B (coprocessor save "
         f"area, TLS block, one interrupt frame). {v['reach']} functions and {v['edges']} call edges reachable. "
         f"Indirect sites: {how}. {v['dropped']} indirect targets dropped as not on tg_poll; "
         f"{v['cut']} back edges cut.",
@@ -1866,7 +1886,7 @@ def render(v: dict, elf: str, chain_rows: int = 60) -> str:
         "|---|---:|---:|---|",
     ]
     for r in v["rows"]:
-        lines.append(f"| {r['name']} | {r['used']} | {r['free']} | {'ok' if r['ok'] else 'UNDER FLOOR'} |")
+        lines.append(f"| {r['name']} | {r['used']} | {r['free']} | {row_verdict(r)} |")
     for r in v["rows"]:
         lines += [
             "",
@@ -1888,8 +1908,60 @@ def render(v: dict, elf: str, chain_rows: int = 60) -> str:
     return "\n".join(lines)
 
 
-def check(elf: str, cfg: dict, report: "str | None" = None, quiet: bool = False, sources: "str | None" = None) -> bool:
-    model, _ = analyse_elf(elf, cfg, sources)
+def engine_of(elf: str, root: str = REPO) -> int:
+    """The engine an image builds: its env's custom_nimbus_engine (1 when the ELF is not in a
+    .pio/build/<env>/ of a known env)."""
+    env = os.path.basename(os.path.dirname(os.path.abspath(elf)))
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import check_engine_filter  # noqa: E402  (platformio.ini resolved as PlatformIO does)
+
+    ini = check_engine_filter.PioIni(os.path.join(root, "platformio.ini"))
+    if env not in ini.device_envs():
+        return 1
+    return ini.engine(env)
+
+
+def for_engine(cfg: dict, engine: int) -> dict:
+    """The config with only the `paths` rows of `engine` (a row's "engine", default 1), and the
+    engine's warning target (target_free_bytes_by_engine; none: no target)."""
+    out = dict(cfg)
+    out["paths"] = [r for r in cfg.get("paths", []) if r.get("engine", 1) == engine]
+    out["target_free_bytes"] = cfg.get("target_free_bytes_by_engine", {}).get(str(engine))
+    return out
+
+
+def verdict_lines(v: dict, frames: int = 40) -> "list[str]":
+    """The PASS / WARN / FAIL line of every path; when one warns or fails, the deepest chain of
+    the worst case and its largest frames, so a lane sees what to move off the task."""
+    limits = f"floor {v['floor']} B" + (f", target {v['target']} B" if v.get("target") is not None else "")
+    out = []
+    for r in v["rows"]:
+        word = "FAIL" if not r["ok"] else "WARN" if r.get("warn") else "PASS"
+        out.append(f"{word} tg_poll {r['name']}: {r['used']} B used, {r['free']} B free ({limits})")
+    if all(r["ok"] and not r.get("warn") for r in v["rows"]) or not v["rows"]:
+        return out
+    worst = min(v["rows"], key=lambda r: r["free"])
+    out.append(f"deepest chain ({worst['name']}, {worst['free']} B free): frame B, running B, function, called at")
+    for b, tot, name, loc in worst["chain"][:frames]:
+        out.append(f"  {b:>6} {tot:>6}  {name[:110]}  {loc}")
+    if len(worst["chain"]) > frames:
+        out.append(f"  ... {len(worst['chain']) - frames} more frames")
+    big = sorted(worst["chain"], key=lambda row: -row[0])[:5]
+    out.append("largest frames on it: " + "; ".join(f"{name[:70]} {b} B" for b, _t, name, _l in big))
+    return out
+
+
+def check(
+    elf: str,
+    cfg: dict,
+    report: "str | None" = None,
+    quiet: bool = False,
+    sources: "str | None" = None,
+    engine: "int | None" = None,
+) -> bool:
+    engine = engine_of(elf) if engine is None else engine
+    print(f"tg_poll stack: {elf} builds engine {engine}")
+    model, _ = analyse_elf(elf, for_engine(cfg, engine), sources)
     v = verdict(model)
     text = render(v, elf)
     if report:
@@ -1898,11 +1970,8 @@ def check(elf: str, cfg: dict, report: "str | None" = None, quiet: bool = False,
     if not quiet:
         print(text)
         print()
-    for r in v["rows"]:
-        print(
-            ("PASS " if r["ok"] else "FAIL ") + f"tg_poll {r['name']}: {r['used']} B used, {r['free']} B free "
-            f"(floor {v['floor']} B)"
-        )
+    for line in verdict_lines(v):
+        print(line)
     if v["errors"]:
         print(f"FAIL tg_poll stack analysis: {len(v['errors'])} error(s) listed above")
     return v["ok"]
@@ -1919,6 +1988,7 @@ def main(argv: "list[str] | None" = None) -> int:
         help="a checkout of the commit the ELF was built from, read for its source lines "
         "(default: this checkout; needed for an image older than the working tree)",
     )
+    ap.add_argument("--engine", type=int, choices=(1, 2), help="the image's engine (default: from its env)")
     args = ap.parse_args(argv)
     try:
         cfg = load_config(args.config)
@@ -1936,7 +2006,7 @@ def main(argv: "list[str] | None" = None) -> int:
     ok = True
     for elf in elfs:
         try:
-            ok = check(elf, cfg, args.report, args.quiet, args.sources) and ok
+            ok = check(elf, cfg, args.report, args.quiet, args.sources, args.engine) and ok
         except (OSError, ValueError, RuntimeError) as e:
             print(f"FAIL tg_poll stack: {elf}: {e}")
             ok = False

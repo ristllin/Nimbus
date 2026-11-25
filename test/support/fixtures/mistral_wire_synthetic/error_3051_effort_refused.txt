@@ -1,0 +1,4 @@
+synthetic: https://docs.mistral.ai/resources/known-limitations, read 2026-11-24
+status: 400
+expect: class=refused_field retry=no
+{"object":"error","message":"Reasoning effort 'xhigh' is not supported for this model.","type":"invalid_request_error","param":null,"code":"3051"}

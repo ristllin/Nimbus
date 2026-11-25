@@ -123,12 +123,13 @@ void test_a_long_reply_is_split_without_loss() {
   TEST_ASSERT_TRUE_MESSAGE(visible(joined) == visible(longText), "a split lost or added bytes");
 }
 
-// A guard trip: the last round's text, then at most one status line, as its own message.
+// A guard trip: the last round's text, then at most one status line, as its own message. An owner
+// turn that keeps progressing reaches the hard round guard (64; lane RB-X3, ruling 84 item 2).
 void test_a_status_line_is_separate_and_alone() {
   TXB_WAITS_FOR("PENDING RB-E3", "RB-E1b");
   txb::Battery b;
   b.world.files["notes/a.md"] = "alpha";
-  for (int i = 0; i < plain::kDefaultRounds; ++i)
+  for (int i = 0; i < plain::kHardRounds; ++i)
     b.model.push(sp::call("read_file", "{\"path\":\"notes/a.md\",\"offset\":" + std::to_string(i) + "}"));
   b.model.push(sp::say("I read it sixteen times; it says alpha."));
   plain::TurnOutcome out;
@@ -545,13 +546,13 @@ void test_a_request_is_rebuilt_byte_for_byte_from_its_reference() {
   b.model.push(sp::say("It says alpha, and the big one is read."));
   TXB_OK(b.owner("read both", out));
   b.advance(60);
-  for (int i = 0; i < plain::kDefaultRounds; ++i)
+  for (int i = 0; i < plain::kHardRounds; ++i)   // an owner turn that progresses: the hard round guard (RB-X3)
     b.model.push(sp::call("read_file", "{\"path\":\"notes/a.md\",\"offset\":" + std::to_string(i) + "}"));
   b.model.push(sp::say("I read it sixteen times."));
   TXB_OK(b.owner("keep reading", out));
   TEST_ASSERT_TRUE(out.status == plain::StatusLine::LimitReached);
   const size_t n = rebuildEveryRequest(b);
-  TEST_ASSERT_EQUAL(1 + 3 + plain::kDefaultRounds + 1, (int)n);
+  TEST_ASSERT_EQUAL(1 + 3 + plain::kHardRounds + 1, (int)n);
   // The guard's last round carried tool choice none, and its reference says so.
   std::vector<tx::Item> items;
   TXB_OK(b.stored(items));
@@ -559,11 +560,17 @@ void test_a_request_is_rebuilt_byte_for_byte_from_its_reference() {
   for (const tx::Item& it : items)
     if (it.kind == tx::ItemKind::TurnEnd) last = &it;
   TEST_ASSERT_TRUE(last && last->end.exchanges.back().toolChoiceNone);
+  // Lane E2-BFIX5: that round also carried its row's thinking-off field (E2-REP7; claude-sonnet-5-5 takes
+  // between_tools), and the rebuild above gave it back, so the property covers the guard round's own bytes.
+  const std::vector<const sp::Recorded*> sent = requestsOf(b, last->turn);
+  TEST_ASSERT_TRUE(!sent.empty() && sent.back()->body.find(R"("thinking":{"type":"between_tools"})") != std::string::npos);
+  TEST_ASSERT_TRUE(sent.front()->body.find(R"("thinking":{)") == std::string::npos);   // an ordinary round: none
 }
 
 void test_a_request_with_an_omission_is_rebuilt_byte_for_byte() {
   TXB_WAITS_FOR("PENDING RB-E3", "RB-E1b");
   txb::Battery b;
+  b.compaction = false;   // the omission line itself: since lane RB-C3 compaction comes before rung 3
   // Enough stored turns that the battery head's full body (tx::budgetFor; 292,000 B on
   // claude-sonnet-5-5) is passed and rung 3 must omit the oldest of them.
   tx::HeadBudget head;
@@ -751,7 +758,8 @@ void test_a_full_arena_sheds_references_before_the_turn_end_item() {
   TXB_WAITS_FOR("PENDING RB-E3", "RB-E1b");
   txb::Battery b;
   TXB_OK(b.boot());
-  TXB_OK(b.arena->init(16 * 1024, b.platform.allocLarge, b.platform.freeLarge));
+  // 15.2 KB (16 KB before lane E2-FIX9, whose kept-result stubs carry no preview): the arena still fills at the e item.
+  TXB_OK(b.arena->init(15 * 1024 + 224, b.platform.allocLarge, b.platform.freeLarge));
   for (int i = 0; i < 4; ++i) {
     b.model.push(sp::say("ok " + std::to_string(i)));
     b.advance(60);

@@ -1,0 +1,19 @@
+# route golden parse chat-mistral-direct/error_3051_effort_refused.txt served at HTTP 400
+parse invalid-argument at plain::chat.parse.status
+parse stop other
+parse text 0 B fnv64=14650fb0739d0383 head=""
+parse refusal ""
+parse calls 0
+parse meta 0
+parse usage prompt=0 completion=0 cacheRead=0 cacheWrite=0 cacheWrite1h=0 responses=0 maxRequestIn=0 served=""
+exchange err=other http=400 requests=2 retries=1 climbs=0 cutRetried=0 failOver=0 parkHost=0 maxTokens=2192 requestBytes=847 ms=0 waitedMs=0 statusLine=5
+exchange line "No reply: Mistral refused the request (HTTP 400): Reasoning effort 'xhigh' is not supported for this model."
+exchange line stored "No reply: Mistral refused the request (HTTP 400)."
+exchange request 0 875 B fnv64=86d23090b910263c
+exchange request 1 847 B fnv64=715ed5f411573f34
+exchange step stop other
+exchange step text 0 B fnv64=14650fb0739d0383 head=""
+exchange step refusal ""
+exchange step calls 0
+exchange step meta 0
+exchange step usage prompt=0 completion=0 cacheRead=0 cacheWrite=0 cacheWrite1h=0 responses=0 maxRequestIn=0 served=""

@@ -1,0 +1,10 @@
+{
+  "about": "Lane E2-FIX2B: the history import's digest 0 (tx::migrate -> digest0Answer -> askRung) is reachable from tg_poll, so the cycle RB-E2-DEV.json declares for the turn's climb (a summarizer exchange carries no climb of the turn) is now also met from the summarizer's side.",
+  "impossible_cycles": [
+    {
+      "caller": "^agent::plain::CompactDriver::ask\\(",
+      "callee": "^agent::plain::\\(anonymous namespace\\)::askRung\\(",
+      "why": "plain_compact.cpp: askRung's exchange (runExchange) is the summarizer's and carries no ClimbAsk of a turn (plain_compact.cpp never sets ExchangeRequest::climb), so the turn's compactFirst, and through it CompactDriver::ask, is never re-entered from it"
+    }
+  ]
+}

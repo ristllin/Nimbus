@@ -5,18 +5,25 @@
 
 #include <algorithm>
 #include <cctype>
+#include <new>
 #include <string>
 #include <utility>
 
 #include "nimbus/harness/output_caps.h"
 #include "nimbus/harness/platform.h"
+#include "nimbus/harness/plain/route.h"
 #include "nimbus/harness/plain/texts.h"
+#include "nimbus/harness/providers.h"   // kRoutedDeadlineHeader, kRoutedDeadlineSlackMs
 #include "nimbus/orch/billing_refusal.h"
+#include "nimbus/orch/head_loop.h"   // classifyHttpStatus: engine 1's switch rule (E2-P-FO)
 #include "nimbus/orch/compact.h"   // isContextOverflowError: each provider's words for a size refusal
+#include "nimbus/orch/provider_error.h"   // providerErrorText: the message of a provider's error body
+#include "nimbus/orch/psram_alloc.h"   // workingAlloc: the exchange state off the stack
 #include "nimbus/orch/request_budget.h"
 #include "nimbus/orch/router_refusals.h"
-#include "nimbus/orch/router_route.h"
 #include "nimbus/orch/tx/budget.h"
+#include "nimbus/orch/tx/rules.h"   // kPhotoCapBytes: a photo against the body cap
+#include "nimbus/orch/wire_errors.h"   // classifyProvider: the router's one error order
 #include "nimbus/orch/wire_limits.h"
 #include "nimbus/utf8.h"
 #include "providers/plain_body.h"   // the body check counts strings as the writer does
@@ -44,11 +51,14 @@ struct Verdict {
   orch::RouterAction action = orch::RouterAction::None;   // a routed refusal's contract action
   uint32_t retryAfterMs = 0;
   int64_t capTokens = -1;
+  orch::caps::ErrClass cls = orch::caps::ErrClass::BadRequest;   // the classifier's class (when it classed one)
+  uint16_t refusedFields = 0;   // the optional fields a 400 or 422 refused (caps::refused::)
+  bool byText = false;          // E2-PARK1: a billing class the message words alone decided
 };
 
 // A routed refusal that names a reason the contract knows: decided by the reason.
 bool routerVerdict(const std::string& body, Verdict& v) {
-  const orch::RouterAnswer a = orch::readRouterAnswer(body);
+  const orch::RouterAnswer a = orch::wire::readRouterAnswerE2(body);
   if (!a.row) {
     if (a.reason.empty()) return false;
     v.err = ExchangeErr::Other;   // a reason this image does not know: a per-call failure
@@ -68,27 +78,31 @@ bool routerVerdict(const std::string& body, Verdict& v) {
   return true;
 }
 
-// A direct head's answer, by its status and the provider's words.
-ExchangeErr statusErr(int status, const std::string& body) {
-  if (status == 401 || status == 402 || status == 403 || orch::isBillingRefusal(status, body))
-    return ExchangeErr::KeyRefused;
-  if (status == 413 || ((status == 400 || status == 422) && orch::isContextOverflowError(body.substr(0, 4096)))) return ExchangeErr::ContextRefused;
-  if (status == 429) return ExchangeErr::RateLimited;
-  if (status == 408) return ExchangeErr::Transport;
-  return status >= 500 ? ExchangeErr::Server : ExchangeErr::Other;
-}
-
-Verdict classify(int status, const std::string& body, bool routed) {
+// By the order of ROUTER-DESIGN.md section 9 (nimbus/orch/wire_errors.h), with the marker rows
+// of `provider` (a routed head's upstream; "" = the generic rules alone, as before the router).
+Verdict classify(int status, const std::string& body, bool routed, const std::string& provider) {
+  namespace w = orch::wire;
+  using E = ExchangeErr;
+  // By orch::caps::ErrClass: a refused field, an unknown model, a bad request and a refusal are Other.
+  static constexpr ExchangeErr kByClass[] = {E::Transport,  E::RateLimited, E::Server, E::KeyRefused,
+                                             E::KeyRefused, E::KeyRefused,  E::ContextRefused, E::Other,
+                                             E::Other,      E::Other,       E::Other};
+  static_assert(sizeof(kByClass) / sizeof(kByClass[0]) == (size_t)orch::caps::ErrClass::Refusal + 1, "one per class");
   Verdict v;
-  if (status >= 200 && status < 300) return v;
-  if (status <= 0) {
-    v.err = ExchangeErr::Transport;
-    return v;
-  }
-  if (routed && routerVerdict(body, v)) return v;
+  const bool ok = status >= 200 && status < 300;
+  if (!ok && status > 0 && routed && routerVerdict(body, v)) return v;
   // The contract parks the router only by its reason: a routed 401, 402 or 403 that names
   // none (a proxy, a balancer) is a per-call failure.
-  v.err = routed && status >= 401 && status <= 403 ? ExchangeErr::Other : statusErr(status, body);
+  if (routed && status >= 401 && status <= 403) {
+    v.err = ExchangeErr::Other;
+    return v;
+  }
+  const w::Classified c = w::classifyProvider(w::markerSetFor(provider), status, body);
+  if (!c.error) return v;
+  v.err = kByClass[(size_t)c.cls];
+  v.cls = c.cls;
+  v.byText = c.byText;
+  v.refusedFields = c.cls == orch::caps::ErrClass::RefusedField ? c.refused : 0;
   return v;
 }
 
@@ -103,12 +117,6 @@ const char* providerName(const std::string& slug) {
 }
 
 uint32_t minU(uint32_t a, uint32_t b) { return a < b ? a : b; }
-
-// The host whose output-cap table a request reads: a custom host that speaks the Messages API
-// reads Anthropic's (that API requires max_tokens, and the custom row has none; RB-W1b).
-std::string capTableHost(const std::string& capHost, Dialect dialect) {
-  return capHost == "custom" && dialect == Dialect::AnthropicMessages ? std::string("anthropic") : capHost;
-}
 
 // The state of one exchange: its requests, waits and retries.
 class Exchange {
@@ -153,45 +161,51 @@ class Exchange {
         !in || !in->turn || !in->head || req_.deadlineMs == 0)
       return Status::fail(Err::InvalidArgument, "plain::runExchange");
     t0_ = now();
-    in_ = *in;
+    base_ = *in;
     head_ = *in->head;
-    in_.head = &head_;
+    base_.head = &head_;
+    refused_ = deps_.refused ? deps_.refused : &ownRefused_;
     slug_ = headSlugOf(*in->turn, *in->head);
-    capHost_ = slug_;
-    model_ = in->turn->model;
-    routed_ = in->head->routed || slug_ == "cumulo";
-    if (slug_ == "cumulo") {   // the cap of a routed request is its upstream's
-      const orch::RouterRoute route = orch::resolveRouterRoute(model_);
-      capHost_ = route.upstream;
-      model_ = route.model;
-    }
-    window_ = req_.timeoutMs ? req_.timeoutMs : orch::readWindowMsFor(capHost_, model_, routed_);
-    tableHost_ = capTableHost(capHost_, in->turn->dialect);
-    return capOf(*in);
+    return routeOf(*in->turn);
   }
 
-  // The body cap: the caller's, or with none given the head's full body (tx::budgetFor), the one
-  // fallback figure the turn path uses too; never the 85,000 B floor by accident (ruling 83) and never
-  // a head the setup did not name (ruling 91).
-  Status capOf(const RenderInput& in) {
-    bodyCap_ = req_.bodyCap;
-    if (bodyCap_) return Status::success();
-    orch::tx::HeadBudget b;
-    const orch::tx::HeadKey key{slug_, in.turn->model, in.head->routed};
-    if (slug_.empty() || !orch::tx::budgetFor(key, orch::tx::kDefaultProfile, b).ok())
-      return Status::fail(Err::InvalidArgument, "plain::runExchange.head");
-    bodyCap_ = b.bodyCap;
+  // The route (plain/route.h): the upstream and bare model of a routed head, the cap table's host,
+  // the rows; a head no slug names keeps an empty route and needs the caller's body cap.
+  Status routeOf(const TurnCtx& turn) {
+    const bool routeOk = resolveRoute(head_, turn, route_, refused_).ok();
+    capHost_ = route_.provider;
+    tableHost_ = route_.capHost;
+    model_ = route_.model;
+    routed_ = route_.routed;
+    // The read window is the route's at most: a caller's longer timeout is lowered to it.
+    const uint32_t routeWindow = orch::readWindowMsFor(capHost_, model_, routed_);
+    window_ = req_.timeoutMs && req_.timeoutMs < routeWindow ? req_.timeoutMs : routeWindow;
+    // The body cap: the caller's, or with none given the head's full body (tx::budgetFor), the one
+    // fallback figure the turn path uses too; never the 85,000 B floor by accident (ruling 83) and
+    // never a head the setup did not name (ruling 91).
+    bodyCap_ = req_.bodyCap ? req_.bodyCap : routeOk ? route_.bodyCap : 0;
+    if (!bodyCap_) return Status::fail(Err::InvalidArgument, "plain::runExchange.head");
     return Status::success();
   }
 
   providers::RoundKind kind() const {
-    return in_.toolChoiceNone ? providers::RoundKind::FinalRound : providers::RoundKind::ToolRound;
+    if (req_.summary) return providers::RoundKind::Fold;   // router design section 6 item 8
+    return base_.toolChoiceNone ? providers::RoundKind::FinalRound : providers::RoundKind::ToolRound;
   }
 
+  // One render at `tokens`, through the pre-flight (plain/route.h) every time: the codec reads the
+  // route, and what the row would refuse is left out and counted in dropped_.
   Status renderAt(uint32_t tokens) {
+    asked_ = tokens;
+    in_ = base_;
     in_.maxTokens = tokens;
+    in_.bodyCap = bodyCap_;
+    dropped_ = preflight(route_, ceiling(), pre_, in_);
+    if (req_.once && !in_.maxTokens) in_.maxTokens = req_.capCeiling;   // R7: a cap on every codec (row omits)
     http_ = HttpRequest{};
-    return req_.wire->render(in_, http_);
+    const Status st = req_.wire->render(in_, http_);
+    dropped_ |= pre_.lateDropped;
+    return st;
   }
 
   // The cap the next request carries: main's load-aware cap for this body inside the time
@@ -208,15 +222,41 @@ class Exchange {
     load.routed = routed_;
     load.fragmented = deps_.platform->largestFreeBlock && providers::heapFragmented(deps_.platform->largestFreeBlock());
     cap_ = providers::outputCapFor(tableHost_, model_, kind(), minU(window_, remaining()), load);
+    if (req_.capCeiling) ceilCaps(load);
     // the cut retry takes the retry cap of this request's own fit (the time left now)
     uint32_t tokens = cutRetried_ ? cap_.retryTokens : cap_.maxTokens;
     if (routerCap_ && (!tokens || routerCap_ < tokens)) tokens = routerCap_;
     // a retry that would send what the cut request sent is not taken: it would be cut again
     noRoom_ = cutRetried_ && tokens <= cutSentTokens_ && head_.effort == cutSentEffort_;
-    if (tokens != in_.maxTokens) st = renderAt(tokens);
+    if (tokens != asked_) st = renderAt(tokens);
     http_.cappedResend = routerCap_ != 0 && tokens == routerCap_;
     return st;
   }
+
+  // Lane E2-R4b (router design section 6 item 8): the caller's ceilings (the summarizer's two rungs). The
+  // first request carries at most capCeiling; the cut retry at most retryCeiling, inside the time fit, and
+  // only when it gives kRetryGainTokens more (the shared retry-gain rule), at the same effort.
+  uint32_t ceiling() const { return cutRetried_ && req_.retryCeiling ? req_.retryCeiling : req_.capCeiling; }
+  void ceilCaps(const providers::RoundLoad& load) {
+    if (!cap_.maxTokens && req_.once) {   // R7: the one-request check carries its cap on every codec
+      cap_.maxTokens = req_.capCeiling;
+      cap_.retryTokens = 0;
+      return;
+    }
+    if (!cap_.maxTokens) return;   // an uncapped row sends no cap, the summarizer's included
+    cap_.maxTokens = minU(cap_.maxTokens, req_.capCeiling);
+    const uint32_t fit = providers::roundFitTokens(tableHost_, model_, minU(window_, remaining()), load);
+    const uint32_t retry = minU(fit, req_.retryCeiling ? req_.retryCeiling : req_.capCeiling);
+    cap_.retryTokens = retry >= cap_.maxTokens + providers::kRetryGainTokens ? retry : 0;
+    cap_.retryEffort = "";
+  }
+
+  // What the body cap measures (lane E2-FIX4): the text of the body, and each photo spliced into it
+  // as the text its tokens would be (tx::kPhotoCapBytes), never its base64. The cap sizes the
+  // conversation in tokens; a photo's base64 is about a hundred times its tokens, and the photo caps
+  // (tx::visiblePhotos) bound the pixels a request carries. Counted as base64, four photos in view
+  // would push the conversation out of the request.
+  static size_t capLength(const HttpRequest& r) { return r.body.size() + r.splices.size() * orch::tx::kPhotoCapBytes; }
 
   // Render until the body fits its cap (the ladder climbs a rung each time), then check it.
   // `sendable` false: nothing fits and nothing was sent.
@@ -230,8 +270,9 @@ class Exchange {
         verdict_.err = ExchangeErr::Transport;
         return Status::success();
       }
-      if (bodyLength(http_) <= bodyCap_) break;
-      if (!req_.climb || capClimbs_ >= kMaxCapClimbs || !req_.climb(ClimbAsk{Climb::OverCap, bodyLength(http_), bodyCap_})) {
+      const size_t capped = capLength(http_);
+      if (capped <= bodyCap_) break;
+      if (!req_.climb || capClimbs_ >= kMaxCapClimbs || !req_.climb(ClimbAsk{Climb::OverCap, capped, bodyCap_})) {
         verdict_ = Verdict{};
         verdict_.err = ExchangeErr::ContextRefused;
         httpStatus_ = 0;
@@ -248,17 +289,47 @@ class Exchange {
 
   void send() {
     http_.timeoutMs = minU(window_, remaining());
+    // A routed request tells the router when the device gives up on it (x-cumulo-deadline-ms).
+    if (routed_ && http_.timeoutMs > providers::kRoutedDeadlineSlackMs)
+      http_.headers.emplace_back(providers::kRoutedDeadlineHeader,
+                                 std::to_string(http_.timeoutMs - providers::kRoutedDeadlineSlackMs));
     HttpResponse resp;
     std::string err;
     ++out_.requests;
     out_.requestBytes = (uint32_t)bodyLength(http_);
+    out_.capBytes = (uint32_t)capLength(http_);   // the fail-over's size check (E2-CFIX3)
     out_.maxTokens = in_.maxTokens;
+    out_.dropped = dropped_;
     recordRequest(in_, http_, out_.ref);   // the dossier keeps this request by reference (RB-E3)
+    out_.ref.dropped = dropped_;
     const bool answered = deps_.transport->exec(http_, resp, err) && resp.status > 0;
     httpStatus_ = answered ? resp.status : 0;
-    verdict_ = classify(httpStatus_, resp.body, routed_);
-    if (verdict_.err == ExchangeErr::None) read(resp);
+    verdict_ = classify(httpStatus_, resp.body, routed_, capHost_);
+    refusalAnswer_ = false;
+    if (verdict_.err == ExchangeErr::Other) providerVerdict(resp.body);
+    if (verdict_.err == ExchangeErr::None && !refusalAnswer_) read(resp);
     else if (verdict_.err == ExchangeErr::Other) refusedBody_ = resp.body.substr(0, 4096);
+    // E2-FIX14: a key or credit refusal's own words, so the shared park can tell billing from the key.
+    parkBody_ = verdict_.err == ExchangeErr::KeyRefused ? resp.body.substr(0, 4096) : std::string();
+    // The reason belongs to this answer only (F7): a later answer of another class clears it, so a
+    // line never joins one status to an earlier status's words. From the whole body: a long message
+    // still parses.
+    // E2-CFIX1: a billing refusal's reason too (a key's own usage limit names when it lifts).
+    // (A router's billing reason is read by the park itself, with its cause: not marked here.)
+    billing_ = verdict_.err == ExchangeErr::KeyRefused && verdict_.cls == orch::caps::ErrClass::Billing;
+    refusedReason_ = verdict_.err == ExchangeErr::Other || billing_ ? refusalReason(resp.body) : std::string();
+  }
+
+  // What the provider's class of an Other answer means (router design section 9): a refusal code is
+  // the model's refusal answer (nothing to run), an unknown model is marked unusable.
+  void providerVerdict(const std::string& body) {
+    if (verdict_.cls == orch::caps::ErrClass::UnknownModel) out_.modelUnusable = true;
+    if (verdict_.cls != orch::caps::ErrClass::Refusal) return;
+    step_ = ParsedStep{};
+    step_.stop = StopReason::Refusal;
+    step_.refusal = orch::wire::readErrorObject(body).message;
+    verdict_.err = ExchangeErr::None;
+    refusalAnswer_ = true;
   }
 
   void read(const HttpResponse& resp) {
@@ -268,22 +339,28 @@ class Exchange {
       return;
     }
     usage_ += step.usage;
-    if (step.stop == StopReason::MaxTokens) {
-      verdict_.err = ExchangeErr::Cut;
-      for (ToolCall& c : step.calls) c.complete = false;   // cut arguments are never dispatched
-      cutStep_ = std::move(step);
-      haveCut_ = true;
+    const bool cut = step.stop == StopReason::MaxTokens, full = step.stop == StopReason::Context;
+    if (cut || full || step.stop == StopReason::Refusal)
+      for (ToolCall& c : step.calls) c.complete = false;   // cut, cut short or refused arguments never run
+    if (!cut && !full) {
+      step_ = std::move(step);
       return;
     }
-    step_ = std::move(step);
+    // A cut is retried with more room; a full window climbs a rung (a larger cap cannot help). Either
+    // one after a window-full climb is delivered as it stands.
+    verdict_.err = full ? ExchangeErr::ContextRefused : ExchangeErr::Cut;
+    if (contextClimbed_) verdict_.err = ExchangeErr::Cut;
+    cutStep_ = std::move(step);
+    haveCut_ = true;
   }
 
   // Whether the exchange sends again (after any wait), by the class of the last answer.
   bool again() {
+    if (req_.once) return false;   // E2-PARK1: the re-check is one request
     switch (verdict_.err) {
       case ExchangeErr::Cut: return retryCut();
       case ExchangeErr::ContextRefused: return retryClimb();
-      case ExchangeErr::Other: return retryRefusedRef();
+      case ExchangeErr::Other: return retryRefusedField() || retryRefusedRef();
       case ExchangeErr::Transport:
       case ExchangeErr::Server:
       case ExchangeErr::RateLimited:
@@ -327,7 +404,7 @@ class Exchange {
 
   // The one retry of a cut answer, at the retry cap of the cut request's own fit.
   bool retryCut() {
-    if (cutRetried_ || !cap_.retryTokens || !fits(0)) return false;
+    if (cutRetried_ || contextClimbed_ || !cap_.retryTokens || !fits(0)) return false;
     cutRetried_ = true;
     cutSentTokens_ = in_.maxTokens;
     cutSentEffort_ = head_.effort;
@@ -344,9 +421,25 @@ class Exchange {
     return true;
   }
 
+  // A request refused for an optional field it named (reasoning effort, a schema, tool choice none, ...):
+  // remembered for the boot, the route narrowed, the same stored state rendered once more without it.
+  // Refusals a caller already owns keep their paths: a photo (the refused-photo line), a file id
+  // (refusedRef) and the summarizer's structured form (the compaction driver asks in lines and marks).
+  bool retryRefusedField() {
+    namespace rf = orch::caps::refused;
+    const uint16_t fields = verdict_.refusedFields & (uint16_t)~(rf::kImage | rf::kFileRef | rf::kStructured);
+    if (fieldResent_ || !fields || !route_.hasSlot || !fits(0)) return false;
+    if (!orch::wire::resendWithout(*refused_, route_.slot, model_.c_str(), routed_, fields)) return false;
+    route_.caps = orch::caps::capsFor(route_.slot, model_.c_str(), routed_, refused_);
+    route_.refused = refused_->fieldsFor(route_.slot, model_.c_str(), routed_);
+    fieldResent_ = true;
+    return true;
+  }
+
   bool retryClimb() {
     if (refusedClimbed_ || !req_.climb || !fits(0) || !req_.climb(ClimbAsk{Climb::Refused, 0, bodyCap_})) return false;
     refusedClimbed_ = true;
+    contextClimbed_ = haveCut_;   // a window-full answer climbed: its resend is not cut-retried
     ++out_.climbs;
     return true;
   }
@@ -369,15 +462,29 @@ class Exchange {
     out_.status = err == ExchangeErr::Cut       ? StatusLine::CutAnswer
                   : err == ExchangeErr::Blocked ? StatusLine::ModerationBlock
                                                 : StatusLine::ProviderError;
-    out_.errorLine = exchangeLine(err, slug_, httpStatus_);
+    out_.reason = err == ExchangeErr::Other || (err == ExchangeErr::KeyRefused && billing_) ? refusedReason_ : std::string();
+    out_.errorLine = exchangeLine(err, slug_, httpStatus_, out_.reason);
+    out_.errorLineStored = exchangeLine(err, slug_, httpStatus_);   // what may be kept: no provider words (F4)
+    if (out_.modelUnusable)   // lane E2-R4b: the provider does not know the model, said as that (PC-0259)
+      out_.errorLine = out_.errorLineStored = model_ + texts::stubs::kNotAvailableOn + providerName(capHost_) + ".";
+    if (err == ExchangeErr::Other) out_.providerBody = refusedBody_;
+    if (out_.parkHost) out_.parkBody = parkBody_;
+    out_.billing = out_.parkHost && billing_;
+    out_.byText = out_.parkHost && verdict_.byText;   // E2-PARK1: the account is asked before a park
     return Status::success();
   }
 
   const ExchangeDeps& deps_;
   const ExchangeRequest& req_;
   ExchangeResult& out_;
-  RenderInput in_;
+  RenderInput base_, in_;   // the caller's input (endpoint copied) and the pre-flighted one of the render
   HeadEndpoint head_;
+  Route route_;
+  PreflightState pre_;
+  orch::caps::RefusedFields ownRefused_;
+  orch::caps::RefusedFields* refused_ = nullptr;
+  uint32_t asked_ = 0;     // the cap the last render was asked for (before the pre-flight)
+  uint16_t dropped_ = 0;
   std::string slug_, capHost_, tableHost_, model_;
   bool routed_ = false;
   uint32_t t0_ = 0, window_ = 0, bodyCap_ = 0;
@@ -390,7 +497,9 @@ class Exchange {
   nimbus::orch::TokenUsage usage_;
   uint8_t sameHost_ = 0, capClimbs_ = 0;
   bool cutRetried_ = false, refusedClimbed_ = false, routerResent_ = false, refResent_ = false;
-  std::string refusedBody_;
+  bool contextClimbed_ = false, fieldResent_ = false, refusalAnswer_ = false;
+  std::string refusedBody_, refusedReason_, parkBody_;
+  bool billing_ = false;   // a KeyRefused that is a billing refusal (E2-CFIX1)
   uint32_t routerCap_ = 0;
   uint32_t cutSentTokens_ = 0;
   std::string cutSentEffort_;
@@ -400,13 +509,27 @@ class Exchange {
 
 }  // namespace
 
+// The exchange's state (two RenderInput copies, the head, the request and the route: about 2.3 KB)
+// lives in the working set (PSRAM on the device), not on the caller's stack: a summarizer request
+// runs at the bottom of the Telegram task's deepest chain (lane E2-STACK2). Freed on every way out.
 Status runExchange(const ExchangeDeps& deps, const ExchangeRequest& req, ExchangeResult& out) {
-  Exchange ex(deps, req, out);
-  return ex.run();
+  void* mem = orch::workingAlloc(sizeof(Exchange));
+  if (!mem) {
+    out = ExchangeResult{};
+    return Status::fail(Err::TooLarge, "plain::runExchange.noMemory");
+  }
+  struct Owned {
+    Exchange* ex;
+    ~Owned() {
+      ex->~Exchange();
+      orch::workingFree(ex);
+    }
+  } owned{new (mem) Exchange(deps, req, out)};
+  return owned.ex->run();
 }
 
 ExchangeErr classifyAnswer(int status, const std::string& body, bool routed) {
-  return classify(status, body, routed).err;
+  return classify(status, body, routed, std::string()).err;
 }
 
 namespace {
@@ -446,30 +569,182 @@ std::string providerSlugOf(const TurnCtx& turn, const HeadEndpoint& head) {
   return byDialect ? "custom" : s;   // a line never names a provider the endpoint is not
 }
 
+namespace {
+// A word of letters and digits this long that mixes both, or any word this long, reads as a key or
+// a token (words split on every other character, so a dated model id or a JSON path is not one).
+constexpr size_t kKeyMixed = 16, kKeyAny = 32;
+bool alnum(char c) { return std::isalnum((unsigned char)c) != 0; }
+
+// True when `s` could carry a credential: a key's own markers ("sk-" at the start of a word only),
+// or a key-like word.
+bool looksLikeSecret(const std::string& s) {
+  const std::string low = lower(s);
+  for (const char* m : {"bearer", "x-api-key", "api_key", "api-key", "apikey", "authorization", "password", "secret"})
+    if (low.find(m) != std::string::npos) return true;
+  for (size_t at = low.find("sk-"); at != std::string::npos; at = low.find("sk-", at + 1))
+    if (at == 0 || !alnum(low[at - 1])) return true;
+  size_t run = 0;
+  bool letter = false, digit = false;
+  for (size_t i = 0; i <= s.size(); ++i) {
+    if (i < s.size() && alnum(s[i])) {
+      ++run;
+      letter |= std::isalpha((unsigned char)s[i]) != 0;
+      digit |= std::isdigit((unsigned char)s[i]) != 0;
+      continue;
+    }
+    if (run >= kKeyAny || (run >= kKeyMixed && letter && digit)) return true;
+    run = 0;
+    letter = digit = false;
+  }
+  return false;
+}
+
+// The code point at s[i] (valid UTF-8, checked before), and its length in `len`.
+uint32_t codePointAt(const std::string& s, size_t i, size_t& len) {
+  const unsigned char c = (unsigned char)s[i];
+  len = c < 0x80 ? 1 : c < 0xE0 ? 2 : c < 0xF0 ? 3 : 4;
+  uint32_t cp = len == 1 ? c : len == 2 ? (c & 0x1Fu) : len == 3 ? (c & 0x0Fu) : (c & 0x07u);
+  for (size_t k = 1; k < len && i + k < s.size(); ++k) cp = (cp << 6) | ((unsigned char)s[i + k] & 0x3Fu);
+  return cp;
+}
+
+// The text as one line of printable ASCII (F2, F6): every control character (C0, DEL, C1, NEL) and
+// U+2028 / U+2029 is a space, runs of spaces are one, the ends trimmed; any other non-ASCII code
+// point (bidi controls, zero-width, letters) is one '?'. One line by construction.
+std::string asciiLineOf(const std::string& raw) {
+  std::string text;
+  for (size_t i = 0, len = 1; i < raw.size(); i += len) {
+    const uint32_t cp = codePointAt(raw, i, len);
+    const bool space = cp <= 0x20 || (cp >= 0x7F && cp <= 0x9F) || cp == 0x2028 || cp == 0x2029;
+    if (space) {
+      if (!text.empty() && text.back() != ' ') text += ' ';
+    } else {
+      text += cp < 0x7F ? (char)cp : '?';
+    }
+  }
+  while (!text.empty() && text.back() == ' ') text.pop_back();
+  return text;
+}
+
+// No markup of the reason is read (F1). The line goes out through Telegram's Markdown-to-HTML mapping
+// (nimbus::tgHtml) and the web chat's Markdown (ui_js.h _mdInline): a [text](url) link, `code` and
+// ``` blocks, **bold**, *italic* and _italic_. Headings, bullets and fences need a line start, which a
+// reason never has (the line begins with the device's words). '<', '>' and '&' are escaped there.
+std::string literalOf(std::string text) {
+  for (size_t i = 0; i < text.size(); ++i) {
+    char& c = text[i];
+    if (c == '[') c = '(';
+    else if (c == ']') c = ')';
+    else if (c == '`' || c == '*') c = '\'';
+    else if (c == '_' && (i == 0 || text[i - 1] == ' ')) c = '\'';   // _italic_ opens only there
+  }
+  return text;
+}
+
+// At most `max` bytes (ASCII by now), with "..." where it was cut.
+std::string cutTo(std::string text, size_t max) {
+  if (text.size() <= max) return text;
+  text.resize(max - 3);
+  while (!text.empty() && text.back() == ' ') text.pop_back();
+  return text + "...";
+}
+}  // namespace
+
+std::string refusalReason(const std::string& body) {
+  constexpr size_t kBodyMax = 16384;   // a larger body is not parsed: the device keeps its memory
+  constexpr size_t kReasonMax = 160;
+  if (body.empty() || body.size() > kBodyMax) return std::string();
+  const std::string raw = orch::providerErrorText(body);
+  if (raw.empty() || !nimbus::utf8Valid(raw)) return std::string();
+  const std::string text = asciiLineOf(raw);
+  if (text.empty() || looksLikeSecret(text)) return std::string();
+  return cutTo(literalOf(text), kReasonMax);
+}
+
+namespace {
+// "<who> refused the request (HTTP n)", then the provider's reason when there is one.
+std::string refusedLine(const std::string& who, const std::string& code, const std::string& reason) {
+  namespace n = texts::device_notes;
+  if (reason.empty() || code.empty()) return who + n::kRefused + code + ".";
+  const char last = reason.back();
+  return who + n::kRefused + code + n::kReasonSep + reason + (last == '.' || last == '!' || last == '?' ? "" : ".");
+}
+}  // namespace
+
 // The owner's line for a failed exchange (texts.h device_notes): what happened, then the
-// one next step; no provider text (a provider's message is outside content and stays in the log).
-std::string exchangeLine(ExchangeErr err, const std::string& slug, int httpStatus) {
+// one next step. `reason` (refusalReason of the provider's body; Other only) rides after the
+// status, for the person alone: every kept copy is errorLineStored, the line without it (F4).
+std::string exchangeLine(ExchangeErr err, const std::string& slug, int httpStatus, const std::string& reason) {
   namespace n = texts::device_notes;
   const std::string who = std::string(n::kNoReply) + providerName(slug);
   const std::string code = httpStatus > 0 ? n::kHttp + std::to_string(httpStatus) + ")" : "";
   switch (err) {
     case ExchangeErr::None: return "";
-    case ExchangeErr::Transport: return who + n::kUnreachable;
+    case ExchangeErr::Transport: return who + n::kUnreachable + n::kSendAgain;
     case ExchangeErr::Server: return who + n::kServerError + code + n::kTryLater;
     case ExchangeErr::RateLimited: return who + n::kLimiting + code + n::kTryLater;
     case ExchangeErr::ContextRefused: return std::string(n::kNoReply) + n::kTooLarge;
-    case ExchangeErr::KeyRefused: return who + n::kKeyRefused + code + n::kCheckKey;
+    case ExchangeErr::KeyRefused:   // E2-CFIX1: a billing refusal at 400 with its reason reads as a refusal
+      if (!reason.empty() && httpStatus == 400) break;
+      return who + n::kKeyRefused + code + n::kCheckKey;
     case ExchangeErr::Cut: return n::kCut;
-    case ExchangeErr::Malformed: return who + n::kUnreadable;
+    case ExchangeErr::Malformed: return who + n::kUnreadable + n::kTryAgain;
     case ExchangeErr::Blocked: return n::kBlocked;
     case ExchangeErr::Other: break;
   }
-  return who + n::kRefused + code + ".";
+  return refusedLine(who, code, reason);
+}
+
+std::string failoverLine(const std::string& fromSlug, ExchangeErr err, int httpStatus, const std::string& reason,
+                         const std::string& toModel) {
+  namespace n = texts::device_notes;
+  const std::string code = httpStatus > 0 ? n::kHttp + std::to_string(httpStatus) + ")" : "";
+  std::string s = providerName(fromSlug);
+  switch (err) {
+    case ExchangeErr::Transport: s += n::kUnreachable; break;
+    case ExchangeErr::Server: s += n::kServerError + code; break;
+    case ExchangeErr::RateLimited: s += n::kLimiting + code; break;
+    case ExchangeErr::KeyRefused: s += (reason.empty() ? n::kKeyRefused : n::kRefused) + code; break;
+    case ExchangeErr::Cut: s += texts::stubs::kCutAnswer; break;
+    case ExchangeErr::Malformed: s += n::kUnreadable; break;
+    default: s += n::kRefused + code;
+  }
+  if (!reason.empty()) {
+    std::string r = reason;
+    while (!r.empty() && (r.back() == '.' || r.back() == ' ')) r.pop_back();
+    s += n::kReasonSep + r;
+  }
+  return s + texts::stubs::kAnswerFrom + toModel + ".";
+}
+
+bool switchesHost(ExchangeErr err, int httpStatus, const std::string& body) {
+  switch (err) {
+    case ExchangeErr::Transport:
+    case ExchangeErr::Server:
+    case ExchangeErr::RateLimited:
+    case ExchangeErr::KeyRefused:
+    case ExchangeErr::Cut:
+    case ExchangeErr::Malformed: return true;
+    case ExchangeErr::Other:   // engine 1's Rejected moves, its BadRequest does not
+      return httpStatus > 0 && nimbus::orch::classifyHttpStatus(httpStatus, body) != nimbus::orch::StepErr::BadRequest;
+    default: return false;
+  }
 }
 
 bool targetQualified(const HeadTarget& t, hq::Line line) {
   return hq::lookup(t.host.c_str(), t.model.c_str(), line, t.wire).state == hq::State::Qualified;
 }
+
+namespace {
+// Design section 6 item 7: a target's body budget holds the request it replaces.
+bool bodyHolds(const HeadTarget& t, uint32_t capLength) {
+  if (!capLength) return true;
+  nimbus::orch::tx::HeadBudget b;
+  return nimbus::orch::tx::budgetFor(nimbus::orch::tx::HeadKey{t.host, t.model, t.routed}, nimbus::orch::tx::kDefaultProfile, b)
+             .ok() &&
+         b.bodyCap >= capLength;
+}
+}  // namespace
 
 Status pickFallback(const FallbackFacts& facts, int& index) {
   index = -1;
@@ -477,7 +752,7 @@ Status pickFallback(const FallbackFacts& facts, int& index) {
   if (!facts.freshAttempt || facts.effectRun || !facts.headParked) return Status::success();
   for (size_t i = 0; i < facts.order->size(); ++i) {
     const HeadTarget& t = (*facts.order)[i];
-    if (!t.parked && targetQualified(t, facts.line)) {
+    if (!t.parked && bodyHolds(t, facts.capLength) && targetQualified(t, facts.line)) {
       index = (int)i;
       break;
     }

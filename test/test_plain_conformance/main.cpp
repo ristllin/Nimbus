@@ -18,6 +18,8 @@
 #include "../support/tx_battery/props.h"
 #include "engine_tests.h"
 #include "h81_tests.h"
+#include "photo_tests.h"
+#include "x3_tests.h"
 
 namespace tx = nimbus::orch::tx;
 namespace plain = agent::plain;
@@ -141,25 +143,26 @@ void test_loop_shape_chat() {
   loopShape(plain::Dialect::ChatCompletions);
 }
 void test_loop_shape_flat() {
-  TXB_WAITS_FOR("PENDING RB-W4", "RB-E1a");
+  TXB_WAITS_FOR("PENDING RB-W4", "RB-E1a", "RB-TXT");   // text-mode history in the checkers (E2-R6)
   loopShape(plain::Dialect::Flat);
 }
 
 // ---- the guard's last round ------------------------------------------------------------
-// A model that never stops calling: 16 rounds, then one device item and one last round
-// with tool choice none, whose text is delivered.
+// A model that never stops calling (each call new, so the turn progresses): the hard round guard
+// at 64 (ruling 84 item 2; 16 soft rounds let a progressing owner turn go on), then one device
+// item and one last round with tool choice none, whose text is delivered.
 void guardLastRound(plain::Dialect d) {
   txb::Battery b(d);
   b.world.files["notes/a.md"] = "alpha";
-  for (int i = 0; i < plain::kDefaultRounds; ++i)
+  for (int i = 0; i < plain::kHardRounds; ++i)
     b.model.push(sp::call("read_file", "{\"path\":\"notes/a.md\",\"offset\":" + std::to_string(i) + "}"));
   b.model.push(sp::say("I stopped: the round limit."));
   plain::TurnOutcome out;
   TXB_OK(b.owner("keep reading", out));
   const auto& reqs = b.model.requests();
-  TEST_ASSERT_EQUAL(plain::kDefaultRounds + 1, (int)reqs.size());
-  TEST_ASSERT_EQUAL_STRING("none", reqs.back().view.toolChoice.c_str());
-  for (size_t i = 0; i + 1 < reqs.size(); ++i) TEST_ASSERT_TRUE(reqs[i].view.toolChoice != "none");
+  TEST_ASSERT_EQUAL(plain::kHardRounds + 1, (int)reqs.size());
+  TEST_ASSERT_TRUE_MESSAGE(txb::lastRoundOf(reqs.back().view), reqs.back().view.toolChoice.c_str());
+  for (size_t i = 0; i + 1 < reqs.size(); ++i) TEST_ASSERT_FALSE(txb::lastRoundOf(reqs[i].view));
   TEST_ASSERT_TRUE(out.trip == plain::GuardTrip::Rounds);
   TEST_ASSERT_EQUAL_STRING("I stopped: the round limit.", out.text.c_str());
   std::vector<tx::Item> items;
@@ -194,7 +197,7 @@ void test_guard_last_round_chat() {
   guardLastRound(plain::Dialect::ChatCompletions);
 }
 void test_guard_last_round_flat() {
-  TXB_WAITS_FOR("PENDING RB-W4", "RB-E1a", "RB-E1b");
+  TXB_WAITS_FOR("PENDING RB-W4", "RB-E1a", "RB-E1b", "RB-TXT");   // text-mode history in the checkers (E2-R6)
   guardLastRound(plain::Dialect::Flat);
 }
 
@@ -213,5 +216,7 @@ int main(int, char**) {
   RUN_TEST(test_guard_last_round_flat);
   engine_tests::run();
   h81_tests::run();
+  photo_tests::run();
+  x3_tests::run();
   return UNITY_END();
 }

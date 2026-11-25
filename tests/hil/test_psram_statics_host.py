@@ -26,15 +26,15 @@ ROOT = Path(__file__).resolve().parents[2]
 
 # file -> the buffers it keeps in PSRAM. A new buffer moved with psramStatic belongs here.
 MOVED = {
-    "src/agent/orchestrator.cpp": (
+    "src/agent/orchestrator_e1.cpp": (
         "g_memEcho",
         "g_foldEcho",
         "s_noticeText",
         "engine",
         "turnEngine",
         "journalStore",
-        "g_journal",
     ),
+    "src/agent/orchestrator_common.cpp": ("g_journal",),
     "src/agent/connectors.cpp": ("s_inRedirect", "s_inCode", "s_snapVerify", "s_snapErr", "s_snapAuthUrl"),
     "src/agent/telegram.cpp": ("g_media", "s_pending"),
     "src/sys/ota_update.cpp": ("g_manifest",),

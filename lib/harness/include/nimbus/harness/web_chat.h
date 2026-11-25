@@ -160,6 +160,15 @@ class WebLegacySlot {
 
 // POST /api/chat accepted the message: {"ok":true,"turn":"<id>"}.
 std::string chatPostJson(const std::string& turn);
+// Lane E2-FIX5: POST /api/chat refused the message (no turn id; HTTP 503). Busy: every booked turn
+// is still unanswered. Starting: the turn task's queue is not open yet (the first seconds after a
+// start), so nothing is finishing a reply. The page shows the error as it is.
+enum class ChatRefusal : uint8_t { Busy = 0, Starting };
+inline const char* chatRefusalJson(ChatRefusal why) {
+  if (why == ChatRefusal::Starting)
+    return "{\"error\":\"The device is starting up. Send that again in a few seconds.\",\"code\":\"starting\"}";
+  return "{\"error\":\"busy - the device is finishing a reply; send that again in a moment\"}";
+}
 
 struct ChatGetRequest {
   bool hasTurn = false;   // ?turn=<id> - this turn's reply (idempotent)

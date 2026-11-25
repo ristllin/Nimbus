@@ -132,7 +132,54 @@
     ],
     "lib/harness/src/plain_engine.cpp": [
       "RB-E1a",
-      "RB-E1b"
+      "RB-E1b",
+      "E2-R4b"
+    ],
+    "lib/harness/src/plain_exchange.cpp": [
+      "E2-R4a",
+      "E2-R5"
+    ],
+    "lib/harness/src/plain_compact.cpp": [
+      "E2-R4b",
+      "E2-R8"
+    ],
+    "lib/harness/src/providers/plain_plan.cpp": [
+      "E2-R2b",
+      "E2-R4b"
+    ],
+    "lib/harness/src/plain_wire.cpp": [
+      "E2-R4a",
+      "E2-R6",
+      "E2-R7"
+    ],
+    "lib/harness/src/providers/plain_wire_anthropic.cpp": [
+      "E2-R2b",
+      "E2-R4a"
+    ],
+    "test/test_router_conformance/**": [
+      "E2-R3",
+      "E2-R4a",
+      "E2-R4b"
+    ],
+    "tools/model_caps/models.toml": [
+      "E2-R1",
+      "E2-R10"
+    ],
+    "coverage/PROMPT-CHANGES.md": [
+      "E2-R4b",
+      "E2-R6"
+    ],
+    "lib/harness/include/nimbus/harness/plain/texts.h": [
+      "E2-R4b",
+      "E2-R6"
+    ],
+    "test/golden/model_text_catalog.txt": [
+      "E2-R4b",
+      "E2-R6"
+    ],
+    "test/support/fixtures/*_wire_synthetic/**": [
+      "E2-R3",
+      "E2-R10"
     ]
   },
   "lanes": {
@@ -1773,6 +1820,155 @@
         "test/test_harness_wire_anthropic/**"
       ],
       "plan_text": "lib/core/src/orch_head_loop.cpp (the prose rule per wire), lib/harness/src/providers/mistral.cpp and the other providers' discard and re-ask paths, lib/harness/src/engine.cpp (the call site RB-Q4 added), their tests, the wire-pinning tests RB-Q4 added"
+    },
+    "RB-C3": {
+      "stage": "S2",
+      "files": [
+        "lib/harness/src/plain_compact.cpp",
+        "lib/harness/include/nimbus/harness/plain/compact.h",
+        "lib/core/src/orch_tx_budget.cpp",
+        "lib/core/include/nimbus/orch/tx/budget.h",
+        "lib/harness/include/nimbus/harness/plain/texts.h",
+        "lib/core/src/orch_tx_digest.cpp",
+        "test/test_plain_compact/**",
+        "test/test_tx_budget/**",
+        "test/test_tx_digest/**",
+        "docs/reference/transcript-budgets.md"
+      ],
+      "plan_text": "lib/harness/src/plain_compact.cpp and its header (what a compaction keeps, the cumulative summary, the ahead-of-time summary), lib/core/src/orch_tx_budget.cpp and include/nimbus/orch/tx/budget.h (the recent part and the summary budget as settings), lib/harness/include/nimbus/harness/plain/texts.h (the summarizer text), lib/core/src/orch_tx_digest.cpp, their tests, docs/reference/transcript-budgets.md (generated)"
+    },
+    "E2-R1": {
+      "stage": "E2",
+      "files": [
+        "tools/model_caps/**",
+        "lib/core/include/nimbus/orch/model_caps.h",
+        "lib/core/include/nimbus/orch/model_caps_data.h",
+        "lib/core/src/orch_model_caps.cpp",
+        "test/test_model_caps/**",
+        "tools/engine/engine2_only.txt",
+        "tools/engine/owners.json",
+        "tools/engine/plan_e2_router.json",
+        "tools/release_gate/test_lane_files.py",
+        "tools/release_gate/test_model_caps_gen.py",
+        ".pre-commit-config.yaml"
+      ],
+      "plan_text": "tools/model_caps/**, lib/core/include/nimbus/orch/model_caps.h, lib/core/include/nimbus/orch/model_caps_data.h, lib/core/src/orch_model_caps.cpp, test/test_model_caps/**, tools/engine/engine2_only.txt, tools/engine/owners.json, tools/engine/plan_e2_router.json, tools/release_gate/test_lane_files.py, tools/release_gate/test_model_caps_gen.py, .pre-commit-config.yaml"
+    },
+    "E2-R2a": {
+      "stage": "E2",
+      "files": [
+        "test/support/goldens/wire/**",
+        "tools/router/refresh_goldens.py",
+        "test/test_route_goldens/**"
+      ],
+      "plan_text": "test/support/goldens/wire/**, tools/router/refresh_goldens.py, test/test_route_goldens/**"
+    },
+    "E2-R2b": {
+      "stage": "E2",
+      "files": [
+        "lib/harness/src/providers/plain_plan.h",
+        "lib/harness/src/providers/plain_plan.cpp",
+        "lib/harness/src/providers/plain_json_reader.h",
+        "lib/harness/src/providers/plain_json_reader.cpp",
+        "lib/harness/src/providers/plain_wire_anthropic.cpp"
+      ],
+      "plan_text": "lib/harness/src/providers/plain_plan.h, lib/harness/src/providers/plain_plan.cpp, lib/harness/src/providers/plain_json_reader.h, lib/harness/src/providers/plain_json_reader.cpp, lib/harness/src/providers/plain_wire_anthropic.cpp"
+    },
+    "E2-R3": {
+      "stage": "E2",
+      "files": [
+        "test/test_router_conformance/**",
+        "test/support/tx_battery/**",
+        "test/support/scripted_provider/wire_answers.h",
+        "test/support/fixtures/*_wire_synthetic/**",
+        "tools/router/check_golden_scope.py"
+      ],
+      "plan_text": "test/test_router_conformance/**, test/support/tx_battery/**, test/support/scripted_provider/wire_answers.h, test/support/fixtures/*_wire_synthetic/**, tools/router/check_golden_scope.py"
+    },
+    "E2-R4a": {
+      "stage": "E2",
+      "files": [
+        "lib/harness/include/nimbus/harness/plain/wire.h",
+        "lib/harness/include/nimbus/harness/plain/route.h",
+        "lib/harness/src/plain_route.cpp",
+        "lib/harness/src/plain_exchange.cpp",
+        "lib/harness/src/plain_wire.cpp",
+        "lib/harness/src/providers/plain_wire_anthropic.cpp",
+        "test/test_plain_wire_anthropic/**",
+        "test/test_router_conformance/**"
+      ],
+      "plan_text": "lib/harness/include/nimbus/harness/plain/wire.h, lib/harness/include/nimbus/harness/plain/route.h, lib/harness/src/plain_route.cpp, lib/harness/src/plain_exchange.cpp, lib/harness/src/plain_wire.cpp, lib/harness/src/providers/plain_wire_anthropic.cpp, test/test_plain_wire_anthropic/**, test/test_router_conformance/**"
+    },
+    "E2-R4b": {
+      "stage": "E2",
+      "files": [
+        "lib/harness/src/plain_engine.cpp",
+        "lib/core/src/orch_tx_item.cpp",
+        "lib/harness/src/providers/plain_plan.cpp",
+        "lib/harness/src/plain_compact.cpp",
+        "test/test_router_conformance/**",
+        "coverage/PROMPT-CHANGES.md",
+        "lib/harness/include/nimbus/harness/plain/texts.h",
+        "test/golden/model_text_catalog.txt"
+      ],
+      "plan_text": "lib/harness/src/plain_engine.cpp, lib/core/src/orch_tx_item.cpp, lib/harness/src/providers/plain_plan.cpp, lib/harness/src/plain_compact.cpp, test/test_router_conformance/**, coverage/PROMPT-CHANGES.md, lib/harness/include/nimbus/harness/plain/texts.h, test/golden/model_text_catalog.txt"
+    },
+    "E2-R5": {
+      "stage": "E2",
+      "files": [
+        "lib/core/include/nimbus/orch/wire_errors.h",
+        "lib/core/src/orch_wire_errors.cpp",
+        "lib/harness/src/plain_exchange.cpp",
+        "tools/router_contract/gen_contract_header.py",
+        "lib/core/include/nimbus/orch/router_reasons_e2.h",
+        "test/test_wire_errors/**"
+      ],
+      "plan_text": "lib/core/include/nimbus/orch/wire_errors.h, lib/core/src/orch_wire_errors.cpp, lib/harness/src/plain_exchange.cpp, tools/router_contract/gen_contract_header.py, lib/core/include/nimbus/orch/router_reasons_e2.h, test/test_wire_errors/**"
+    },
+    "E2-R6": {
+      "stage": "E2",
+      "files": [
+        "lib/harness/src/providers/plain_wire_chat.cpp",
+        "lib/harness/src/plain_wire.cpp",
+        "test/test_plain_wire_chat/**",
+        "coverage/PROMPT-CHANGES.md",
+        "lib/harness/include/nimbus/harness/plain/texts.h",
+        "test/golden/model_text_catalog.txt"
+      ],
+      "plan_text": "lib/harness/src/providers/plain_wire_chat.cpp, lib/harness/src/plain_wire.cpp, test/test_plain_wire_chat/**, coverage/PROMPT-CHANGES.md, lib/harness/include/nimbus/harness/plain/texts.h, test/golden/model_text_catalog.txt"
+    },
+    "E2-R7": {
+      "stage": "E2",
+      "files": [
+        "lib/harness/src/providers/plain_wire_openai.cpp",
+        "lib/harness/src/plain_wire.cpp",
+        "test/test_plain_wire_openai/**"
+      ],
+      "plan_text": "lib/harness/src/providers/plain_wire_openai.cpp, lib/harness/src/plain_wire.cpp, test/test_plain_wire_openai/**"
+    },
+    "E2-R8": {
+      "stage": "E2",
+      "files": [
+        "lib/harness/include/nimbus/harness/plain/chat_binding.h",
+        "lib/harness/src/plain_compact.cpp",
+        "lib/harness/src/plain_unattended.cpp",
+        "src/agent/orchestrator_plain.cpp",
+        "nimbusd/src/engine2_host.h",
+        "lib/core/src/model_catalog.cpp",
+        "src/agent/provider_verify.cpp",
+        "test/test_plain_conformance/engine_tests.h",
+        "nimbusd/tests/test_plain_rig.cpp"
+      ],
+      "plan_text": "lib/harness/include/nimbus/harness/plain/chat_binding.h, lib/harness/src/plain_compact.cpp, lib/harness/src/plain_unattended.cpp, src/agent/orchestrator_plain.cpp, nimbusd/src/engine2_host.h, lib/core/src/model_catalog.cpp, src/agent/provider_verify.cpp, test/test_plain_conformance/engine_tests.h, nimbusd/tests/test_plain_rig.cpp"
+    },
+    "E2-R10": {
+      "stage": "E2",
+      "files": [
+        "tools/harness-lab/record_to_fixtures.py",
+        "test/support/fixtures/**",
+        "tools/model_caps/models.toml"
+      ],
+      "plan_text": "tools/harness-lab/record_to_fixtures.py, test/support/fixtures/**, tools/model_caps/models.toml"
     }
   }
 }

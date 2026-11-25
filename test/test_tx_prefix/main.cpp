@@ -101,7 +101,8 @@ void test_checker_counts_named_change_points() {
 }
 
 // ---- wire level ---------------------------------------------------------------------
-void expectSameMessagesExceptResult(const sp::RequestView& a, const sp::RequestView& b, const std::string& id) {
+void expectSameMessagesExceptResult(const sp::RequestView& a, const sp::RequestView& b, const std::string& id,
+                                    const std::string& tool) {
   TEST_ASSERT_TRUE(a.systemBlocks == b.systemBlocks && a.toolsJson == b.toolsJson);
   TEST_ASSERT_TRUE(a.messages.size() <= b.messages.size());
   for (size_t i = 0; i < a.messages.size(); ++i) {
@@ -109,7 +110,10 @@ void expectSameMessagesExceptResult(const sp::RequestView& a, const sp::RequestV
     for (size_t k = 0; k < a.messages[i].blocks.size(); ++k) {
       const sp::Block& x = a.messages[i].blocks[k];
       const bool sameOrOutside = (k < b.messages[i].blocks.size() && x == b.messages[i].blocks[k]) ||
-                                 (x.kind == sp::BlockKind::ToolResult && x.id == id);
+                                 (x.kind == sp::BlockKind::ToolResult && x.id == id) ||
+                                 // E2-REP5: in text mode the outside result is its "[device] earlier I ran" line
+                                 (txb::detail::textMode(a) && x.kind == sp::BlockKind::Text &&
+                                  x.text.rfind(txb::detail::ranLine(tool, ""), 0) == 0);
       TEST_ASSERT_TRUE_MESSAGE(sameOrOutside, "the outside change point changed more than the outside result");
     }
   }
@@ -134,10 +138,10 @@ void wirePrefix(plain::Dialect d) {
     TEST_ASSERT_TRUE_MESSAGE(sp::isPrefix(r[i - 1].view, r[i].view, why), (snaps[i].name + ": " + why).c_str());
   }
   const txb::Snapshot& last = snaps.back();
-  std::string outsideId;
+  std::string outsideId, outsideTool;
   for (const tx::Item& it : last.c.items)
-    if (it.kind == tx::ItemKind::Result && it.cls == tx::ResultClass::Outside) outsideId = it.id;
-  expectSameMessagesExceptResult(r[r.size() - 2].view, r.back().view, outsideId);
+    if (it.kind == tx::ItemKind::Result && it.cls == tx::ResultClass::Outside) outsideId = it.id, outsideTool = it.n;
+  expectSameMessagesExceptResult(r[r.size() - 2].view, r.back().view, outsideId, outsideTool);
 }
 
 // A restart reads every item back from its stored line: the same request, byte for byte.
@@ -174,7 +178,7 @@ void test_wire_prefix_chat() {
   wireRestart(plain::Dialect::ChatCompletions);
 }
 void test_wire_prefix_flat() {
-  TXB_WAITS_FOR("PENDING RB-W4", "RB-T1");
+  TXB_WAITS_FOR("PENDING RB-W4", "RB-T1", "RB-TXT");   // text-mode history in the checkers (E2-R6)
   wirePrefix(plain::Dialect::Flat);
   wireRestart(plain::Dialect::Flat);
 }
@@ -245,7 +249,9 @@ void test_outside_content_leaves_at_a_named_point() {
                                                        "outside bytes reached a later turn's request");
 }
 
-// A write to a path supersedes the earlier whole read of it, at a named point.
+// A write to a path supersedes the earlier whole read of it: a named change point is logged, and
+// (E2-VERB, rulings 81, 82 and 106) the read stays whole, as a simple loop replays it, so the prefix
+// does not break at all (before, the read left the request there).
 void test_a_superseded_read_leaves_at_a_named_point() {
   TXB_WAITS_FOR("PENDING RB-E1a");
   txb::Battery b;
@@ -254,9 +260,9 @@ void test_a_superseded_read_leaves_at_a_named_point() {
   TXB_OK(txb::runTurns(b, {txb::withTool(30, "read my plan", "read_file", R"({"path":"notes/plan.md"})", "read"),
                            txb::withTool(60, "replace it", "write_file", R"({"path":"notes/plan.md","text":"V2"})", "done"),
                            txb::chat(60, "what now?", "V2")}));
-  expectPrefix(b, 1);
-  TEST_ASSERT_TRUE_MESSAGE(b.model.last().body.find("PLAN-V1-TAIL") == std::string::npos,
-                           "the superseded read is still shown whole");
+  expectPrefix(b, 0);
+  TEST_ASSERT_TRUE_MESSAGE(b.model.last().body.find("PLAN-V1-TAIL") != std::string::npos,
+                           "the superseded read became a stub by default");
 }
 
 // A whole scripted day with real gaps: every break is a named change point.

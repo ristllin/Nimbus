@@ -15,9 +15,11 @@
 
 #include "../../lib/harness/src/providers/plain_body.h"
 #include "../support/scripted_provider/scripted_provider.h"
+#include "nimbus/harness/output_caps.h"
 #include "nimbus/harness/plain/compact.h"
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/harness/platform.h"
+#include "nimbus/orch/request_budget.h"
 #include "world.h"
 
 namespace sp = harness_test::scripted;
@@ -183,11 +185,18 @@ void test_the_note_names_turns_and_omitted_rows() {
       "engine; their tool work is not shown.",
       tx::importNote(p).c_str());
   p.named = 12;
+  p.searchBound = true;
   TEST_ASSERT_EQUAL_STRING(
       "[device] 3 turns between Sat 17 Oct 2026 09:00 and Sun 18 Oct 2026 13:00 were answered by the earlier "
       "engine; their tool work is not shown. The 12 earlier messages before Sat 17 Oct 2026 09:00 are not shown: "
       "search finds them.",
       tx::importNote(p).c_str());
+  p.searchBound = false;   // E2-FIX5: search not bound, the note names no call
+  TEST_ASSERT_EQUAL_STRING(
+      "[device] 3 turns between Sat 17 Oct 2026 09:00 and Sun 18 Oct 2026 13:00 were answered by the earlier "
+      "engine; their tool work is not shown. The 12 earlier messages before Sat 17 Oct 2026 09:00 are not shown.",
+      tx::importNote(p).c_str());
+  p.searchBound = true;
   p.turns = 1;
   p.named = 1;
   p.firstT = p.lastT = 0;
@@ -537,7 +546,16 @@ void test_digest0_is_asked_through_the_drivers_slice_and_prompt() {
   TEST_ASSERT_EQUAL_STRING("claude-haiku-5-5", rec.view.model.c_str());
   JsonDocument doc;
   TEST_ASSERT_FALSE(deserializeJson(doc, rec.body));
-  TEST_ASSERT_EQUAL(plain::kSummarizerMaxTokens, doc["max_tokens"] | 0);
+  // The rung's 4,096 is a ceiling the time fit may lower (lane E2-R4b, router design section 6 item 8): the
+  // request carries min(ceiling, the load-aware cap for this body inside the driver's 45 s window).
+  agent::providers::RoundLoad load;
+  load.bodyBytes = rec.body.size();
+  const uint32_t window = std::min(plain::kCompactRequestMs, nimbus::orch::readWindowMsFor("anthropic", "claude-haiku-5-5", false));
+  const uint32_t fit = agent::providers::outputCapFor("anthropic", "claude-haiku-5-5", agent::providers::RoundKind::ToolRound,
+                                                      window, load).maxTokens;
+  const uint32_t sent = doc["max_tokens"] | 0u;
+  TEST_ASSERT_TRUE(sent > 0 && sent <= plain::kSummarizerMaxTokens);
+  TEST_ASSERT_EQUAL_UINT32(std::min<uint32_t>(fit, plain::kSummarizerMaxTokens), sent);
   // the input is planSlice's rendering of the old summary as one closed turn of its day
   tx::TxArena a;
   TEST_ASSERT_TRUE(a.init(64 * 1024, [](size_t n) { return std::malloc(n); }, [](void* p) { std::free(p); }).ok());
@@ -626,7 +644,9 @@ void test_rows_between_the_pointers_come_first_and_are_compacted_first() {
               (unsigned long long)w.m.thru, (unsigned long long)w.m.shift, (unsigned long long)plan.thru,
               (unsigned long long)plan.lastRow, plan.turns, plan.day.c_str(), (unsigned)plan.resident);
   TEST_ASSERT_TRUE(plan.thru > 0);
-  TEST_ASSERT_TRUE(plan.lastRow > w.m.thru && plan.lastRow <= w.m.shift);
+  // The between rows are the oldest after thru, so a slice starts with them; since lane RB-C3 a slice
+  // may span days and go on past the shift pointer (ruling 106: the recent part, not the day, bounds it).
+  TEST_ASSERT_TRUE(plan.lastRow > w.m.thru);
   TEST_ASSERT_TRUE(plan.resident > rules.high);
 }
 

@@ -2,7 +2,9 @@
 #include <string>
 #include <vector>
 
-#include "nimbus/harness/skill_attach.h"   // AttachTable / AttachPick
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
+#include "nimbus/harness/skill_attach.h"   // AttachTable / AttachPick (engine 1: the per-chat attach)
+#endif
 #include "nimbus/harness/skill_store.h"   // SkillStore / SkillCaller / SkillResult
 
 // skills - the device's skills the assistant uses and can edit (lane I).
@@ -41,6 +43,7 @@ agent::SkillStore& store();
 bool selfApproveOn();
 bool setSelfApprove(bool on);
 
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
 // ---- the engine's attach surface ---------------------------------------------
 // The [SKILLS] index block (the portable skillsIndexText over the store).
 std::string indexText();
@@ -53,6 +56,8 @@ std::string attachBody(const std::string& id);
 void noteUsed(const std::string& chat, const std::string& id);
 // /clear in a chat drops its sticky skills (the CUM-511 boundary).
 void dropChat(const std::string& chat);
+
+#endif
 
 // ---- the tool and web surface ------------------------------------------------
 // Built-ins and stored skills, a stored one replacing a built-in of the id.

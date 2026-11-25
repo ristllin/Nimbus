@@ -30,6 +30,7 @@ import compare  # noqa: E402
 import costs  # noqa: E402
 import fixtures  # noqa: E402
 import grade  # noqa: E402
+import habits  # noqa: E402
 import mechanisms  # noqa: E402
 import nimbusd_ctl  # noqa: E402
 import refloop  # noqa: E402
@@ -1064,6 +1065,104 @@ class MistralWireTest(unittest.TestCase):
         self.assertEqual(compare.MODELS["mistral-large-latest"]["sub_model"], "mistral-small-latest")
         usage = {"input": 1_000_000, "cached": 0, "cache_write": 0, "output": 1_000_000}
         self.assertAlmostEqual(costs.cost_usd("mistral-large-latest", usage), 8.0)
+
+
+class Engine2ArmTest(unittest.TestCase):
+    """Arm A on engine 2 (lane E2-HOST): its tool names count as the old engine's, its notes as memory."""
+
+    def test_engine2_file_tool_names_meet_the_checks(self):
+        step = {"tools": [{"name": "read_file"}, {"name": "append_file"}]}
+        self.assertTrue(grade.CHECKS["tool_called"](["files_read"], step, {}, [])[0])
+        self.assertFalse(grade.CHECKS["tool_not_called"](["files_append"], step, {}, [])[0])
+        self.assertFalse(grade.CHECKS["tool_called"](["files_read"], {"tools": [{"name": "list_files"}]}, {}, [])[0])
+
+    def test_engine2_notes_are_memory(self):
+        state = {"memories": [], "rules": "", "scratchpad": "", "notes": "- dentist: 24 December 10:00"}
+        self.assertTrue(grade.CHECKS["memory_regex"]("(?i)dentist.*24", {}, state, [])[0])
+        self.assertFalse(grade.CHECKS["memory_regex"]("(?i)dentist", {}, {**state, "notes": ""}, [])[0])
+
+    def test_engine_flag_reaches_arm_a_only(self):
+        job = arms.Job(
+            model="claude-haiku-5-5",
+            head="anthropic",
+            effort="medium",
+            sub_model="claude-haiku-5-5",
+            scenario={"id": "x"},
+            rep=1,
+            dir=Path(tempfile.mkdtemp()),
+            engine="2",
+        )
+        self.assertNotIn("NIMBUSD_ENGINE", job.keys)
+        self.assertEqual(job.engine, "2")
+
+
+class HabitsTest(unittest.TestCase):
+    """tools/refloop/habits.py: the three habits of the E2-H2H losses, counted from a stored record."""
+
+    @staticmethod
+    def _say(n, user, reply, tools=()):
+        return {"kind": "say", "turn": n, "user": [user], "reply": reply, "tools": list(tools), "head_requests": 1}
+
+    def test_unasked_writes_count_only_turns_that_asked_for_nothing(self):
+        journal = self._say(
+            1,
+            "Journal, day 1. Just say you have it.",
+            "Saved.",
+            [
+                {"name": "write_file", "args": {"path": "journal/day-01.md", "content": "x"}, "result": "wrote"},
+                {"name": "memory_write", "via": "reply", "args": {"content": "x"}, "result": "stored"},
+                {"name": "schedule", "args": {"op": "list"}, "result": "none"},
+                {"name": "prefs_edit", "args": {"action": "list"}, "result": "none"},
+                {"name": "schedule", "args": {"op": "create", "when": "2026-11-25 12:00"}, "result": "stored"},
+            ],
+        )
+        question = self._say(
+            23,
+            "What did I pay for the ferry?",
+            "14.50",
+            [
+                {"name": "write_file", "args": {"path": "a/b", "content": "x"}, "result": "wrote"},
+            ],
+        )
+        run = habits.scan_run({"scenario": "long-chat", "steps": [journal, question]}, None)
+        self.assertEqual(run["unasked_writes"], 3)  # file, reply-field memory, reminder; a list is no write
+        self.assertEqual(run["where"]["unasked_writes"], [1])
+        self.assertEqual(habits.scan_run({"scenario": "file-lifecycle", "steps": [journal]}, None)["unasked_writes"], 0)
+
+    def test_trivial_calc_is_one_operator_between_two_numbers(self):
+        for expr in ("12*12", "219 - 210", "(612-557)", "250/4", "1.65 x 180"):
+            self.assertTrue(habits.is_trivial_calc({"name": "calc", "args": {"expression": expr}}), expr)
+        for expr in ("(612-557)/612*100", "164+148+117", "15% of 80", "89+47+28"):
+            self.assertFalse(habits.is_trivial_calc({"name": "calc", "args": {"expression": expr}}), expr)
+        self.assertTrue(habits.is_trivial_calc({"name": "calc", "args": {"expr": "7*7="}}))
+        self.assertFalse(habits.is_trivial_calc({"name": "calc", "args": "7*7"}))  # an odd record is no crash
+
+    def test_rounded_away_is_a_nearby_figure_that_is_not_the_result(self):
+        calc = {"name": "calc", "args": {"expression": "1.65*180 + 1.30*200"}, "result": "= 557"}
+        self.assertTrue(habits.rounded_away(self._say(1, "q", "About 560 kcal.", [calc])))
+        half = {"name": "calc", "args": {"expression": "201/2"}, "result": "= 100.5"}
+        self.assertFalse(habits.rounded_away(self._say(1, "q", "about 101", [half])))  # rounded half up, as calc does
+        self.assertFalse(habits.rounded_away(self._say(1, "q", "About 557 kcal, call it 560.", [calc])))
+        exact = {
+            "name": "calc",
+            "args": {"expression": "1150/42"},
+            "result": "= 27.380952 (rounded to 6 decimal places)",
+        }
+        self.assertFalse(habits.rounded_away(self._say(1, "q", "about 27.38 a square metre", [exact])))
+
+    def test_the_food_scenario_failure_is_counted_with_its_check(self):
+        sc = scenario.load(SCENARIOS / "01-recent-compare-food.yaml")
+        calc = {"name": "calc", "args": {"expression": "1.65*180 + 1.30*200"}, "result": "= 557"}
+        gap = {"name": "calc", "args": {"expression": "612-557"}, "result": "= 55"}
+        steps = [
+            self._say(1, "estimate?", "About 560 kcal.", [calc]),
+            self._say(2, "stretch?", "Child's pose."),
+            self._say(3, "612 it was", "Thanks, 612 then."),
+            self._say(4, "how far off?", "55 kcal low, about 9%.", [gap]),
+        ]
+        run = habits.scan_run({"scenario": "recent-compare-food", "steps": steps}, sc)
+        self.assertEqual((run["rounded_away"], run["trivial_calc"]), (1, 1))
+        self.assertEqual(run["failed_checks"], ["turn 4 difference_from_turn"])
 
 
 if __name__ == "__main__":

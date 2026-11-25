@@ -1,0 +1,4 @@
+synthetic: cumulo-nimbus docs/llm-router.md and packages/shared/src/router-refusals.ts (the cloud repo; no public page), read 2026-11-24
+status: 429
+expect: class=fail_over retry=no
+{"error":"upstream_rate_limited","reason":"upstream_rate_limited","message":"The provider is rate limiting the router.","charged":false,"retryable":false}

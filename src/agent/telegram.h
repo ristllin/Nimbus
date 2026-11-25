@@ -1,6 +1,13 @@
 #pragma once
 #include <Arduino.h>
 
+#include <cstdint>
+#include <string>
+#include <vector>
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+namespace nimbus::orch { class SeenIndex; }   // RB-TG1 (nimbus/orch/seen_index.h)
+#endif
+
 
 // telegram - Telegram Bot API long-poll client for Nimbus, ported from
 // Nuage-Solide src/telegram_client.{h,cpp} (Head Orchestrator v2).
@@ -128,6 +135,10 @@ GuardStatus guardStatus();
 // channels and the test seams). Returns FALSE when the inbound queue is full -
 // the caller must tell the sender rather than let the message vanish.
 bool injectMessage(const String& chatId, const String& text);
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+// Lane E2-FIX5: the turn task's inbound queue exists (false in the first seconds after a start).
+bool inboxOpen();
+#endif
 bool enabled();
 
 // ---- lane PROG: the running turn's round-boundary signals -------------------
@@ -282,6 +293,22 @@ bool    turnIsVoiceNote();
 // Lane ECHO fix pass: inside the MessageCallback, the Telegram message_id of the
 // message the turn answers (0 when unknown) - the progress line replies to it.
 int64_t turnMessageId();
+
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+// RB-TG1: the updates engine 2 already took. RB-I1's boot rebuilds it per chat
+// (nimbus::orch::rebuildSeen); the receive cycle drops a seen update and notes each turn's.
+nimbus::orch::SeenIndex& seenIndex();
+// Lane E2-DEV: one part the engine's deliver function already made (plain/deliver.h), sent now on
+// this task as Telegram HTML with the plain resend; never split or sanitized again. Archived like
+// every outbound send. True when Telegram took it. The poll task only (the one TLS slot).
+bool sendPart(const String& chatId, const std::string& part);
+// Lane E2-DEV: inside the MessageCallback, the Telegram update ids of the message being handled
+// when it is `chatId`'s (TurnInput::src); empty for an injected or local message.
+std::vector<uint64_t> turnUpdateIds(const String& chatId);
+// Lane E2-FIX10: inside the MessageCallback, the file-store paths the device stored for the message
+// being handled (its photos, documents, a long paste), when it is `chatId`'s (TurnInput::stored).
+std::vector<std::string> turnStoredPaths(const String& chatId);
+#endif
 
 }  // namespace telegram
 }  // namespace agent

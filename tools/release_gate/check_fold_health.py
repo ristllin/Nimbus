@@ -47,7 +47,7 @@ FOLD_SOURCES = (
     "lib/harness/include/nimbus/harness/fold_driver.h",
     "lib/harness/src/fold_driver.cpp",
     "lib/harness/src/engine_fold.cpp",
-    "src/agent/orchestrator.cpp",
+    "src/agent/orchestrator_e1.cpp",
     "src/agent/orch_persist.cpp",
     "nimbusd/src/rig.h",
     "nimbusd/src/hosted_fold.h",

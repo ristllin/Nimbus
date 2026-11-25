@@ -1,0 +1,10 @@
+{
+  "about": "Lane E2-P-SUB, at its rebase onto rb-main caacf05c1: lane E2-P-PHOTO's TurnRun::ask calls itself once when the provider refused the turn's photos (plain_engine.cpp ask, photosRefused); no row declared it, so the gate failed on every engine-2 image from that merge on. Declared here with its real bound, counted twice.",
+  "recursion": [
+    {
+      "function": "^agent::plain::\\(anonymous namespace\\)::TurnRun::ask\\(\\)$",
+      "depth": 2,
+      "why": "plain_engine.cpp TurnRun::ask: it calls itself only when photosRefused() answers true, which sets t_.photoRefusalResent first and answers false whenever it is already set, so the second ask never calls a third"
+    }
+  ]
+}

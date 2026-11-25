@@ -266,6 +266,14 @@ void encodeHead(const HeadState& h, std::string& s) {
   field(s, "last_req_at", h.lastReqAt);
   field(s, "open_turn", h.openTurn);
   field(s, "attempts", h.attempts);
+  if (!h.refusedPhotos.empty()) {   // E2-REP4: written only when there is one (older heads stay byte for byte)
+    s += ",\"refused_photos\":[";
+    for (size_t i = 0; i < h.refusedPhotos.size(); ++i) {
+      if (i) s += ',';
+      putStr(s, h.refusedPhotos[i]);
+    }
+    s += ']';
+  }
   const uint32_t crc = crc32(s.data(), s.size());
   s += kTailHead;
   for (int i = 7; i >= 0; --i) s += kHex[(crc >> (4 * i)) & 15u];
@@ -363,6 +371,7 @@ const NumKey kNumKeys[] = {
 bool headField(const std::string& key, HeadCursor& c, HeadState& h, unsigned& seen) {
   if (key == "profile") return readStr(c, h.profile, kHeadMaxString);
   if (key == "pinned") return readStrList(c, h.pinned);
+  if (key == "refused_photos") return readStrList(c, h.refusedPhotos) && h.refusedPhotos.size() <= kHeadMaxRefusedPhotos;
   if (c.p < c.end && (*c.p == '"' || *c.p == '[')) {   // a key a newer writer added
     std::string skip;
     std::vector<std::string> skipList;
@@ -407,7 +416,10 @@ bool decodeHead(const char* data, size_t len, HeadState& out) {
 
 bool headWithinLimits(const HeadState& h) {
   if (h.profile.size() > kHeadMaxString || h.pinned.size() > kHeadMaxPinned) return false;
+  if (h.refusedPhotos.size() > kHeadMaxRefusedPhotos) return false;
   for (const std::string& p : h.pinned)
+    if (p.size() > kHeadMaxString) return false;
+  for (const std::string& p : h.refusedPhotos)
     if (p.size() > kHeadMaxString) return false;
   return true;
 }
@@ -722,10 +734,14 @@ Status TxLog::adopt(const HeadState& h, const std::vector<uint32_t>& segs) {
 
 Status TxLog::open(HeadState& head) {
   open_ = false;
+  lost_ += held_;   // never written in order now: a reopen merges what RAM holds itself (plain reopen)
+  held_ = 0;
+  heldFrom_ = 0;
   Status st = txDir(chatKey_, dir_);
   if (!st.ok()) return Status::fail(Err::InvalidArgument, "tx::TxLog::open");
   std::vector<uint32_t> segs;
   if (!(st = segments(segs)).ok()) return st;
+  if (segs.empty() && !(st = provenFresh()).ok()) return st;
   HeadState h;
   bool have = segs.empty();
   // The temp first: a whole one exists only when a cut or a refusal stopped its rename, so
@@ -741,6 +757,25 @@ Status TxLog::open(HeadState& head) {
   h.end = segBytes_;
   head = h;
   if (rebuilt) (void)writeHead(h);   // best effort: the next boot does not rebuild again
+  return Status::success();
+}
+
+// No segment is listed: a fresh chat only when nothing of an earlier one can be read (lane
+// E2-STORE, finding S1). A head file that names stored items, or a first segment that answers
+// a size, means the listing missed them: Io (cannot tell), never an empty conversation. A head
+// file that is missing or torn names nothing; one that names nothing yet (next_q 1, no line,
+// no digest) is a chat that never stored an item.
+Status TxLog::provenFresh() {
+  const Status cannotTell = Status::fail(Err::Io, "tx::TxLog::open: no segment listed, yet the chat has stored state");
+  for (const char* name : {kHeadTmpName, kHeadName}) {
+    HeadState h;
+    const Status st = readHeadFile(dir_ + "/" + name, h);
+    if (st.err == Err::Io) return st;
+    if (st.ok() && (h.nextQ > 1 || h.endQ || h.end || h.seg > 1 || h.thru || h.stub)) return cannotTell;
+  }
+  std::string path;
+  size_t size = 0;
+  if (segmentPath(chatKey_, 1, path).ok() && files_.size(path, size)) return cannotTell;
   return Status::success();
 }
 
@@ -845,10 +880,14 @@ Status TxLog::writeLine(const char* line, size_t len, uint64_t q, StoreState& st
   return Status::success();
 }
 
+// Lane E2-BFIX1: a line of a higher q never goes to storage before the items store() holds.
+static Status heldFirst(const char* where) { return Status::fail(Err::NotStored, where); }
+
 Status TxLog::append(const Item& item, StoreState& state) {
   state = StoreState::NotStored;
   Status st = encodeLine(item, line_);
   if (!st.ok()) return st;
+  if (held_) return heldFirst("tx::TxLog::append: held items go first");
   return writeLine(line_.data(), line_.size(), item.q, state);
 }
 
@@ -857,12 +896,55 @@ Status TxLog::appendLine(const char* line, size_t len, StoreState& state) {
   LineHeader h;
   Status st = checkLine(line, len, h);
   if (!st.ok()) return Status::fail(st.err, "tx::TxLog::appendLine");
+  if (held_) return heldFirst("tx::TxLog::appendLine: held items go first");
+  return writeChecked(line, len, h.q, state);
+}
+
+Status TxLog::writeChecked(const char* line, size_t len, uint64_t q, StoreState& state) {
   if (line[len - 1] != '\n') {
     line_.assign(line, len);
     line_ += '\n';
-    return writeLine(line_.data(), line_.size(), h.q, state);
+    return writeLine(line_.data(), line_.size(), q, state);
   }
-  return writeLine(line, len, h.q, state);
+  return writeLine(line, len, q, state);
+}
+
+// The arena's line at `at` to storage (it passed checkLine when the arena took it).
+Status TxLog::writeArenaLine(const TxArena& arena, size_t at, uint64_t q, StoreState& state) {
+  state = StoreState::NotStored;
+  const char* data = nullptr;
+  size_t len = 0;
+  const Status st = arena.line(at, data, len);
+  if (!st.ok() || len == 0) return st.ok() ? Status::fail(Err::Torn, "tx::TxLog::writeArenaLine") : st;
+  return writeChecked(data, len, q, state);
+}
+
+Status TxLog::flushHeld(TxArena& arena) {
+  if (!held_) return Status::success();
+  size_t from = arena.count();   // the held items are the arena's newest: walk back to the oldest
+  ArenaEntry e;
+  while (from > 0 && arena.header(from - 1, e).ok() && e.q >= heldFrom_) --from;
+  uint32_t found = 0;
+  for (size_t i = from; i < arena.count(); ++i) {
+    if (!arena.header(i, e).ok() || !(e.flags & kItemNotStored)) continue;
+    StoreState state = StoreState::NotStored;
+    (void)writeArenaLine(arena, i, e.q, state);
+    if (state != StoreState::Stored) {   // refused: the rest stay held, from this one
+      heldFrom_ = e.q;
+      uint32_t left = 0;
+      for (size_t j = i; j < arena.count(); ++j)
+        if (arena.header(j, e).ok() && (e.flags & kItemNotStored)) ++left;
+      if (found + left < held_) lost_ += held_ - found - left;   // held items the arena let go
+      held_ = left;
+      return Status::success();
+    }
+    (void)arena.setFlags(i, static_cast<uint8_t>(e.flags & ~kItemNotStored));
+    ++found;
+  }
+  if (found < held_) lost_ += held_ - found;   // held items the arena let go: never written
+  held_ = 0;
+  heldFrom_ = 0;
+  return Status::success();
 }
 
 Status TxLog::store(const Item& item, TxArena& arena, StoreState& state) {
@@ -870,13 +952,21 @@ Status TxLog::store(const Item& item, TxArena& arena, StoreState& state) {
   Status st = arena.append(item);
   if (!st.ok()) return st;
   const size_t at = arena.count() - 1;
-  const char* data = nullptr;
-  size_t len = 0;
-  if (!(st = arena.line(at, data, len)).ok()) return st;
-  st = appendLine(data, len, state);
-  if (state == StoreState::Stored) return Status::success();
+  if (held_) (void)flushHeld(arena);   // the new item is not flagged yet: only the held ones go
+  (void)writeArenaLine(arena, at, item.q, state);
+  if (state == StoreState::Stored) {
+    if (held_) {   // storage took this line and refused an older one: the held items are given up
+      lost_ += held_;
+      held_ = 0;
+      heldFrom_ = 0;
+    }
+    return Status::success();
+  }
   ArenaEntry e;
   if (arena.header(at, e).ok()) (void)arena.setFlags(at, static_cast<uint8_t>(e.flags | kItemNotStored));
+  if (!open_) return Status::success();   // a closed log: the caller's reopen merges what RAM holds
+  if (!held_) heldFrom_ = item.q;
+  ++held_;
   return Status::success();
 }
 
@@ -917,7 +1007,16 @@ Status TxLog::readBulk(const std::string& handle, size_t offset, size_t limit, s
   if (offset >= len || limit == 0) return Status::success();
   const size_t want = static_cast<size_t>(std::min<uint64_t>(limit, len - offset));
   size_t size = 0;
-  if (!files_.size(path, size) || size < at + len) return Status::fail(Err::NotFound, "tx::TxLog::readBulk");
+  if (!files_.size(path, size)) {
+    // A file that is gone (30-day retention) is NotFound only when the folder's listing says so; a
+    // listing that fails, or that names the file, is a read that failed (ruling 116: never "absent").
+    std::vector<std::string> names;
+    const size_t slash = path.rfind('/');
+    const bool listed = files_.list(path.substr(0, slash), names);
+    const bool there = listed && std::find(names.begin(), names.end(), path.substr(slash + 1)) != names.end();
+    return Status::fail(listed && !there ? Err::NotFound : Err::Io, "tx::TxLog::readBulk");
+  }
+  if (size < at + len) return Status::fail(Err::NotFound, "tx::TxLog::readBulk");
   out.resize(want);
   size_t done = 0;
   while (done < want) {

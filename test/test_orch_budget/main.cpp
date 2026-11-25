@@ -129,7 +129,7 @@ static void test_mistral_128k_derivation() {
 
 // ---- gate W2 #16: every per-turn size follows the head the engine runs --------
 // The window, the sub-agent brief and the fold slice each derived their bytes in
-// src/agent/orchestrator.cpp, and only the window used the engine's head
+// src/agent/orchestrator_e1.cpp, and only the window used the engine's head
 // (headHost, router fallback included); the brief and the fold kept the store's
 // guess. Static guard over the device source (code lines, comments stripped):
 // exactly ONE headContextBudget call and ONE store::resolvedOrchHost call, both in
@@ -163,9 +163,14 @@ static int countOf(const std::string& hay, const std::string& needle) {
   return n;
 }
 static void test_orchestrator_sizes_off_one_head_budget() {
-  const std::string src = stripLineComments(readFile("src/agent/orchestrator.cpp"));
-  TEST_ASSERT_EQUAL_MESSAGE(1, countOf(src, "headContextBudget("), "a second budget read in orchestrator.cpp");
-  TEST_ASSERT_EQUAL_MESSAGE(0, countOf(src, "deriveBudget("), "a budget derived around the seam in orchestrator.cpp");
+  const std::string src = stripLineComments(readFile("src/agent/orchestrator_e1.cpp"));
+  TEST_ASSERT_EQUAL_MESSAGE(1, countOf(src, "headContextBudget("), "a second budget read in orchestrator_e1.cpp");
+  TEST_ASSERT_EQUAL_MESSAGE(0, countOf(src, "deriveBudget("), "a budget derived around the seam in orchestrator_e1.cpp");
+  // The engine-neutral half of the device seam (RB-SEAM1b) sizes nothing off the head.
+  const std::string common = stripLineComments(readFile("src/agent/orchestrator_common.cpp"));
+  TEST_ASSERT_FALSE(common.empty());
+  TEST_ASSERT_EQUAL_MESSAGE(0, countOf(common, "headContextBudget("), "a budget read in orchestrator_common.cpp");
+  TEST_ASSERT_EQUAL_MESSAGE(0, countOf(common, "deriveBudget("), "a budget derived in orchestrator_common.cpp");
   TEST_ASSERT_EQUAL_MESSAGE(1, countOf(src, "resolvedOrchHost()"), "a size sited off the store's head guess");
   const size_t helper = src.find("ContextBudget headBudget()");
   TEST_ASSERT_TRUE(helper != std::string::npos);
@@ -233,7 +238,7 @@ static void test_every_budget_consumer_reads_the_one_seam() {
   TEST_ASSERT_EQUAL_MESSAGE(0, contextsDerivedAroundTheTurnBudget(where), where.c_str());
   // The legacy consumers each read the seam. The VN's only one was its fold slice, which
   // lane F switched to lane B's request context (deriveRequestContext), as on the device.
-  for (const char* f : {"src/agent/store.cpp", "src/net/webui.cpp", "src/agent/orchestrator.cpp",
+  for (const char* f : {"src/agent/store.cpp", "src/net/webui.cpp", "src/agent/orchestrator_e1.cpp",
                         "lib/harness/src/engine.cpp", "lib/harness/src/engine_history.cpp",
                         "lib/harness/src/engine_fold.cpp"})
     TEST_ASSERT_TRUE_MESSAGE(countOf(stripLineComments(readFile(f)), "headContextBudget(") >= 1, f);
@@ -244,7 +249,7 @@ static void test_every_budget_consumer_reads_the_one_seam() {
   struct Reads { const char* file; const char* setting; int atLeast; };
   for (const Reads& r : {Reads{"src/agent/store.cpp", "orchToolLoop(), ov)", 1},
                          Reads{"src/net/webui.cpp", "agent::store::orchToolLoop(), bov)", 1},
-                         Reads{"src/agent/orchestrator.cpp", "store::orchToolLoop()", 2},
+                         Reads{"src/agent/orchestrator_e1.cpp", "store::orchToolLoop()", 2},
                          Reads{"nimbusd/src/rig.h", "modelFor(host), settings_.get().toolLoop)", 1},
                          Reads{"lib/harness/src/engine.cpp", "detail::toolLoopSetting(d_), bov)", 1},
                          Reads{"lib/harness/src/engine_history.cpp", "detail::toolLoopSetting(d_), {})", 1},

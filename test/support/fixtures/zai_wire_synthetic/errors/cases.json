@@ -1,0 +1,120 @@
+{
+ "provider": "zai",
+ "written": "2026-11-24",
+ "by": "lane E2-R5",
+ "verified": "synthetic, from the source named on each case; replaced from recorded bodies by lane R10",
+ "cases": [
+  {
+   "row": "transport",
+   "status": 200,
+   "body": "{\"id\":\"x\",\"choices\":[{\"index\":0,\"finish_reason\":\"network_error\",\"message\":{\"role\":\"assistant\",\"content\":\"\"}}]}",
+   "expect": "transport",
+   "source": "https://docs.z.ai/api-reference/api-code (read 2026-11-24)"
+  },
+  {
+   "row": "rate",
+   "status": 429,
+   "body": "{\"error\":{\"code\":\"1302\",\"message\":\"High concurrency usage of this API, please reduce concurrency or contact customer service to increase limits\"}}",
+   "expect": "rate_limited",
+   "source": "https://docs.z.ai/api-reference/api-code (read 2026-11-24)"
+  },
+  {
+   "row": "server",
+   "status": 500,
+   "body": "{\"error\":{\"code\":\"1200\",\"message\":\"Your account is temporarily unavailable\"}}",
+   "expect": "server",
+   "source": "https://docs.z.ai/api-reference/api-code (read 2026-11-24)"
+  },
+  {
+   "row": "server",
+   "status": 500,
+   "body": "{\"error\":{\"code\":\"1230\",\"message\":\"API call process error\"}}",
+   "expect": "server",
+   "source": "https://docs.z.ai/api-reference/api-code (read 2026-11-24)"
+  },
+  {
+   "row": "server",
+   "status": 500,
+   "body": "{\"error\":{\"code\":\"1234\",\"message\":\"Network error, error id: x, please contact customer service\"}}",
+   "expect": "server",
+   "source": "https://docs.z.ai/api-reference/api-code (read 2026-11-24)"
+  },
+  {
+   "row": "server",
+   "status": 429,
+   "body": "{\"error\":{\"code\":\"1305\",\"message\":\"The service may be temporarily overloaded, please try again later\"}}",
+   "expect": "server",
+   "source": "https://docs.z.ai/api-reference/api-code (read 2026-11-24)"
+  },
+  {
+   "row": "auth",
+   "status": 401,
+   "body": "{\"error\":{\"code\":\"1000\",\"message\":\"Authentication Failed\"}}",
+   "expect": "key_auth",
+   "source": "https://docs.z.ai/api-reference/api-code (read 2026-11-24)"
+  },
+  {
+   "row": "auth",
+   "status": 401,
+   "body": "{\"error\":{\"code\":\"1001\",\"message\":\"Header missing Authentication parameter, unable to authenticate\"}}",
+   "expect": "key_auth",
+   "source": "https://docs.z.ai/api-reference/api-code (read 2026-11-24)"
+  },
+  {
+   "row": "auth",
+   "status": 401,
+   "body": "{\"error\":{\"code\":\"1003\",\"message\":\"Authentication Token expired\"}}",
+   "expect": "key_auth",
+   "source": "https://docs.z.ai/api-reference/api-code (read 2026-11-24)"
+  },
+  {
+   "row": "forbidden",
+   "status": 403,
+   "body": "{\"error\":{\"code\":\"1220\",\"message\":\"You do not have permission to access this API\"}}",
+   "expect": "key_forbidden",
+   "source": "https://docs.z.ai/api-reference/api-code (read 2026-11-24)"
+  },
+  {
+   "row": "billing",
+   "status": 429,
+   "body": "{\"error\":{\"code\":\"1113\",\"message\":\"Your account is in arrears, please recharge and try again\"}}",
+   "expect": "billing",
+   "source": "https://docs.z.ai/api-reference/api-code (read 2026-11-24)"
+  },
+  {
+   "row": "context",
+   "status": 400,
+   "body": "{\"error\":{\"code\":\"1261\",\"message\":\"Prompt exceeds max length\"}}",
+   "expect": "context",
+   "source": "https://docs.z.ai/api-reference/api-code (read 2026-11-24)"
+  },
+  {
+   "row": "refusal",
+   "status": 400,
+   "body": "{\"error\":{\"code\":\"1301\",\"message\":\"System detected potentially unsafe or sensitive content in input or generation.\"}}",
+   "expect": "refusal",
+   "source": "https://docs.z.ai/api-reference/api-code (read 2026-11-24)"
+  },
+  {
+   "row": "malformed_request",
+   "status": 400,
+   "body": "{\"error\":{\"code\":\"1214\",\"message\":\"JSON parse error\"}}",
+   "expect": "bad_request",
+   "source": "lib/core/src/orch_head_loop.cpp:105-111"
+  },
+  {
+   "row": "code_exact",
+   "status": 400,
+   "body": "{\"error\":{\"code\":\"12611\",\"message\":\"Prompt exceeds nothing\"}}",
+   "expect": "bad_request",
+   "source": "counter-test: a code marker never matches a longer code"
+  },
+  {
+   "row": "code_exact",
+   "status": 429,
+   "body": "{\"error\":{\"code\":\"1302x\",\"message\":\"code 1113 in the text is not the code\"}}",
+   "expect": "rate_limited",
+   "source": "counter-test: a code named in the text is not the code field"
+  }
+ ]
+}

@@ -206,6 +206,7 @@ void encodeUser(Writer& w, const Item& it) {
     fieldStr(w, "mime", p.mime);
     fieldU64(w, "b", p.bytes);
     fieldStr(w, "n", p.note);   // a photo's note (RB-H81)
+    fieldStr(w, "cap", p.cap);  // a photo's caption (E2-R4b)
     w.put('}');
   });
 }
@@ -257,19 +258,24 @@ void encodeTurnEnd(Writer& w, const Item& it) {
       const uint64_t nums[] = {x.fromQ, x.thruQ, x.items, x.bodyHash, x.maxTokens, x.stub, x.toolChoiceNone ? 1u : 0u,
                                x.closedThrough, x.stubThrough, x.omitThrough};
       constexpr size_t kNums = sizeof(nums) / sizeof(nums[0]);
-      size_t n = !x.omission.empty() || !x.effort.empty() ? kNums : 4;
+      const bool strs = !x.omission.empty() || !x.effort.empty() || x.dropped;   // the dropped mask rides last
+      size_t n = strs ? kNums : 4;
       while (n < kNums && std::any_of(nums + n, nums + kNums, [](uint64_t v) { return v != 0; })) ++n;
       for (size_t i = 0; i < n; ++i) {
         w.put(',');
         putU64(w, nums[i]);
       }
-      if (!x.effort.empty() || !x.omission.empty()) {
+      if (strs) {
         w.put(',');
         putStr(w, x.effort.data(), x.effort.size());
       }
-      if (!x.omission.empty()) {
+      if (!x.omission.empty() || x.dropped) {
         w.put(',');
         putStr(w, x.omission.data(), x.omission.size());
+      }
+      if (x.dropped) {
+        w.put(',');
+        putU64(w, x.dropped);
       }
     }
     w.put(']');
@@ -303,6 +309,7 @@ void encodeRoundKinds(Writer& w, const Item& it) {
     case ItemKind::RoundMeta:
       fieldStr(w, "x", it.x);
       fieldU64(w, "rd", it.rd);
+      fieldStr(w, "wr", it.wr);   // the replay tag (E2-R4b)
       return;
     default:
       return;
@@ -676,10 +683,12 @@ constexpr uint16_t U = bit(ItemKind::User), T = bit(ItemKind::TurnOpen), A = bit
                    X = bit(ItemKind::PointerMove), D = bit(ItemKind::Delivery), E = bit(ItemKind::TurnEnd);
 
 using FieldFn = bool (*)(Cursor&, Decoding&);
+// The member is not named `read`: the tg_poll stack gate ties a call through a pointer member to
+// the virtual methods of that name at the same offset (tx::RowSource::read), an edge that cannot run.
 struct FieldRule {
   const char* key;
   uint16_t kinds;
-  FieldFn read;
+  FieldFn decodeField;
 };
 
 bool readPart(Cursor& c, Part& p) {
@@ -692,6 +701,7 @@ bool readPart(Cursor& c, Part& p) {
            if (!std::strcmp(key, "mime")) return readStr(cc, p.mime);
            if (!std::strcmp(key, "b")) return readUnsigned(cc, p.bytes);
            if (!std::strcmp(key, "n")) return readStr(cc, p.note);
+           if (!std::strcmp(key, "cap")) return readStr(cc, p.cap);
            return skipValue(cc);
          }) &&
          haveKind;
@@ -699,6 +709,8 @@ bool readPart(Cursor& c, Part& p) {
 
 // The request by reference, by position after the three figures (RB-E3).
 bool readExchangeRef(Cursor& cc, int n, ExchangeFacts& x) {
+  uint64_t* const ladder[] = {&x.closedThrough, &x.stubThrough, &x.omitThrough};   // positions 10 to 12
+  if (n >= 10 && n <= 12) return readUnsigned(cc, *ladder[n - 10]);
   switch (n) {
     case 3: return readUnsigned(cc, x.fromQ);
     case 4: return readUnsigned(cc, x.thruQ);
@@ -712,11 +724,9 @@ bool readExchangeRef(Cursor& cc, int n, ExchangeFacts& x) {
       x.toolChoiceNone = none == 1;
       return true;
     }
-    case 10: return readUnsigned(cc, x.closedThrough);
-    case 11: return readUnsigned(cc, x.stubThrough);
-    case 12: return readUnsigned(cc, x.omitThrough);
     case 13: return readStr(cc, x.effort);
     case 14: return readStr(cc, x.omission);
+    case 15: return readUnsigned(cc, x.dropped);
     default: return skipValue(cc);
   }
 }
@@ -787,6 +797,7 @@ const FieldRule kFields[] = {
     TX_LIST("ph", T, photos, readStr),
     TX_NUM("rd", A | C | K, rd),
     TX_BOOL("fin", A, fin),
+    TX_STR("wr", K, wr),
     TX_STR("id", C | I | R, id),
     TX_STR("n", C | I | R, n),
     TX_STR("args", C, args),
@@ -834,7 +845,7 @@ bool readItemField(const char* key, bool fits, Cursor& c, Decoding& d) {
   if (fits && !std::strcmp(key, "k")) return false;   // one k
   const uint16_t mine = bit(d.it.kind);
   for (const FieldRule& r : kFields)
-    if (fits && (r.kinds & mine) && !std::strcmp(key, r.key)) return r.read(c, d);
+    if (fits && (r.kinds & mine) && !std::strcmp(key, r.key)) return r.decodeField(c, d);
   return skipValue(c);
 }
 
@@ -845,7 +856,7 @@ void clearItem(Item& it) {
   it.x.clear(), it.ch.clear(), it.src.clear(), it.parts.clear();
   it.tzMinutes = 0, it.m = 0;
   it.trigger.clear(), it.head.clear(), it.profile.clear(), it.photos.clear();
-  it.attempt = 0, it.rd = 0, it.fin = false;
+  it.attempt = 0, it.rd = 0, it.fin = false, it.wr.clear();
   it.id.clear(), it.n.clear(), it.args.clear(), it.handle.clear(), it.st.clear();
   it.eff = false, it.ok = true, it.cls = ResultClass::Receipt, it.bytes = 0, it.lines = 0;
   it.note = NoteClass::Unknown;
@@ -854,7 +865,7 @@ void clearItem(Item& it) {
   TurnEndFacts& e = it.end;
   e.cause.clear(), e.exchanges.clear(), e.events.clear();
   e.rounds = e.tools = e.headRequests = e.probeRequests = 0;
-  e.promptTokens = e.outputTokens = e.cacheReadTokens = e.cacheWriteTokens = 0;
+  e.promptTokens = e.outputTokens = e.cacheReadTokens = e.cacheWriteTokens = e.cacheWrite1hTokens = 0;
   e.microUsd = e.ms = e.promptHash = e.manifestHash = e.lastPromptTokens = 0;
 }
 

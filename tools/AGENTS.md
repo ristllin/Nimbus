@@ -37,6 +37,8 @@ Enumerated with their consumer, so a rename is caught before it ships:
 | `webui_concat_check.py` | `.github/workflows/checks.yml` | the checks CI job |
 | `make_manifest.py` | `.github/workflows/release.yml` | OTA release signing (must stay byte-identical to `nimbus::ota::buildSigMessage()`) |
 | `release/make_webflash_manifest.py` | `.github/workflows/release.yml` | web-flasher manifest |
+| `release/variants.json` | `.github/workflows/release.yml` (through `publish_candidate.py plan`), `release_gate/check_config_mapping.py` | every OTA release: the envs built, the images, the gates, the manifest pairs, web-flash and the published assets |
+| `release/publish_candidate.py` | `.github/workflows/release.yml` (plan, check-target, make), `release_gate/check_config_mapping.py` | every OTA release: no step names a variant itself; a candidate tag's manifest-candidate.json |
 | `release/check_known_patterns.sh` | `.pre-commit-config.yaml` | the pre-commit leak gate |
 | `release_gate/tag_shape.py` | `.github/workflows/release.yml` (job tag-shape) | every release: the channel gate (a rename skips every job) |
 | `release_gate/check_release_notes.py` | `.github/workflows/release.yml` (gate step + manifest `--notes`) | every OTA release: the notes gate and the line written into the manifest |

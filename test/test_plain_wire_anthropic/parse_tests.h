@@ -143,10 +143,10 @@ void test_parse_reads_a_refusal_interleaved_thinking_and_an_empty_answer() {
   TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, s.usage.cacheReadTokens);
   TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, s.usage.maxRequestIn);
   TEST_ASSERT_EQUAL(0, (int)s.usage.completionTokens);
-  // Other stops: the context window is a cut, a stop sequence ends the turn, pause and unknown are Other.
+  // Other stops: the context window is full (lane E2-R4a), a stop sequence ends the turn, pause and unknown are Other.
   const std::string base = R"({"type":"message","role":"assistant","model":"m","content":[{"type":"text","text":"t"},)"
                            R"({"type":"tool_use","id":"toolu_1","name":"read_file","input":{"path":"a"}}],"stop_reason":)";
-  const char* stops[][2] = {{"\"model_context_window_exceeded\"", "cut"}, {"\"stop_sequence\"", "end"},
+  const char* stops[][2] = {{"\"model_context_window_exceeded\"", "context"}, {"\"stop_sequence\"", "end"},
                             {"\"pause_turn\"", "other"}, {"\"a_new_reason\"", "other"}, {"null", "other"},
                             {"\"tool_use\"", "tool"}, {"\"end_turn\"", "end"}};
   for (const auto& st : stops) {
@@ -581,6 +581,68 @@ void test_a_refused_allocation_in_parse_answers_a_status_and_fills_nothing() {
   TEST_ASSERT_TRUE(refused > 5);
 }
 
+// Lane E2-REP7 (R10 S4): the recorded guard round answered thinking alone, so the person got the guard's
+// status line. The guard round's request now turns thinking off where the model's row says how (adaptive:
+// disabled, between_tools: between_tools, at effort high or below); an always-on row, an older row and
+// effort xhigh or max send none, and the ordinary round of the same transcript never carries it. The
+// guard body differs from the ordinary one by the thinking member and tool_choice alone.
+void test_the_guard_round_turns_thinking_off_where_the_row_says_how() {
+  plain::ParsedStep s;
+  TXB_OK(parseBody(fixture("guard_round_thinking_only.json"), s));
+  TEST_ASSERT_TRUE_MESSAGE(s.text.empty() && s.calls.empty() && s.stop == plain::StopReason::EndTurn, "the recorded answer");
+  Rig rig;
+  txb::Convo c;
+  c.openTurn();
+  c.owner("Keep reading notes until you find the seed list.");
+  for (int i = 1; i <= 3; ++i) {
+    const std::string id = c.call("read_file", R"({"path":"notes/n)" + std::to_string(i) + R"(.md"})");
+    c.receipt(id, "read_file", "no seed list here");
+  }
+  struct Want {
+    const char* model;
+    const char* effort;
+    const char* thinking;   // the member the guard round carries (null: none)
+  };
+  const Want wants[] = {
+      {"claude-haiku-5-5", "medium", R"(,"thinking":{"type":"disabled"})"},
+      {"claude-haiku-5-5", "", R"(,"thinking":{"type":"disabled"})"},
+      {"claude-haiku-5-5", "high", R"(,"thinking":{"type":"disabled"})"},
+      {"claude-sonnet-5-5", "medium", R"(,"thinking":{"type":"between_tools"})"},
+      {"claude-haiku-5-5", "xhigh", nullptr},
+      {"claude-haiku-5-5", "max", nullptr},
+      {"claude-opus-5-5", "medium", nullptr},
+      {"claude-fable-5-1", "medium", nullptr},
+      {"claude-haiku-4-5", "", nullptr},
+  };
+  const std::string none = R"("tool_choice":{"type":"none"})", autoChoice = R"("tool_choice":{"type":"auto"})";
+  for (const Want& w : wants) {
+    const std::string ctx = std::string(w.model) + " effort '" + w.effort + "'";
+    rig.fx.turn.model = w.model;
+    rig.fx.head.effort = w.effort;
+    plain::Route route;
+    TXB_OK(plain::resolveRoute(rig.fx.head, rig.fx.turn, route));
+    Opts o;
+    o.route = &route;
+    Out ordinary, guard;
+    RENDER_OK(rig, c, ordinary, o);
+    o.none = true;
+    RENDER_OK(rig, c, guard, o);
+    if (std::strcmp(w.effort, "xhigh") != 0) EXPECT_API_OK(guard, ctx.c_str());   // the checker's effort list stops at high, max
+    TEST_ASSERT_TRUE_MESSAGE(ordinary.body.find(R"("thinking":{)") == std::string::npos, ("ordinary round: " + ctx).c_str());
+    std::string g = guard.body;
+    const size_t at = w.thinking ? g.find(w.thinking) : std::string::npos;
+    if (w.thinking) {
+      TEST_ASSERT_TRUE_MESSAGE(at != std::string::npos, ("guard round has no thinking member: " + ctx).c_str());
+      g.erase(at, std::strlen(w.thinking));
+    }
+    TEST_ASSERT_TRUE_MESSAGE(g.find(R"("thinking":{)") == std::string::npos, ("guard round: " + ctx).c_str());
+    const size_t ch = g.find(none);
+    TEST_ASSERT_TRUE_MESSAGE(ch != std::string::npos, ("guard round choice: " + ctx).c_str());
+    g.replace(ch, none.size(), autoChoice);
+    TEST_ASSERT_TRUE_MESSAGE(g == ordinary.body, ("guard and ordinary differ beyond thinking and choice: " + ctx).c_str());
+  }
+}
+
 void run() {
   RUN_TEST(test_parse_reads_every_recorded_answer_shape);
   RUN_TEST(test_parse_reads_a_refusal_interleaved_thinking_and_an_empty_answer);
@@ -593,6 +655,7 @@ void run() {
   RUN_TEST(test_usage_with_the_cache_split_reaches_the_e_item);
   RUN_TEST(test_a_file_id_rides_later_turns_only_while_the_provider_holds_it);
   RUN_TEST(test_a_refused_allocation_in_parse_answers_a_status_and_fills_nothing);
+  RUN_TEST(test_the_guard_round_turns_thinking_off_where_the_row_says_how);
 }
 
 }  // namespace parse_tests

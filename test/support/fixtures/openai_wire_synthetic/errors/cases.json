@@ -1,0 +1,195 @@
+{
+ "provider": "openai",
+ "written": "2026-11-24",
+ "by": "lane E2-R5",
+ "verified": "synthetic, from the source named on each case; replaced from recorded bodies by lane R10",
+ "cases": [
+  {
+   "row": "transport",
+   "status": 200,
+   "body": "{\"id\":\"resp_1\",\"object\":\"response\",\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"The model failed to generate a response.\"}}",
+   "expect": "transport",
+   "source": "https://platform.openai.com/docs/api-reference/responses/object (read 2026-11-24)"
+  },
+  {
+   "row": "rate",
+   "status": 429,
+   "body": "{\"error\":{\"message\":\"Rate limit reached for requests\",\"type\":\"requests\",\"param\":null,\"code\":\"rate_limit_exceeded\"}}",
+   "expect": "rate_limited",
+   "source": "https://developers.openai.com/api/docs/guides/error-codes (read 2026-11-24)"
+  },
+  {
+   "row": "rate",
+   "status": 429,
+   "body": "{\"error\":{\"message\":\"Rate limit reached\",\"type\":\"rate_limit_error\",\"param\":null,\"code\":null}}",
+   "expect": "rate_limited",
+   "source": "https://developers.openai.com/api/docs/guides/error-codes (read 2026-11-24)"
+  },
+  {
+   "row": "rate",
+   "status": 429,
+   "body": "{\"error\":{\"message\":\"Please slow down\",\"type\":\"rate_limit_error\",\"param\":null,\"code\":\"slow_down\"}}",
+   "expect": "rate_limited",
+   "source": "https://developers.openai.com/api/docs/guides/error-codes (read 2026-11-24)"
+  },
+  {
+   "row": "server",
+   "status": 503,
+   "body": "{\"error\":{\"message\":\"The server is overloaded, please try again later.\",\"type\":\"server_error\",\"param\":null,\"code\":\"server_is_overloaded\"}}",
+   "expect": "server",
+   "source": "https://developers.openai.com/api/docs/guides/error-codes (read 2026-11-24)"
+  },
+  {
+   "row": "auth",
+   "status": 401,
+   "body": "{\"error\":{\"message\":\"Incorrect API key provided\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"invalid_api_key\"}}",
+   "expect": "key_auth",
+   "source": "https://developers.openai.com/api/docs/guides/error-codes (read 2026-11-24)"
+  },
+  {
+   "row": "forbidden",
+   "status": 403,
+   "body": "{\"error\":{\"message\":\"Country, region, or territory not supported\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"unsupported_country_region_territory\"}}",
+   "expect": "key_forbidden",
+   "source": "https://developers.openai.com/api/docs/guides/error-codes (read 2026-11-24)"
+  },
+  {
+   "row": "billing",
+   "status": 429,
+   "body": "{\"error\":{\"message\":\"You exceeded your current quota, please check your plan and billing details.\",\"type\":\"insufficient_quota\",\"param\":null,\"code\":\"insufficient_quota\"}}",
+   "expect": "billing",
+   "source": "https://developers.openai.com/api/docs/guides/error-codes (read 2026-11-24)"
+  },
+  {
+   "row": "billing",
+   "status": 429,
+   "body": "{\"error\":{\"message\":\"You have no credits remaining.\",\"type\":\"insufficient_quota\",\"param\":null,\"code\":\"credit_balance_exhausted\"}}",
+   "expect": "billing",
+   "source": "https://developers.openai.com/api/docs/guides/error-codes (read 2026-11-24)"
+  },
+  {
+   "row": "billing",
+   "status": 429,
+   "body": "{\"error\":{\"message\":\"Organization spend limit exceeded.\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"organization_spend_limit_exceeded\"}}",
+   "expect": "billing",
+   "source": "https://developers.openai.com/api/docs/guides/error-codes (read 2026-11-24)"
+  },
+  {
+   "row": "billing",
+   "status": 429,
+   "body": "{\"error\":{\"message\":\"Project spend limit exceeded.\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"project_spend_limit_exceeded\"}}",
+   "expect": "billing",
+   "source": "https://developers.openai.com/api/docs/guides/error-codes (read 2026-11-24)"
+  },
+  {
+   "row": "billing",
+   "status": 429,
+   "body": "{\"error\":{\"message\":\"Organization usage limit exceeded.\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"organization_usage_limit_exceeded\"}}",
+   "expect": "billing",
+   "source": "https://developers.openai.com/api/docs/guides/error-codes (read 2026-11-24)"
+  },
+  {
+   "row": "billing",
+   "status": 400,
+   "body": "{\"error\":{\"message\":\"Billing hard limit has been reached.\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"billing_hard_limit_reached\"}}",
+   "expect": "billing",
+   "source": "lib/core/include/nimbus/orch/billing_refusal.h:44"
+  },
+  {
+   "row": "context",
+   "status": 400,
+   "body": "{\"error\":{\"message\":\"Your input exceeds the context window of this model.\",\"type\":\"invalid_request_error\",\"param\":\"input\",\"code\":\"context_length_exceeded\"}}",
+   "expect": "context",
+   "source": "https://community.openai.com/t/your-input-exceeds-the-context-window-of-this-model/1314149 (read 2026-11-24, community only, unverified)"
+  },
+  {
+   "row": "refused_field",
+   "status": 400,
+   "body": "{\"error\":{\"message\":\"Unsupported parameter: 'reasoning.effort' is not supported with this model.\",\"type\":\"invalid_request_error\",\"param\":\"reasoning.effort\",\"code\":\"unsupported_parameter\"}}",
+   "expect": "refused_field",
+   "source": "https://developers.openai.com/api/docs/guides/error-codes (read 2026-11-24)",
+   "refused": [
+    "effort"
+   ]
+  },
+  {
+   "row": "refused_field",
+   "status": 400,
+   "body": "{\"error\":{\"message\":\"Unsupported value: 'tool_choice' does not support 'none' with this model.\",\"type\":\"invalid_request_error\",\"param\":\"tool_choice\",\"code\":\"unsupported_value\"}}",
+   "expect": "refused_field",
+   "source": "https://developers.openai.com/api/docs/guides/error-codes (read 2026-11-24)",
+   "refused": [
+    "choice_none"
+   ]
+  },
+  {
+   "row": "refused_field",
+   "status": 400,
+   "body": "{\"error\":{\"message\":\"Unsupported parameter: 'max_output_tokens' is not supported with this model.\",\"type\":\"invalid_request_error\",\"param\":\"max_output_tokens\",\"code\":\"unsupported_parameter\"}}",
+   "expect": "refused_field",
+   "source": "https://developers.openai.com/api/docs/guides/error-codes (read 2026-11-24)",
+   "refused": [
+    "cap_field"
+   ]
+  },
+  {
+   "row": "refused_field",
+   "status": 400,
+   "body": "{\"error\":{\"message\":\"Unknown parameter: 'prompt_cache_breakpoint'.\",\"type\":\"invalid_request_error\",\"param\":\"prompt_cache_breakpoint\",\"code\":\"unknown_parameter\"}}",
+   "expect": "refused_field",
+   "source": "https://developers.openai.com/api/docs/guides/error-codes (read 2026-11-24)",
+   "refused": [
+    "cache_breakpoint"
+   ]
+  },
+  {
+   "row": "refused_field",
+   "status": 400,
+   "body": "{\"error\":{\"message\":\"Image input is not supported for this model.\",\"type\":\"invalid_request_error\",\"param\":\"input[3].content[0]\",\"code\":\"unsupported_value\"}}",
+   "expect": "refused_field",
+   "source": "https://developers.openai.com/api/docs/guides/error-codes (read 2026-11-24)",
+   "refused": [
+    "image"
+   ]
+  },
+  {
+   "row": "refused_field",
+   "status": 400,
+   "body": "{\"error\":{\"message\":\"Encrypted content for item rs_1 could not be verified; reasoning items with encrypted_content are not supported.\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"invalid_encrypted_content\"}}",
+   "expect": "refused_field",
+   "source": "https://developers.openai.com/api/docs/guides/error-codes (read 2026-11-24)",
+   "refused": [
+    "replay"
+   ]
+  },
+  {
+   "row": "file_id",
+   "status": 400,
+   "body": "{\"error\":{\"message\":\"No such File object: file-abc123\",\"type\":\"invalid_request_error\",\"param\":\"input[0].content[1].file_id\",\"code\":null}}",
+   "expect": "bad_request",
+   "source": "https://developers.openai.com/api/docs/guides/error-codes (read 2026-11-24)",
+   "file_ref": true
+  },
+  {
+   "row": "malformed_request",
+   "status": 400,
+   "body": "{\"error\":{\"message\":\"We could not parse the JSON body of your request.\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"invalid_json\"}}",
+   "expect": "bad_request",
+   "source": "lib/core/src/orch_head_loop.cpp:105-111"
+  },
+  {
+   "row": "not_refused",
+   "status": 400,
+   "body": "{\"error\":{\"message\":\"max_tokens exceeds the maximum of 64000\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}",
+   "expect": "bad_request",
+   "source": "counter-test: a value too large is not a refused field"
+  },
+  {
+   "row": "answer_2xx",
+   "status": 200,
+   "body": "{\"id\":\"resp_2\",\"object\":\"response\",\"status\":\"completed\",\"error\":null,\"output\":[]}",
+   "expect": "none",
+   "source": "https://platform.openai.com/docs/api-reference/responses/object (read 2026-11-24); error null is no error"
+  }
+ ]
+}

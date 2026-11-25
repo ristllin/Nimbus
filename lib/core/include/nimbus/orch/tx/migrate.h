@@ -9,6 +9,7 @@
 #include "nimbus/orch/tx/budget.h"
 #include "nimbus/orch/tx/item.h"
 #include "nimbus/orch/tx/log.h"
+#include "nimbus/orch/tx/rules.h"   // BoundTools (E2-FIX5)
 #include "nimbus/orch/tx/status.h"
 
 // tx/migrate.h - the conversation's move into /mem/tx and the re-entry rule (PRD section 9,
@@ -36,6 +37,14 @@
 //          (per head: importBudgetFor, at least the head's full due mark) are imported; the older ones are named in the same note ("The M earlier messages
 //          before <t> are not shown: search finds them"). Imported rows between the pointers
 //          are the oldest after thru, so the compaction driver folds them first.
+//
+// Engine-2 items with no marker (lane E2-FIX2B, finding P3: a build that stored before Done; the
+// log's first mirrored owner row is one of engine 2's own): the first migration runs in full,
+// appended after those items (the store only appends). A marker lost after an import (the first
+// mirrored row is the earlier engine's) is a re-entry from the newest mirrored row, as before. When digest 0 is stored its thru hides those items, so the batch imports
+// engine 2's own rows of them too (ImportPlan::oursUpTo, as text, tool work not shown): every row
+// reaches the request once, in time order. Without a digest 0 they stay visible and only the old
+// rows are imported after them.
 //
 // The re-entry rule: /mem/tx/<chatKey>/migrated.json records the newest row a migration
 // accounted for (hi). At every engine-2 start migrate() runs again; with a marker it is a
@@ -78,7 +87,10 @@ namespace migrate_text {
 inline constexpr char kDevice[] = "[device] ";
 inline constexpr char kEarlierThrough[] = "The conversation through ";
 inline constexpr char kEarlierUndated[] = "The earlier conversation";
-inline constexpr char kEarlierKept[] = " was kept by the earlier engine; search finds it.";
+// E2-FIX5: the anchor note is recognised by kEarlierKept alone (a note stored before or after this
+// lane); kSearchFindsIt follows it only when search is bound.
+inline constexpr char kEarlierKept[] = " was kept by the earlier engine";
+inline constexpr char kSearchFindsIt[] = "; search finds it.";
 inline constexpr char kSummarySaved[] = " Its old summary is saved in ";
 inline constexpr char kSummaryNotSaved[] = " Its old summary was not saved.";
 inline constexpr char kEnd[] = ".";
@@ -93,7 +105,9 @@ inline constexpr char kNamedThe[] = " The ";
 inline constexpr char kNamedOne[] = " earlier message";
 inline constexpr char kNamedMany[] = " earlier messages";
 inline constexpr char kNamedBefore[] = " before ";
-inline constexpr char kNamedNotShown[] = " not shown: search finds them.";
+// E2-FIX5: kSearchFindsThem only when search is bound, else kEnd.
+inline constexpr char kNamedNotShown[] = " not shown";
+inline constexpr char kSearchFindsThem[] = ": search finds them.";
 inline constexpr char kIs[] = " is";
 inline constexpr char kAre[] = " are";
 // The fence of the old summary carried as digest 0 (RB-H81, ruling 84 item 6).
@@ -123,6 +137,7 @@ struct DayRow {
   // so the later-turn stub carries it with a view pointer (ruling 84 item 5).
   std::string photoRef;
   bool ours = false;      // engine 2 wrote it (tag "e2"): never imported
+  bool clearBoundary = false;   // the earlier engine's /clear row (tag "ev:clear"): older rows were cleared
   std::string text;
 };
 
@@ -161,7 +176,9 @@ struct Digest0Answer {
   std::string day;          // "YYYY-MM-DD"
 };
 // One small-model call. Not ok: the answer was not taken (the driver's rule: cut, thin, a
-// failed exchange); the migration counts the try.
+// failed exchange); the migration counts the try. Err::Busy: nothing was sent (every rung's
+// provider is held, lane E2-REP1): the try is not counted and the migration stops with it, to
+// run again later (the binding's import is pending until then).
 using Digest0Fn = std::function<Status(const Digest0Ask&, Digest0Answer&)>;
 // Write a file into the owner's file store (replace); false when refused.
 using ExportFn = std::function<bool(const std::string& path, const std::string& text)>;
@@ -202,6 +219,10 @@ struct MigrateDeps {
   // fixed figure (owner ruling 81).
   size_t importBudget = 0;
   const TxArena* arena = nullptr;   // RAM items not stored yet: every q stays above them
+  // The RAM items are stored after the import, renumbered past it (PlainEngine::reopen, lane
+  // E2-FIX2B): their q and turn numbers do not bound the import's. The arena still sizes it.
+  bool ramFollows = false;
+  BoundTools bound;   // E2-FIX5: the notes name search only when it is bound
 };
 
 // The import budget of a head (owner ruling 81, ruling 83 item 8): its full due mark H
@@ -252,8 +273,8 @@ struct MigrationReport {
 };
 Status dryRun(const MigrateDeps& deps, MigrationReport& out);
 
-// True when /mem/tx/<chatKey> holds a finished migration (or items without a marker): the
-// next start is a re-entry.
+// True when /mem/tx/<chatKey> holds a finished migration: the next start is a re-entry. Items
+// without a marker are not one (the next start runs the first migration, lane E2-FIX2B).
 Status isReentry(TxFiles& files, const std::string& chatKey, bool& out);
 
 // ---- the import batch, pure (also used by the dry run and the tests) ----------------------
@@ -268,7 +289,9 @@ struct ImportPlan {
   uint64_t firstT = 0, lastT = 0;   // first and last imported row
   uint32_t named = 0;         // named rows (lo < id <= cut)
   uint64_t namedLastT = 0;    // the newest named row (0: none or no clock)
+  uint64_t oursUpTo = 0;      // engine 2's own rows up to this id are imported too (0: none; P3 repair)
   int16_t tzMinutes = 0;
+  bool searchBound = false;   // E2-FIX5: the named rows' line names search only when it is bound
 };
 // The batch's note text (the PRD's line, and the named rows when there are any).
 std::string importNote(const ImportPlan& plan);

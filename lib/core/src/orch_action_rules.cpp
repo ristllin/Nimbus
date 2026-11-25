@@ -96,6 +96,38 @@ const ActionRuleRow kRows[] = {
     {"image.look", R::TurnOnly, "look at a photo"},
     {"image.note", R::TurnOnly, "note a photo"},   // the head records what a photo showed
     {"calc", R::Open, "calculate"},   // RB-REC8: exact arithmetic on its argument; it writes nothing
+#if !defined(ARDUINO) || (defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2)
+    // ---- engine 2's plain tools (lib/core/src/orch_file_tools.cpp; lanes RB-N2b, E2-TOOLS): the file tools
+    // are open to every caller, the handler's own line decides whose file (a member reads and writes only its
+    // own); web_search is the old web.search under its engine-2 name. Engine-1 images never register them, so
+    // the rows stay out of those images.
+    {"read_file", R::Open, "read a file"},
+    {"write_file", R::Open, "write a file"},
+    {"append_file", R::Open, "add to a file"},
+    {"edit_file", R::Open, "edit a file"},
+    {"list_files", R::Open, "list files"},
+    {"delete_file", R::Open, "delete a file"},
+    {"web_search", R::TurnOnly, "search the web"},
+    // E2-SRCH: search and view read the turn's own conversation only (plain/history.h decides which).
+    {"search", R::TurnOnly, "search this conversation"},
+    {"view", R::TurnOnly, "open a stored item"},
+    // E2-P-OUT2: engine 1's files.*, image.generate and media.* handlers under their engine-2 names, the rules
+    // of their engine-1 rows (the handler's own line decides whose file).
+    {"file_stat", R::Open, "look up a file"},
+    {"share_file", R::Open, "share a file"},
+    {"fetch_url", R::Open, "download a file"},
+    {"pdf_write", R::Open, "make a PDF"},
+    {"image_generate", R::TurnOnly, "make an image"},
+    {"media_play", R::Owner, "play music on the speaker"},
+    {"media_pause", R::Owner, "pause the music"},
+    {"media_stop", R::Owner, "stop the music"},
+    {"media_list", R::Open, "list the music"},
+    // E2-REP1: engine 1's reply.telegram and files.send (send) and session.spawn (agent_start) rows: an
+    // approved member sends to their own chat and starts a job; another chat stays the owner's.
+    {"send", R::TurnOnly, "send a message or a file"},
+    {"send.other_chat", R::OwnerAttended, "send to another chat"},
+    {"agent_start", R::TurnOnly, "start a sub-agent"},
+#endif
     // ---- docs, routines, replies, skills, people (src/agent/memory_subsystem.cpp) ----
     {"docs.list", R::Open, "browse the docs"},
     {"docs.read", R::Open, "read the docs"},
@@ -246,6 +278,12 @@ static std::string sendKey(const std::string& name, ArduinoJson::JsonObjectConst
   return name;
 }
 
+// E2-REP1: engine 2's send names its chat `chat`; none from a device channel goes elsewhere (the owner's).
+static std::string plainSendKey(ArduinoJson::JsonObjectConst a, const ActionCaller& c) {
+  const std::string to = str(a, "chat");
+  return (!to.empty() && to != c.chat) || (to.empty() && deviceChannel(c.chat)) ? "send.other_chat" : "send";
+}
+
 // Sharing makes a file readable by everyone who talks to the device: the owner may
 // share any file, so only when writing now; stopping a share stays open.
 static std::string shareKey(ArduinoJson::JsonObjectConst a, const ActionCaller& c) {
@@ -274,6 +312,7 @@ std::string toolActionKey(const std::string& name, ArduinoJson::JsonObjectConst 
     return changeKey(name, a, "openq.edit.change", {"add", "remove"});
   if (name == "reply.telegram" || name == "files.send") return sendKey(name, a, c);
   if (name == "files.share") return shareKey(a, c);
+  if (name == "send") return plainSendKey(a, c);
   return name;
 }
 

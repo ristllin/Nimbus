@@ -23,6 +23,7 @@
 
 #include "lab_options.h"
 #include "lab_plain.h"
+#include "lab_r10.h"
 #include "lab_rig.h"
 #include "photo_eval.h"
 #include "lane_h_live.h"
@@ -230,7 +231,8 @@ int main(int argc, char** argv) {
   // answered by it, and none silently falls back to engine 1.
   if (engine == "2") {
     if (args[0] == "selftest") return lab::cmdPlainSelftest();
-    std::fprintf(stderr, "--engine=2 runs only: selftest\n");
+    if (args[0] == "r10") return lab::cmdR10(args);   // paid: lab_r10.h
+    std::fprintf(stderr, "--engine=2 runs only: selftest, r10\n");
     return 2;
   }
 

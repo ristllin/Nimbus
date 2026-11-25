@@ -7,11 +7,14 @@
 #include <vector>
 
 #include "nimbus/harness/plain/deliver.h"
+#include "nimbus/harness/plain/exchange.h"   // ExchangeErr: the class a fail-over is asked for (E2-P-FO)
 #include "nimbus/harness/plain/guards.h"
 #include "nimbus/harness/plain/hooks.h"
 #include "nimbus/harness/plain/request.h"
 #include "nimbus/harness/plain/turn.h"
 #include "nimbus/harness/plain/wire.h"
+#include "nimbus/orch/fallback_rules.h"   // ErrorClass: a held head's fall-back class (E2-PARK1)
+#include "nimbus/orch/tx/arena.h"
 #include "nimbus/orch/tx/digest.h"
 #include "nimbus/orch/tx/item.h"
 
@@ -84,12 +87,15 @@ inline void applyCeiling(const TurnCeiling& c, GuardLimits& limits, uint32_t& ha
     if (cap && v > cap) v = static_cast<std::remove_reference_t<decltype(v)>>(cap);
   };
   lower(limits.rounds, c.rounds);
+  lower(limits.hardRounds, c.rounds);         // the round guard itself (lane RB-X3's hard rounds)
   lower(limits.softWallMs, c.softWallMs);
+  lower(limits.timeLimitMs, c.softWallMs);    // the time guard itself (lane RB-X3's time limit)
   lower(limits.maxSpendMicroUsd, c.spendMicroUsd);
   lower(hardWallMs, c.hardWallMs);
 }
 
-// What the binding gives for one turn, asked once at turn open. The engine sets
+// What the binding gives for one turn, asked at turn open (and, with EngineDeps::stablePrefix, once
+// more at the close of a turn that ran calls, to see what the turn itself changed). The engine sets
 // facts.turn, facts.digestBlock and facts.recentFiles itself (it owns the digests and the
 // recent-files list); the rest is the binding's: the registry (classOf decides effect and
 // pure), notes, skills, the time zone, the person's flags.
@@ -103,11 +109,58 @@ struct TurnSetup {
   bool qualified = false;            // qualified on engine 2: routing and truth mode only, never the window
   uint16_t dayStartMin = kDayStartDefaultMin;   // the device's day start (TurnCtx::dayStartMin)
   TurnCeiling ceiling;               // an unattended turn's own bounds (RB-U1a); none by default
+  // A test rig's smaller request body cap, bytes (lane E2-FIX9: the overflow ladder on a real provider at a
+  // small cost); 0: the head's own (tx::HeadBudget::bodyCap). Never larger than the head's.
+  uint32_t bodyCapLimit = 0;
+  // Lane E2-PARK1: the same photos with no provider file id, for a head the turn moved to (a fall-back never
+  // reads the head provider's file ids, so nothing is uploaded there for it); null: `photo` stays.
+  PhotoFn photoInline;
 };
 using TurnSetupFn = std::function<Status(const TurnCtx& turn, TurnSetup& out)>;
+
+// Lane E2-P-FO (router design section 9, "Fail-over"): a round that failed on a class engine 1 switches
+// on (transport, server, rate limit, a refused key or credit, a cut, an unreadable answer, a refusal of
+// this request by this host; never a request unreadable everywhere, a context refusal or a moderation
+// block) runs again on another head, at most kMaxFailovers times a turn. The binding names the heads in
+// the owner's fallback order (only keyed ones, none parked, paused or over its budget; none at all with
+// midTurnFailover off); the engine takes the first whose body budget holds the request it replaces.
+inline constexpr uint8_t kMaxFailovers = 2;
+struct FailoverAsk {
+  std::string provider;            // the head that failed: its slot and model
+  std::string model;
+  ExchangeErr err = ExchangeErr::None;
+  int httpStatus = 0;
+  // Lane E2-PARK1: the head is held by the park (a refused key or credit, a pause) before any request: the
+  // owner's rules are asked for `heldClass`, engine 1's class for that cause (startPastParkedHead).
+  bool held = false;
+  nimbus::orch::ErrorClass heldClass = nimbus::orch::ErrorClass::None;
+};
+struct FailoverTarget {
+  std::string provider;            // its slot: price, spend, park ("openai")
+  std::string host;                // TurnCtx::host (HeadSlot::turnHost)
+  std::string model;
+  Dialect dialect = Dialect::AnthropicMessages;
+  HeadEndpoint head;               // with its own key
+  HeadCost cost;                   // its rates (a target with no price row is never named)
+  bool seesPhotos = false;         // its row takes images: pixels (E2-CFIX1); else each photo's line
+};
+using FailoverFn = std::function<void(const FailoverAsk& ask, std::vector<FailoverTarget>& out)>;
+// What one head of a switched turn was billed (TurnOutcome::shares), booked to the model that answered.
+struct HeadShare {
+  std::string provider;
+  std::string model;
+  uint32_t promptTokens = 0, outputTokens = 0, cacheReadTokens = 0, cacheWriteTokens = 0, cacheWrite1hTokens = 0;
+  uint16_t requests = 0;
+};
 // One delivery (plain/deliver.h); unset: deliverTurn over the channel. A test or a host may
 // put its own here; it keeps deliverTurn's contract (progress recorded per send, fromPart).
 using DeliverFn = std::function<Status(const DeliverInput& in, DeliverOutcome& out)>;
+
+// Where a chat stands under a provider's dollar limit (E2-CFIX3; the device's answers; null: neither).
+struct LimitChat {
+  bool notice = false;   // the limits store's freeze notice reaches it (the owner's chat, the web chat)
+  bool owner = false;    // the owner's own chat: the owner's words, else the members' neutral line
+};
 
 struct EngineDeps {
   const Platform* platform = nullptr;        // nowMs, delayMs and nowEpoch are required
@@ -128,6 +181,38 @@ struct EngineDeps {
   // full-arena drop would take old turns with no digest. A binding that compacts no chat on
   // purpose (a test of something else, a rig before its compaction lane) says so here, by name.
   const char* noCompaction = nullptr;
+  // Progress the engine itself reports (lane RB-X3, ruling 84 items 2 and 3): a soft guard a
+  // progressing attended turn passed (ProgressKind::SoftGuard, its slug as detail) and a request
+  // about to leave (ProgressKind::ProviderWait). The binding forwards them to its
+  // ProgressReporter (RB-E3's status-line class); null: nothing is reported.
+  std::function<void(const ProgressEvent& e)> progress;
+  // True when the device has no card fitted at all: an Io from the log's open() then means
+  // the chat runs from RAM by design. Null or false: an Io is an outage, the chat is unloaded
+  // and reopen() loads it when storage answers (lane E2-STORE).
+  std::function<bool()> noCard;
+  // True when nothing may be stored for this chat yet (lane E2-FIX2B, finding P3: the history
+  // import has not answered Done, tx/migrate.h's contract): boot does not open the log and the
+  // chat runs unloaded, as after an Io. Null or false: boot opens the log.
+  std::function<bool()> holdUnloaded;
+  // Lane E2-CACHE (plain/prefix.h): a person's conversation keeps its system blocks frozen between the
+  // listed events (a record beside the transcript, so a chat switch or a restart sends the same bytes)
+  // and its stable cache points carry the 1-hour lifetime. False (a routine's own run, the battery by
+  // default): the blocks are composed afresh at every turn open and every point has 5 minutes.
+  bool stablePrefix = false;
+  // Lane E2-P-FO: the heads a failed round may move to (FailoverFn). Null: no fail-over.
+  FailoverFn failover;
+  // Lane E2-REP1 (review F): the monthly limits inside a turn, as engine 1's wire keeps them. pendingSpend:
+  // each answered exchange's usage on its head (slot, model), counted toward the limits at once (the turn's
+  // own booking at its end replaces it). paidHeld: asked before each further request of the turn; a line
+  // ("" = go on) ends the turn there with that line (StatusLine::PausedSpend), keeping what it already did.
+  std::function<void(const std::string& provider, const std::string& model, const nimbus::orch::TokenUsage& u)> pendingSpend;
+  std::function<std::string(const std::string& provider)> paidHeld;
+  // E2-CFIX3: where this chat stands under a dollar limit (plain/head_gate.h limitTurnLine). Null: a member's.
+  std::function<LimitChat(const std::string& chat)> limitChat;
+  // Lane E2-PARK1: may the engine ask `provider`'s account now (one small request after a refusal no status,
+  // type or code explains)? The binding's bound: once per provider per ten minutes. Null: never asked, the
+  // classifier's verdict stands as before.
+  std::function<bool(const std::string& provider)> accountCheckDue;
 };
 
 // What a turn starts from. A person's message (Owner, Console) is stored as a u item before
@@ -141,6 +226,19 @@ struct TurnInput {
   std::string ch = "tg";         // u.ch: the channel slug
   int16_t tzMinutes = 0;         // local offset from UTC: the message stamp and stub times
   uint64_t m = 0;                // u.m: the day-stream row the message mirrors
+  // Lane E2-FIX10: the file-store paths the device itself stored for this very message (a
+  // Telegram photo, an album's photos, a document, a long paste kept in the inbox), only those
+  // whose store succeeded. At the open they count as the turn's own change to the recent-files
+  // list (plain/prefix.h): the conversation holds the message that carries them.
+  std::vector<std::string> stored;
+  // Lane E2-PARK1: the head is held (startPast.held): the turn starts on the first fall-back the binding's
+  // order names and sends nothing to the head. startLine: the person's line on the stand-in's reply ("":
+  // none, the episode was told), startStored its form with no provider words.
+  FailoverAsk startPast;
+  std::string startLine, startStored;
+  // Review R11: the chat is not the owner's: a switch line carries no provider reason and no money words, only
+  // the model that answered ("This answer came from <model>.").
+  bool neutralSwitch = false;
 };
 
 struct TurnOutcome {
@@ -152,13 +250,61 @@ struct TurnOutcome {
   GuardTrip trip = GuardTrip::None;
   StatusLine status = StatusLine::None;   // the one harness-written line, when one went out
   std::string statusText;
+  // statusText as it may be stored or reach a model (the chat's history row): without a provider's own
+  // reason, which rides only in the line the person gets (E2-FIX11). Equal to statusText otherwise.
+  std::string statusStored;
   bool parkHost = false;         // the head's key or credit was refused: the binding parks it
+  int parkStatus = 0;            // that refusal's HTTP status and its body (first 4 KB): the shared park reads
+  std::string parkText;          // its kind from them (lane E2-FIX14); never stored, never shown
+  bool parkBilling = false;      // the engine's classifier read it as billing (E2-CFIX1): parked as no credit
+  bool parkModel = false;        // E2-PARK1: the account check was refused too: this head model's requests (chat seam)
+  bool modelUnusable = false;    // the provider does not know the head model (E2-R8a: the device marks it)
+  std::string unusableProvider, unusableModel;   // review R2: the head that did not know it (a stand-in's own)
   bool failOver = false;         // routed: the router said fail over to the next target
+  // Lane E2-P-FO: rounds moved to another head (at most kMaxFailovers), and then what each head was
+  // billed, in order (empty with no switch: the whole turn is the head's). parkHost is the first head's.
+  uint8_t switches = 0;
+  std::vector<HeadShare> shares;
+  // Lane E2-REP1: a fallback head that refused its key or credit, for the binding to park as it parks the
+  // head (its slot, its key's fingerprint, the refusal's status and body; never stored, never shown).
+  struct FallbackRefusal {
+    std::string provider;
+    uint32_t keyFp = 0;
+    int status = 0;
+    std::string text;
+    bool billing = false;   // as parkBilling (E2-CFIX1)
+    bool model = false;     // as parkModel (E2-PARK1)
+  };
+  std::vector<FallbackRefusal> fallbackRefusals;
   // Effects the turn's tools asked for after the turn (a stored, successful result each): the
   // binding runs them in Deferred order once runTurn returns, the reply and the turn's items
   // already stored. The mask survives a refused allocation; an argument may not.
   DeferredEffects deferred;
   nimbus::orch::tx::TurnEndFacts end;
+};
+
+// Lane E2-CFIX1: the model that answered the turn: the last head's share after a switch, else `head`
+// (the turn's log line names it, as the usage rows do).
+inline std::string answeringModel(const TurnOutcome& out, const std::string& head) {
+  return out.switches && !out.shares.empty() ? out.shares.back().model : head;
+}
+
+// Lane E2-P-SURF: the last closed turn, kept for the turn inspector. Not the request (that is a
+// reference, plain/deliver.h): the system blocks, the tools and the facts a render needs, so
+// PlainEngine::rebuildLast renders the request again from the stored items. RAM only; the head's key
+// is never copied into it.
+struct LastTurn {
+  TurnCtx ctx;                    // `who` is null
+  SystemBlocks system;
+  std::vector<ToolSpec> tools;
+  HeadEndpoint head;              // key empty
+  const WireCodec* wire = nullptr;
+  nimbus::orch::tx::TurnEndFacts end;
+  uint64_t endQ = 0;              // the e item's q
+  nimbus::orch::tx::BoundTools bound;
+  PhotoFn photo;
+  bool longCache = false;
+  std::vector<std::string> refusedPhotos;
 };
 
 class PlainEngine {
@@ -174,9 +320,37 @@ class PlainEngine {
   Status runTurn(const TurnInput& in, TurnOutcome& out);
   // One unit of idle work through the idleStep seam.
   Status idle(const IdleCtx& ctx, IdleOutcome& out);
+  // Lane E2-BFIX1: the items storage refused, written now in order (tx::TxLog::flushHeld); a
+  // refusal leaves them held. heldItems(): how many are held in RAM only.
+  Status flushHeld();
+  uint32_t heldItems() const;
   // Once at boot: open the log (Io: run from RAM), fill the arena after thru, load the
   // digests, then the bootResume seam.
   Status boot(const BootCtx& ctx);
+  // The stored conversation could not be loaded at boot (open() answered Io and a card is
+  // fitted, EngineDeps::noCard): the chat runs from RAM and nothing is written to the log
+  // (lane E2-STORE, finding S5).
+  bool unloaded() const;
+  // While unloaded, before a turn: open the log again, append every item held in RAM after
+  // the stored conversation (in order, renumbered past it, each once), then refill the arena
+  // from the log. Not ok: still unloaded, nothing held in RAM given up (the next call resumes
+  // after the items already appended). Success and no change when the chat is loaded.
+  Status reopen();
+  // Lane E2-FIX3 (finding R1): reopen() into another transcript (`log`, under `chatKey`): the RAM
+  // items are stored there, in order, each once, and nothing is written to this chat's own log.
+  // /clear on a chat held by a history import that cannot finish. After success the engine is
+  // done (its log is not `log`): the caller boots a binding on `chatKey`. Not ok: still unloaded,
+  // the next call into the same log resumes after the items already stored there.
+  Status reopenAs(nimbus::orch::tx::TxLog& log, const std::string& chatKey);
+
+  // Lane E2-P-SURF: the last closed turn since boot (null: none yet), and request `exchange` of it
+  // rendered again from the stored items (plain::rebuildRequest: byte for byte, or a status that says why
+  // not: NotFound when compaction took items of the range, Torn when a photo's pixels are gone).
+  // `alloc` and `release` give the range's own block (PSRAM on the device; empty: malloc). Read and call
+  // only where the engine runs its turns: the web side asks the turn task (src/net/web_engine2.cpp).
+  const LastTurn* lastTurn() const;
+  Status rebuildLast(size_t exchange, HttpRequest& out, nimbus::orch::tx::ArenaAllocFn alloc = nullptr,
+                     nimbus::orch::tx::ArenaFreeFn release = nullptr) const;
 
   const EngineDeps& deps() const { return deps_; }
   // The chat's head state, shared with the compaction driver (RB-C2), which moves thru and

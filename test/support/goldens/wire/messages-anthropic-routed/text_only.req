@@ -1,0 +1,8 @@
+# route golden request messages-anthropic-routed/text_only
+POST https://router.cumulo.test:443/v1/messages
+header content-type: application/json
+header anthropic-version: 2023-06-01
+header authorization: Bearer fixture-key-not-a-secret
+splices 0
+body 917
+{"model":"claude-sonnet-5-5","max_tokens":4096,"output_config":{"effort":"medium"},"system":[{"type":"text","text":"You are a test assistant for the route goldens. Answer briefly."},{"type":"text","text":"Pinned: the test garden has three beds.","cache_control":{"type":"ephemeral"}},{"type":"text","text":"Mon 16 Nov: planned the spring beds.","cache_control":{"type":"ephemeral"}}],"tools":[{"name":"read_note","description":"Read one note by its path.","input_schema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}},{"name":"view","description":"Show an earlier result or photo again by its id.","input_schema":{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}}],"tool_choice":{"type":"auto"},"messages":[{"role":"user","content":[{"type":"text","text":"[2026-11-17 Tue 13:02] Hello. What can you help me with today?","cache_control":{"type":"ephemeral"}}]}]}

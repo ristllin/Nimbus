@@ -1,0 +1,4 @@
+recorded: lane E2-R10 tools/harness-lab r10 (14-S5-cap64), read 2026-11-24
+status: 200
+expect: stop=cut complete=false calls=0
+{"id":"scrubbed","created":1795548498,"model":"mistral-large-4-0","usage":{"prompt_tokens":197,"total_tokens":261,"completion_tokens":64,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":63},"service_tier":"standard"},"object":"chat.completion","choices":[{"index":0,"finish_reason":"length","message":{"role":"assistant","tool_calls":null,"content":[{"type":"thinking","thinking":[{"type":"text","text":"The user is asking me to write a 400-word story about a vegetable garden in spring. There's a pinned note about \"the test garden has three beds\" and a note from \"Mon 16 Nov\" about planning spring beds. This seems like a creative writing request. I should write a ~400"}],"closed":true}]}}]}

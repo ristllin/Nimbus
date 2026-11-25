@@ -1,0 +1,18 @@
+# route golden parse responses-openai-direct/error_context_length_exceeded.txt served at HTTP 400
+parse invalid-argument at plain::openai.parse.status
+parse stop other
+parse text 0 B fnv64=14650fb0739d0383 head=""
+parse refusal ""
+parse calls 0
+parse meta 0
+parse usage prompt=0 completion=0 cacheRead=0 cacheWrite=0 cacheWrite1h=0 responses=0 maxRequestIn=0 served=""
+exchange err=context http=400 requests=1 retries=0 climbs=0 cutRetried=0 failOver=0 parkHost=0 maxTokens=0 requestBytes=1187 ms=0 waitedMs=0 statusLine=5
+exchange line "No reply: the conversation is too large for this model. Try a shorter message."
+exchange line stored "No reply: the conversation is too large for this model. Try a shorter message."
+exchange request 0 1187 B fnv64=9796c3b8ff15234a
+exchange step stop other
+exchange step text 0 B fnv64=14650fb0739d0383 head=""
+exchange step refusal ""
+exchange step calls 0
+exchange step meta 0
+exchange step usage prompt=0 completion=0 cacheRead=0 cacheWrite=0 cacheWrite1h=0 responses=0 maxRequestIn=0 served=""

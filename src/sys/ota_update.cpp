@@ -1095,6 +1095,19 @@ static void installTask(void*) {
   vTaskDelete(nullptr);
 }
 
+// The battery gate alone (lane E2-REP4: the way back's forced install applies it too).
+static const char* powerRefusal() {
+  nimbus::ota::IdleSnapshot snap;
+  if (!g_idleProvider || !g_idleProvider(snap)) return nullptr;
+  nimbus::ota::InstallGateInput gi;
+  gi.battMonEnabled  = snap.battMonEnabled;
+  gi.onExternalPower = snap.onExternalPower;
+  gi.battPct         = snap.battPct;
+  gi.healthPct       = snap.healthPct;
+  const nimbus::ota::InstallGate g = nimbus::ota::installGate(gi);
+  return g != nimbus::ota::InstallGate::Allowed ? nimbus::ota::installGateStr(g) : nullptr;  // need-power
+}
+
 // The refusals force skips: not strictly newer (or below minVersion), and the battery
 // gate (manual path): an interrupted write on a dying pack can brick a slot. force
 // bypasses it - that is the "Install anyway, I am charging" escape hatch the UI
@@ -1108,16 +1121,10 @@ static const char* unforcedRefusal(bool force) {
     if (e != Eligibility::Newer)
       return (e == Eligibility::BlockedMinVersion) ? "min-version" : "not-newer";
   }
-  nimbus::ota::IdleSnapshot snap;
-  if (!g_idleProvider || !g_idleProvider(snap)) return nullptr;
-  nimbus::ota::InstallGateInput gi;
-  gi.battMonEnabled  = snap.battMonEnabled;
-  gi.onExternalPower = snap.onExternalPower;
-  gi.battPct         = snap.battPct;
-  gi.healthPct       = snap.healthPct;
-  const nimbus::ota::InstallGate g = nimbus::ota::installGate(gi);
-  return g != nimbus::ota::InstallGate::Allowed ? nimbus::ota::installGateStr(g) : nullptr;  // need-power
+  return powerRefusal();
 }
+
+bool installNeedsPower() { return powerRefusal() != nullptr; }
 
 static bool requestInstallImpl(bool dryRun, bool force, bool autoPath, const char** whyOut) {
   // Atomic single-flight claim FIRST, so a web-UI install and the main-loop

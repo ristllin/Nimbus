@@ -140,6 +140,10 @@ struct RebuildInput {
                                                       // filled from the card); more is fine
   BulkReadFn bulk;                          // the bulk payloads, by handle
   PhotoFn photo;                            // the visible photos, by ref
+  // What the request carried beside those (lane E2-P-SURF; the engine sets them, a test leaves the defaults).
+  nimbus::orch::tx::BoundTools bound;
+  bool longCache = false;
+  const std::vector<std::string>* refusedPhotos = nullptr;
   nimbus::orch::tx::ArenaAllocFn alloc;     // the range's own block (PSRAM on the device);
   nimbus::orch::tx::ArenaFreeFn release;    // empty: malloc and free
 };
@@ -176,6 +180,7 @@ enum class ProgressKind : uint8_t {
   ToolRound = 0,      // a tool ran (detail: the tool's name)
   ProviderWait = 1,   // a request to the provider is about to leave, or a retry waits (detail: "")
   SoftGuard = 2,      // a soft guard was reached while the turn still progresses (detail: its slug)
+  Summary = 3,        // the turn waits for the summary of the earlier conversation (lane RB-C3)
 };
 
 struct ProgressEvent {

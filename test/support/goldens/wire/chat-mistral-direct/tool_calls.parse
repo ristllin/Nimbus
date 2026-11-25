@@ -1,0 +1,22 @@
+# route golden parse chat-mistral-direct/tool_calls.txt served at HTTP 200
+parse ok
+parse stop tool
+parse text 0 B fnv64=14650fb0739d0383 head=""
+parse refusal ""
+parse calls 1
+parse   call 0 id="B4igTotYT" name="read_file" complete=1 args="{\"path\": \"notes/seeds.txt\"}"
+parse meta 1
+parse   meta 0 beforeCall=0 212 B fnv64=a3f8a065f450b55c head="{\"type\":\"thinking\",\"thinking\":[{\"type\":\"text\",\"t"
+parse usage prompt=460 completion=49 cacheRead=1536 cacheWrite=0 cacheWrite1h=0 responses=1 maxRequestIn=1996 served="mistral-large-4-0"
+exchange err=ok http=200 requests=1 retries=0 climbs=0 cutRetried=0 failOver=0 parkHost=0 maxTokens=2192 requestBytes=875 ms=0 waitedMs=0 statusLine=0
+exchange line ""
+exchange line stored ""
+exchange request 0 875 B fnv64=86d23090b910263c
+exchange step stop tool
+exchange step text 0 B fnv64=14650fb0739d0383 head=""
+exchange step refusal ""
+exchange step calls 1
+exchange step   call 0 id="B4igTotYT" name="read_file" complete=1 args="{\"path\": \"notes/seeds.txt\"}"
+exchange step meta 1
+exchange step   meta 0 beforeCall=0 212 B fnv64=a3f8a065f450b55c head="{\"type\":\"thinking\",\"thinking\":[{\"type\":\"text\",\"t"
+exchange step usage prompt=460 completion=49 cacheRead=1536 cacheWrite=0 cacheWrite1h=0 responses=1 maxRequestIn=1996 served="mistral-large-4-0"

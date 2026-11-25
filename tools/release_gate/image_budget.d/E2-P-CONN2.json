@@ -1,0 +1,6 @@
+{
+  "lane": "E2-P-CONN2",
+  "allowance_bytes": 0,
+  "envs": {"esp32s3-cyd-e2": 9216, "test-cyd-e2": 9216},
+  "why": "Engine 1's attach builders (orch_connectors_wire attachOpenAIWire, attachAnthropicWire, applyCodeSandbox) now run on engine 2's head requests through the planner piece providerTools, with the codecs' mcp parse. Same tree, base rb-main d34293f7d against the lane tip, pio Flash used: esp32s3-cyd-e2 6,257,118 -> 6,265,590 B (+8,472), test-cyd-e2 6,423,038 -> 6,431,502 B (+8,464), rounded up to 9 KB. esp32s3-cyd not rebuilt: its only change is two unused thin functions in connectors.cpp."
+}

@@ -1,0 +1,12 @@
+recorded: lane E2-R10 tools/harness-lab r10 (32-S7-wrong-key), read 2026-11-24
+status: 401
+expect: class=key_auth retry=no
+{
+  "error": {
+    "message": "Incorrect API key provided: sk-r10-w***************0000. You can find your API key at https://platform.openai.com/account/api-keys.",
+    "type": "invalid_request_error",
+    "code": "invalid_api_key",
+    "param": null
+  },
+  "status": 401
+}

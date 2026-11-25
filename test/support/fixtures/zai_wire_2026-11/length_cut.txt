@@ -1,0 +1,4 @@
+recorded: lane E2-R10 tools/harness-lab r10 (14-S5-cap64), read 2026-11-24
+status: 200
+expect: stop=cut complete=false calls=0
+{"choices":[{"finish_reason":"length","index":0,"message":{"content":"","reasoning_content":"The user wants a 400-word story about a vegetable garden in spring. There's context about a test garden with three beds, and a note about planning spring beds on Monday Nov 16. I could check the notes... Actually, there's a pinned note about the test garden having three beds. Maybe I","role":"assistant"}}],"created":1795548577,"id":"scrubbed","model":"glm-5.3","object":"chat.completion","request_id":"scrubbed","usage":{"completion_tokens":64,"completion_tokens_details":{"reasoning_tokens":62},"prompt_tokens":266,"prompt_tokens_details":{"cached_tokens":0},"total_tokens":330}}

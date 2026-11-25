@@ -43,11 +43,16 @@
 // - The restart fill is one sequential read from (thruSeg, thruOffset) to the end of the
 //   open segment in kFillSliceBytes slices: 80 to 130 KB on Lumi's shape, about 16 reads.
 // - A refused append (no card, lock not taken, memory floor) answers NotStored and leaves
-//   no whole line behind; the caller keeps the item in RAM flagged kItemNotStored and the
-//   item is never written later (a later write would break the q order on storage). The
-//   stored transcript then has a hole: the engine names it (an h item of class gap on the
-//   first stored item after the episode). After open() answered Io the log stays closed:
-//   the caller opens it again when storage returns (card inserted, lock free).
+//   no whole line behind; the caller keeps the item in RAM flagged kItemNotStored. Lane
+//   E2-BFIX1: store() keeps the q order by holding every later item too (flagged the same
+//   way) and writes the held items, oldest first, before the next item it is given and at
+//   flushHeld() (the turn's close, idle time): a refused turn lands whole once storage takes
+//   a line again. While items are held, append() and appendLine() refuse (a line of a higher
+//   q may not go first). Only when storage refuses the oldest held item and then takes the
+//   new one (a refusal of that line alone) are the held items given up (lostCount()): the
+//   stored transcript then has a hole and the engine names it (an h item of class gap on
+//   the first stored item after the episode). After open() answered Io the log stays
+//   closed: the caller opens it again when storage returns (card inserted, lock free).
 // - Memory: open, fill, writeHead, the rebuild and bulk reads use buffers of up to
 //   kMaxLineBytes + kFillSliceBytes for the call, and append keeps one line buffer; on the
 //   device every call runs under the PSRAM-first allocation scope (PRD section 1).
@@ -68,6 +73,7 @@ inline constexpr size_t kChatKeyMaxBytes = TxArenaPool::kChatKeyMax;   // 47
 inline constexpr uint32_t kMaxSegment = 999999;       // seg-NNNNNN: six digits
 inline constexpr size_t kHeadMaxBytes = 16384;        // head.json, crc tail included
 inline constexpr size_t kHeadMaxPinned = 64;          // HeadState::pinned entries
+inline constexpr size_t kHeadMaxRefusedPhotos = 16;  // HeadState::refusedPhotos entries
 inline constexpr size_t kHeadMaxString = 128;         // profile and each pinned entry
 inline constexpr size_t kBulkMaxBytes = 512 * 1024;   // one bulk payload
 inline constexpr size_t kBulkChunkBytes = 32 * 1024;  // one bulk append: about 50 ms of card lock (Ruling 19)
@@ -81,7 +87,8 @@ inline constexpr size_t kBulkChunkBytes = 32 * 1024;  // one bulk append: about 
 // - writeWhole creates or replaces the file;
 // - rename replaces an existing `to` (a binding whose filesystem cannot, removes `to`
 //   first: a cut between the two leaves only head.json.tmp, which open() reads);
-// - list of a missing folder answers true with no names; names are bare (no folder).
+// - list of a missing folder answers true with no names, only when the folder is known to be
+//   absent; a listing that failed answers false (never "empty"); names are bare (no folder).
 class TxFiles {
  public:
   virtual ~TxFiles() = default;
@@ -115,6 +122,9 @@ struct HeadState {
   uint64_t lastReqAt = 0;       // epoch seconds of the last head request on this chat
   uint32_t openTurn = 0;        // 0 = no turn open (the newest t item has an e after it)
   uint8_t attempts = 0;         // attempts of the open turn (its t item's attempt)
+  // Photo refs a provider refused as pixels in this chat (lane E2-REP4; kept only here, at most
+  // kHeadMaxRefusedPhotos, the oldest given up first): each renders as its line after a restart too.
+  std::vector<std::string> refusedPhotos;
 };
 
 // Where an item went: a failed append leaves the item in RAM, not stored, and the
@@ -141,19 +151,21 @@ class TxLog {
 
   // Find the open segment and the state: head.json (or its temp) when it checks out, with
   // the lines after it caught up; else a rebuild from the segments. A chat with no segment
-  // yet answers a fresh HeadState. InvalidArgument for an unsafe chat key; Io when the
-  // storage refuses (no card): the log stays closed and every append answers NotStored.
+  // yet answers a fresh HeadState, but only when no head file naming stored items and no
+  // first segment can be read (else Io: the listing missed them). InvalidArgument for an
+  // unsafe chat key; Io when the storage refuses or cannot tell (no card, a failed listing):
+  // the log stays closed and every append answers NotStored.
   Status open(HeadState& head);
   // One append of one encoded item to the open segment (rolling at kSegmentRollBytes).
-  // NotStored when the storage refused: the caller keeps the item in RAM. TooLarge or
+  // NotStored when the storage refused or store() holds items: the caller keeps the item in RAM. TooLarge or
   // InvalidArgument when encodeLine refuses the item: nothing is written.
   Status append(const Item& item, StoreState& state);
   // The same for a line already encoded (the arena's bytes: no allocation, no re-encode).
   // Torn or InvalidArgument when checkLine refuses it.
   Status appendLine(const char* line, size_t len, StoreState& state);
-  // The persist point: append `item` to `arena`, then its arena line to storage, and flag
-  // it kItemNotStored in the arena when storage did not take it (state NotStored, status
-  // ok: the item is in RAM and the transcript goes on). An arena refusal (TooLarge when
+  // The persist point: append `item` to `arena`, write the held items first (flushHeld),
+  // then its arena line to storage, and flag it kItemNotStored in the arena when storage did
+  // not take it (state NotStored, status ok: the item is held in RAM and the transcript goes on). An arena refusal (TooLarge when
   // full: the caller compacts or names an omission; InvalidArgument for q out of order) is
   // returned and nothing is written anywhere.
   Status store(const Item& item, TxArena& arena, StoreState& state);
@@ -191,10 +203,26 @@ class TxLog {
 
   const std::string& chatKey() const { return chatKey_; }
   bool isOpen() const { return open_; }
+  // The log stops writing until the next open() (a binding that holds items it has not yet
+  // ordered after the stored ones; lane E2-STORE). Nothing on storage changes.
+  void close() {
+    open_ = false;
+    lost_ += held_;   // the caller's reopen merges what RAM holds (E2-BFIX1: no hold over a closed log)
+    held_ = 0;
+    heldFrom_ = 0;
+  }
   uint32_t segment() const { return seg_; }
   uint64_t segmentBytes() const { return segBytes_; }
   // The highest q this log has seen stored (open() and successful appends).
   uint64_t lastQ() const { return maxQ_; }
+  // Lane E2-BFIX1: write the items store() holds (flagged kItemNotStored in `arena`, q from
+  // the oldest held one) in q order; stops at the first refusal, the rest stay held. Held
+  // items the arena no longer has (a reload, a dropped turn) are given up (lostCount()).
+  Status flushHeld(TxArena& arena);
+  // Items store() holds in RAM for storage, in q order (0: none).
+  uint32_t heldCount() const { return held_; }
+  // Items given up since this log was made: held, then never written (a hole on storage).
+  uint32_t lostCount() const { return lost_; }
 
  private:
   TxFiles& files_;
@@ -212,10 +240,16 @@ class TxLog {
   uint64_t stub_ = 0;
   uint32_t thruSeg_ = 1;
   uint64_t thruOff_ = 0;
+  uint64_t heldFrom_ = 0;       // q of the oldest held item (0: nothing held)
+  uint32_t held_ = 0;
+  uint32_t lost_ = 0;
 
   Status writeLine(const char* line, size_t len, uint64_t q, StoreState& state);
+  Status writeChecked(const char* line, size_t len, uint64_t q, StoreState& state);
+  Status writeArenaLine(const TxArena& arena, size_t at, uint64_t q, StoreState& state);
   Status syncTail();
   Status segments(std::vector<uint32_t>& out);
+  Status provenFresh();
   Status readHeadFile(const std::string& path, HeadState& out);
   Status checkHead(const HeadState& head, const std::vector<uint32_t>& segs);
   bool lastLineOk(const HeadState& head);

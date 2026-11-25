@@ -94,4 +94,12 @@ constexpr uint32_t tgIdleSleepMs(bool localWaiting, uint32_t elapsedMs, uint32_t
   return pauseMs - elapsedMs < kTgIdleSliceMs ? pauseMs - elapsedMs : kTgIdleSliceMs;
 }
 
+// Lane E2-FIX5: what ends an idle wait (rules 2 and 3) on engine 2: a waiting local turn, staged
+// work, a routine change staged from the web page (applied by the loops tick on this task: without
+// it a delete waited out up to a whole 30 s long-poll, and a restart meanwhile dropped it), or a
+// quiesce (not running).
+constexpr bool tgIdleEnds(bool localTurn, bool stagedWork, bool routineChange, bool running) {
+  return localTurn || stagedWork || routineChange || !running;
+}
+
 }  // namespace nimbus::net

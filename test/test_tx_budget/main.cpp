@@ -3,11 +3,12 @@
 //
 // The class rules, every head the released table names:
 //   - the default profile is full, and no fallback resolves to anything smaller;
-//   - every head's default body, due mark, keep, digest block, inline message cap and bulk-whole cap
-//     is at least its released v5.1.2 row (test/support/fixtures/budgets_v5_1_2.json);
+//   - every head's default body, due mark, digest block, inline message cap and bulk-whole cap
+//     is at least its released v5.1.2 row (test/support/fixtures/budgets_v5_1_2.json); the keep is the
+//     owner's design (rulings 105 and 106: the summary and the recent part), no longer v5.1.2's keep;
 //   - 85,000 B only where v5.1.2 itself is at 85,000 B; a floor head is a class, not a 0;
 //   - the aim is in tokens: about 100,000, or the head's own lower limit; due at the aim less the
-//     next request's growth, keep about 70% of it;
+//     next request's growth; keep the fixed part, the summary and the recent part (the settings);
 //   - both routed rows exist behind the one switch;
 //   - the generated table (docs/reference/transcript-budgets.md) is this code's output.
 // Every checker is counter-tested first.
@@ -18,6 +19,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <functional>
 #include <map>
@@ -104,9 +106,10 @@ std::string shortOf(const tx::HeadBudget& b, const V512& v) {
     const char* name;
     uint32_t have, was;
   };
+  // The keep is not here: ruling 106 item 2 (the owner's design) lifts v5.1.2's keep from the default;
+  // test_the_keep_is_the_summary_and_the_recent_part pins what replaces it.
   const F fs[] = {{"body", b.bodyCap, v.body},
                   {"due mark", b.marks.high, foldMark(v)},
-                  {"keep", b.marks.low, v.keep},
                   {"digest block", tx::blockCapFor(b.profile), v.summary},
                   {"message cap", b.messageCap, v.messageCap},
                   {"bulk whole", b.bulkWholeCap, v.toolResult}};
@@ -164,7 +167,7 @@ void test_the_row_checker_catches_one_byte_short_in_every_field() {
   tx::HeadBudget b;
   b.bodyCap = 250000, b.marks = {94464, 59040}, b.messageCap = 12288, b.bulkWholeCap = 8192;
   TEST_ASSERT_EQUAL_STRING("", shortOf(b, v).c_str());
-  uint32_t* fields[] = {&b.bodyCap, &b.marks.high, &b.marks.low, &b.messageCap, &b.bulkWholeCap};
+  uint32_t* fields[] = {&b.bodyCap, &b.marks.high, &b.messageCap, &b.bulkWholeCap};
   for (uint32_t* f : fields) {
     *f -= 1;
     TEST_ASSERT_FALSE(shortOf(b, v).empty());
@@ -217,7 +220,7 @@ void test_the_engines_inline_caps_hold_every_released_row() {
   }
 }
 
-void test_the_aim_is_tokens_due_before_it_and_keeps_70_percent() {
+void test_the_aim_is_tokens_and_due_before_it() {
   for (const V512& v : v512()) {
     const tx::HeadBudget b = full(v);
     const RequestBudget r = requestBudgetFor(v.host, v.model, v.host == "cumulo", linkOf(v), false);
@@ -228,7 +231,7 @@ void test_the_aim_is_tokens_due_before_it_and_keeps_70_percent() {
     TEST_ASSERT_TRUE_MESSAGE(b.tokens.keep < b.tokens.due && b.tokens.due < b.tokens.aim, what.c_str());
     // No mark is past what the body carries (an underflow would show here).
     TEST_ASSERT_TRUE_MESSAGE(b.marks.high <= b.bodyCap, what.c_str());
-    TEST_ASSERT_EQUAL_UINT32_MESSAGE(b.tokens.aim * tx::kKeepPercent / 100, b.tokens.keep, what.c_str());
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(b.fixedTokens + b.summaryTokens + b.recentTokens, b.tokens.keep, what.c_str());
     // The body carries the aim on the head's wire: the request at the aim fits.
     TEST_ASSERT_TRUE_MESSAGE(tx::bodyBytesFor(b, b.tokens.aim) <= b.bodyCap, what.c_str());
     TEST_ASSERT_TRUE_MESSAGE(b.marks.low < b.marks.high, what.c_str());
@@ -240,11 +243,83 @@ void test_the_aim_is_tokens_due_before_it_and_keeps_70_percent() {
   }
 }
 
+// ---- 2b. the keep (owner rulings 105 and 106; lane RB-C3) -------------------------------------
+// After a compaction the request is the system prompt, one summary of at most the summary budget and
+// the recent part. Every head: L is the recent part in bytes on its wire, the keep in tokens is the
+// fixed part plus the two, and the two together leave at least half of what the due mark leaves
+// beside the fixed part (so a compaction is followed by turns, not another compaction); where that is
+// tight the summary yields first. The defaults are the owner's figures wherever they fit.
+void test_the_keep_is_the_summary_and_the_recent_part() {
+  size_t ownersFigures = 0;
+  for (const V512& v : v512()) {
+    const tx::HeadBudget b = full(v);
+    const std::string what = v.link + ":" + v.host + "/" + v.model;
+    const uint32_t room = (b.tokens.due - b.fixedTokens) / 2;
+    TEST_ASSERT_TRUE_MESSAGE(b.fixedTokens <= b.tokens.due / 2, what.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(b.summaryTokens + b.recentTokens <= room, what.c_str());
+    if (room >= tx::kSummaryTokensMin + tx::kRecentTokensFloor)   // else a tiny window: a third and two thirds
+      TEST_ASSERT_TRUE_MESSAGE(b.summaryTokens >= tx::kSummaryTokensMin && b.recentTokens >= tx::kRecentTokensFloor, what.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(b.recentTokens > 0 && b.summaryTokens > 0, what.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(b.summaryTokens <= tx::kSummaryTokensDefault && b.recentTokens <= tx::kRecentTokensDefault,
+                             what.c_str());
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(b.recentTokens * b.bodyMilliBytesPerToken / 1000, b.marks.low, what.c_str());
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(b.summaryTokens * b.bodyMilliBytesPerToken / 1000, b.summaryBytes, what.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(b.tokens.keep < b.tokens.due, what.c_str());
+    // The summary yields first: the recent part is under the owner's figure only with the summary at its least.
+    if (b.recentTokens < tx::kRecentTokensDefault && room >= tx::kSummaryTokensMin + tx::kRecentTokensFloor)
+      TEST_ASSERT_EQUAL_UINT32_MESSAGE(tx::kSummaryTokensMin, b.summaryTokens, what.c_str());
+    ownersFigures += b.recentTokens == tx::kRecentTokensDefault && b.summaryTokens == tx::kSummaryTokensDefault;
+  }
+  TEST_ASSERT_TRUE(ownersFigures > v512().size() / 2);   // every large head carries the owner's figures
+  // A larger recent part is the owner's choice: L follows it; at or past the released keep it carries it.
+  tx::EngineSettings big;
+  big.recentTokens = 25000;
+  tx::HeadBudget b;
+  TEST_ASSERT_TRUE(tx::budgetFor(tx::HeadKey{"anthropic", "claude-sonnet-5-5", false}, tx::Profile::Full, big, b).ok());
+  TEST_ASSERT_EQUAL_UINT32(25000, b.recentTokens);
+  TEST_ASSERT_TRUE(b.marks.low >= b.releasedKeep);
+  TEST_ASSERT_EQUAL_UINT32(254000, b.marks.high);   // the due mark never moves with a setting
+  TEST_ASSERT_EQUAL_UINT32(96000, b.tokens.due);
+  // Counter-test: a figure past what the head holds shrinks to fit, the summary first.
+  big.recentTokens = tx::kRecentTokensMax;
+  TEST_ASSERT_TRUE(tx::budgetFor(tx::HeadKey{"anthropic", "claude-sonnet-5-5", false}, tx::Profile::Full, big, b).ok());
+  TEST_ASSERT_EQUAL_UINT32(tx::kSummaryTokensMin, b.summaryTokens);
+  TEST_ASSERT_EQUAL_UINT32((96000 - b.fixedTokens) / 2 - tx::kSummaryTokensMin, b.recentTokens);
+}
+
+void test_the_settings_have_safe_bounds() {
+  const tx::EngineSettings d = tx::clampSettings(tx::EngineSettings{0, 0, 0, 0});
+  TEST_ASSERT_EQUAL_UINT32(10000, d.recentTokens);
+  TEST_ASSERT_EQUAL_UINT32(4000, d.summaryTokens);
+  TEST_ASSERT_EQUAL_UINT16(64, d.maxRounds);
+  TEST_ASSERT_EQUAL_UINT32(1200, d.hardTimeS);
+  const tx::EngineSettings lo = tx::clampSettings(tx::EngineSettings{1, 1, 1, 1});
+  TEST_ASSERT_EQUAL_UINT32(tx::kRecentTokensMin, lo.recentTokens);
+  TEST_ASSERT_EQUAL_UINT32(tx::kSummaryTokensMin, lo.summaryTokens);
+  TEST_ASSERT_EQUAL_UINT16(tx::kMaxRoundsMin, lo.maxRounds);
+  TEST_ASSERT_EQUAL_UINT32(tx::kHardTimeMinS, lo.hardTimeS);
+  const tx::EngineSettings hi = tx::clampSettings(tx::EngineSettings{UINT32_MAX, UINT32_MAX, UINT16_MAX, UINT32_MAX});
+  TEST_ASSERT_EQUAL_UINT32(tx::kRecentTokensMax, hi.recentTokens);
+  TEST_ASSERT_EQUAL_UINT32(tx::kSummaryTokensMax, hi.summaryTokens);
+  TEST_ASSERT_EQUAL_UINT16(tx::kMaxRoundsMax, hi.maxRounds);
+  TEST_ASSERT_EQUAL_UINT32(tx::kHardTimeMaxS, hi.hardTimeS);
+  // The NVS keys fit NVS (15 bytes) and every name is distinct.
+  const char* names[] = {tx::kSettingRecentTokens, tx::kSettingSummaryTokens, tx::kSettingMaxRounds, tx::kSettingHardTimeS,
+                         tx::kNvsRecentTokens, tx::kNvsSummaryTokens, tx::kNvsMaxRounds, tx::kNvsHardTimeS};
+  for (size_t i = 4; i < 8; ++i) TEST_ASSERT_TRUE(std::strlen(names[i]) <= 15);
+  for (size_t i = 0; i < 8; ++i)
+    for (size_t j = i + 1; j < 8; ++j) TEST_ASSERT_TRUE(std::string(names[i]) != names[j]);
+}
+
 void test_the_named_head_classes() {
   tx::HeadBudget b = direct("anthropic", "claude-sonnet-5-5");
   TEST_ASSERT_EQUAL_UINT32(100000, b.tokens.aim);
   TEST_ASSERT_EQUAL_UINT32(96000, b.tokens.due);
-  TEST_ASSERT_EQUAL_UINT32(70000, b.tokens.keep);
+  TEST_ASSERT_EQUAL_UINT32(254000, b.marks.high);   // unchanged by rulings 105 and 106
+  // The keep (ruling 106): the fixed part (18,432 + 600 B at 2.993 B a token), 4,000 and 10,000.
+  TEST_ASSERT_EQUAL_UINT32(6358 + 4000 + 10000, b.tokens.keep);
+  TEST_ASSERT_EQUAL_UINT32(29930, b.marks.low);
+  TEST_ASSERT_EQUAL_UINT32(11972, b.summaryBytes);
   TEST_ASSERT_EQUAL((int)tx::AimBound::Clamp, (int)b.bound);
   TEST_ASSERT_FALSE(b.floorHead);
   b = direct("anthropic", "claude-haiku-5-5");   // its price tier is 100,000 tokens
@@ -494,6 +569,7 @@ struct ArenaRate {
 };
 ArenaRate measureOnce(const Mix& m) {
   txb::Battery b;
+  b.compaction = false;   // the arena's own fill and drop, with no compaction (lane RB-C3: it runs at turn open)
   seedWorld(b);
   TXB_OK(b.boot());
   TXB_OK(b.arena->init(tx::kActiveChatArenaBytes * 2, b.platform.allocLarge, b.platform.freeLarge));
@@ -541,6 +617,7 @@ void test_the_arena_model_predicts_the_engines_drop() {
     const ArenaRate a = measure(m);
     for (double scale : {1.03, 0.85}) {
       txb::Battery b;
+      b.compaction = false;   // the engine's own drop is what the model predicts
       seedWorld(b);
       TXB_OK(b.boot());
       const size_t cap = (size_t)((a.need(resident) + kTurnOpenReserve) * scale);
@@ -686,7 +763,11 @@ void test_no_measured_figure_contradicts_its_row() {
     TEST_ASSERT_TRUE_MESSAGE(before >= 90000 && before <= 105000 && before <= b.tokens.aim, std::to_string(before).c_str());
     lowestAfter = std::min(lowestAfter, after);
   }
-  TEST_ASSERT_FALSE_MESSAGE(contradicts(lowestAfter, b.tokens.keep), ("after a compaction: " + std::to_string(lowestAfter)).c_str());
+  // The arm's request just after a compaction (lowestAfter) measured the 70% keep of ruling 82, which
+  // rulings 105 and 106 replace (the owner's design: summary and recent part). It is no longer a row
+  // figure; it must still sit above the new keep (the arm kept more), and the new keep is measured by
+  // the parity runner's after-compaction scenarios (RB-B1, RB-B2a), not by a paid run here.
+  TEST_ASSERT_TRUE_MESSAGE(lowestAfter > b.tokens.keep, ("after a compaction: " + std::to_string(lowestAfter)).c_str());
   // The cost formula reproduces the measured Sonnet turn.
   const budgettable::Head* sonnet = nullptr;
   for (const budgettable::Head& h : budgettable::heads())
@@ -734,7 +815,9 @@ int main() {
   RUN_TEST(test_no_head_default_is_under_its_v5_1_2_row);
   RUN_TEST(test_engine_1s_profile_never_lowers_engine_2s_floors);
   RUN_TEST(test_the_engines_inline_caps_hold_every_released_row);
-  RUN_TEST(test_the_aim_is_tokens_due_before_it_and_keeps_70_percent);
+  RUN_TEST(test_the_aim_is_tokens_and_due_before_it);
+  RUN_TEST(test_the_keep_is_the_summary_and_the_recent_part);
+  RUN_TEST(test_the_settings_have_safe_bounds);
   RUN_TEST(test_the_named_head_classes);
   RUN_TEST(test_both_routed_rows_behind_the_one_switch);
   RUN_TEST(test_an_owner_choice_lowers_only_the_marks_and_never_raises_them);

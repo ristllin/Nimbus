@@ -1,5 +1,6 @@
 #include "nimbus/orch/spend_guard.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -304,6 +305,90 @@ TokenUsage sentRequestEstimate(size_t bodyChars, size_t images) {
   u.completionTokens = 0;
   u.responses = 1;
   return u;
+}
+
+// ---- breakers (lane RB-X3) ----------------------------------------------------------------------
+uint64_t blendedTurnMicro(uint64_t warmRequestMicro, uint64_t coldRequestMicro) {
+  // One first request (cold at the measured share, warm otherwise) and the rest of the turn's
+  // requests warm.
+  const uint64_t first = (coldRequestMicro * kColdTurnPermille + warmRequestMicro * (1000 - kColdTurnPermille)) / 1000;
+  const uint64_t rest = warmRequestMicro * (kRequestsPerTurnMilli - 1000) / 1000;
+  return first + rest;
+}
+
+uint64_t spendRateCapMicro(uint64_t monthlyCeilingMicro, uint64_t blendedTurnMicro) {
+  const uint64_t share = monthlyCeilingMicro / 1000 * kSpendRateCeilingPermille;
+  return std::max<uint64_t>({kSpendRateFloorMicro, share, (uint64_t)kSpendRateTurns * blendedTurnMicro});
+}
+
+const char* breakerTripSlug(BreakerTrip t) {
+  switch (t) {
+    case BreakerTrip::TurnRate: return "turn-rate";
+    case BreakerTrip::SpendRate: return "spend-rate";
+    case BreakerTrip::None: break;
+  }
+  return "none";
+}
+
+BreakerVerdict ChatBreaker::admit(bool person, uint32_t nowMs) {
+  BreakerVerdict v;
+  if (person) return v;   // an owner's own messages never pause his chat (ruling 84 item 10)
+  if (!paused() && windowSpendMicro(nowMs) > cap_) why_ = BreakerTrip::SpendRate;
+  if (!paused() && windowTurns(nowMs) >= kTurnRateMaxTurns) why_ = BreakerTrip::TurnRate;
+  if (paused()) {
+    v.run = false;
+    v.why = why_;
+    v.lineDue = !lineSent_;
+    lineSent_ = true;
+    return v;
+  }
+  starts_[next_] = nowMs;
+  next_ = (uint8_t)((next_ + 1) % kTurnRateMaxTurns);
+  if (nStarts_ < kTurnRateMaxTurns) ++nStarts_;
+  return v;
+}
+
+void ChatBreaker::spent(bool person, uint64_t micro, uint32_t nowMs) {
+  if (person || !micro) return;
+  Bucket& b = spend_[(nowMs / 60000u) % kBuckets];
+  if ((uint32_t)(nowMs - b.atMs) >= 60000u || b.micro == 0) b = Bucket{nowMs, 0};
+  b.micro = addSatMicro(b.micro, micro);
+}
+
+bool ChatBreaker::resume() {
+  const bool was = paused();
+  why_ = BreakerTrip::None;
+  lineSent_ = false;
+  nStarts_ = next_ = 0;
+  for (Bucket& b : spend_) b = Bucket{};
+  return was;
+}
+
+uint64_t ChatBreaker::windowSpendMicro(uint32_t nowMs) const {
+  uint64_t sum = 0;
+  for (const Bucket& b : spend_)
+    if (b.micro && (uint32_t)(nowMs - b.atMs) < kSpendRateWindowMs) sum = addSatMicro(sum, b.micro);
+  return sum;
+}
+
+uint8_t ChatBreaker::windowTurns(uint32_t nowMs) const {
+  uint8_t n = 0;
+  for (uint8_t i = 0; i < nStarts_; ++i)
+    if ((uint32_t)(nowMs - starts_[i]) < kTurnRateWindowMs) ++n;
+  return n;
+}
+
+std::string breakerPausedText(BreakerTrip why, uint64_t capMicro) {
+  const std::string what = why == BreakerTrip::SpendRate
+                               ? "they spent more than " + formatUsd(capMicro) + " in the last hour"
+                               : "more than " + std::to_string((unsigned)kTurnRateMaxTurns) +
+                                     " started in 10 minutes";
+  return "Automatic turns in this chat are paused: " + what +
+         ". Your own messages still get answers. Send /resume to let them run again.";
+}
+
+std::string breakerResumedText(bool wasPaused) {
+  return wasPaused ? "Automatic turns in this chat run again." : "Nothing was paused in this chat.";
 }
 
 }  // namespace orch

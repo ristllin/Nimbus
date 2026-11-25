@@ -1,7 +1,10 @@
 // The compaction driver of engine 2 (plain/compact.h, lane RB-C2; PRD section 3).
 #include "nimbus/harness/plain/compact.h"
 
+#include <ArduinoJson.h>
+
 #include <algorithm>
+#include <cctype>
 #include <climits>
 #include <cstdint>
 #include <cstdio>
@@ -9,13 +12,17 @@
 #include <cstdlib>
 #include <memory>
 #include <new>
+#include <utility>
 
 #include "nimbus/harness/http.h"
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/plain/exchange.h"
+#include "nimbus/harness/plain/rails.h"
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/harness/platform.h"
 #include "nimbus/harness/turn_memory.h"
+#include "nimbus/orch/compact.h"   // ORCH_PARK_RECHECK_PROMPT: engine 1's re-check words (E2-PARK1)
+#include "nimbus/orch/model_caps.h"   // the summarizer's structured form by row (lane E2-R4b)
 #include "nimbus/orch/day_start.h"   // RB-REC5: the one day rule
 #include "nimbus/orch/tx/arena.h"
 #include "nimbus/orch/tx/log.h"
@@ -27,6 +34,31 @@ namespace plain {
 namespace tx = nimbus::orch::tx;
 namespace day = nimbus::orch::day;
 namespace st = texts::summarizer;
+
+namespace {
+// The causes of an answer that was sent but not taken: only these earn the second try (never a storage
+// or summary-in-force refusal, which a second request could not change).
+const char kNotTakenRefused[] = "plain::CompactDriver.refused";
+const char kNotTakenForm[] = "plain::CompactDriver.form";
+const char kNotTakenHttp400[] = "plain::CompactDriver.http400";
+const char kNotTakenChanges[] = "plain::CompactDriver.changes";
+const char kNotTakenEmpty[] = "plain::CompactDriver.empty";
+// Milliseconds left until `untilMs` on the platform clock (0 when past it; the clock may wrap).
+uint32_t msLeft(const Platform& p, uint32_t untilMs) {
+  const int32_t left = (int32_t)(untilMs - (p.nowMs ? p.nowMs() : untilMs));
+  return left > 0 ? (uint32_t)left : 0;
+}
+// One request's window: its own 45 s, or less inside an urgent attempt (what is left of its time).
+uint32_t requestWindow(const Platform& p, uint32_t untilMs) {
+  return untilMs ? std::min(kCompactRequestMs, msLeft(p, untilMs)) : kCompactRequestMs;
+}
+bool answerNotTaken(const Status& s) {
+  return s.err == Err::InvalidArgument && s.where &&
+         (s.where == kNotTakenRefused || s.where == kNotTakenForm || s.where == kNotTakenHttp400 ||
+          s.where == kNotTakenChanges || s.where == kNotTakenEmpty);
+}
+
+}  // namespace
 
 // ---- the control record -------------------------------------------------------------------
 
@@ -125,6 +157,14 @@ uint32_t compactWaitS(uint32_t fails) {
   return kCompactWaitS[i < n ? i : n - 1];
 }
 
+// Lane E2-REP1: the rungs whose provider is not held (CompactDeps::held); true when one was held.
+static bool dropHeld(const CompactDeps& d, std::vector<SummarizerRung>& rungs) {
+  if (!d.held) return false;
+  const size_t before = rungs.size();
+  rungs.erase(std::remove_if(rungs.begin(), rungs.end(), [&d](const SummarizerRung& r) { return d.held(r); }), rungs.end());
+  return rungs.size() != before;
+}
+
 size_t rungFor(uint32_t fails, size_t rungs) {
   if (rungs == 0 || fails < kCompactHeadTries) return 0;
   return (1 + (fails - kCompactHeadTries)) % rungs;
@@ -139,6 +179,8 @@ const char* compactStepSlug(CompactStep s) {
     case CompactStep::Stored: return "stored";
     case CompactStep::Refused: return "refused";
     case CompactStep::ToolsFolded: return "tools";
+    case CompactStep::Prepared: return "prepared";
+    case CompactStep::Swapped: return "swapped";
   }
   return "idle";
 }
@@ -180,8 +222,8 @@ constexpr size_t kItemFramingBytes = 64;
 constexpr size_t kStampBytes = 24;           // "[2026-11-17 Tue 13:02] "
 constexpr size_t kPhotoShownBytes = 96;      // '[photo p<ref8> <when> not shown: view id=p<ref8>]'
 
-// The stub rule's facts over the resident items: the pointer (the newest x item's stub) and every x
-// item's superseded list, sorted.
+// The stub rule's facts over the resident items: the pointer (the newest x item's stub) and the stub
+// lists (tx::stubList: the tool fold's, never a superseded-read list), sorted.
 struct ShowState {
   uint64_t pointer = 0;
   std::vector<uint64_t> superseded;
@@ -196,18 +238,21 @@ Status showState(const tx::TxArena& arena, ShowState& out) {
     if (e.kind != tx::ItemKind::PointerMove) continue;
     if (!(s = arena.get(i, it)).ok()) return s;
     out.pointer = std::max(out.pointer, it.stub);
-    out.superseded.insert(out.superseded.end(), it.sup.begin(), it.sup.end());
+    if (tx::stubList(it)) out.superseded.insert(out.superseded.end(), it.sup.begin(), it.sup.end());
   }
   std::sort(out.superseded.begin(), out.superseded.end());
   out.superseded.erase(std::unique(out.superseded.begin(), out.superseded.end()), out.superseded.end());
   return Status::success();
 }
-bool shownWhole(const tx::Item& r, const ShowState& s) {
+tx::ShowFacts showFactsOf(const ShowState& s) {   // between turns: no turn open, no ladder
   tx::ShowFacts f;
   f.pointer = s.pointer;
   f.superseded = &s.superseded;
+  return f;
+}
+bool shownWhole(const tx::Item& r, const ShowState& s) {
   tx::ShowAs as = tx::ShowAs::Stub;
-  return tx::showResult(r, f, as).ok() && as == tx::ShowAs::Whole;
+  return tx::showResult(r, showFactsOf(s), as).ok() && as == tx::ShowAs::Whole;
 }
 // What one decoded item adds to a request between turns (no turn open).
 size_t shownBytes(const tx::Item& it, const ShowState& s) {
@@ -219,7 +264,7 @@ size_t shownBytes(const tx::Item& it, const ShowState& s) {
       return n;
     case tx::ItemKind::Assistant:
     case tx::ItemKind::DeviceNote: return n + it.x.size();
-    case tx::ItemKind::Call: return n + it.id.size() + it.n.size() + tx::shownArgs(it, 0, 0).size();   // between turns
+    case tx::ItemKind::Call: return n + it.id.size() + it.n.size() + tx::shownArgs(it, showFactsOf(s)).size();   // whole (E2-VERB)
     case tx::ItemKind::Result:
       if (!shownWhole(it, s)) return n + it.id.size() + it.st.size();
       return n + it.id.size() + (it.cls == tx::ResultClass::Receipt || it.handle.empty() ? it.x.size() : it.bytes);
@@ -247,11 +292,11 @@ struct Unit {
 
 // What one decoded item says about its turn.
 void noteItem(const tx::Item& it, Unit& u) {
+  u.tainted |= itemOutside(it);   // one item rule (RB-RL: plain/rails.h)
   switch (it.kind) {
     case tx::ItemKind::User:
       u.owner = u.content = true;
       u.text += it.x.size();
-      for (const tx::Part& p : it.parts) u.tainted |= p.kind == tx::PartKind::File;
       break;
     case tx::ItemKind::Assistant:
       u.content = true;
@@ -259,10 +304,8 @@ void noteItem(const tx::Item& it, Unit& u) {
       break;
     case tx::ItemKind::Intent: u.intents.push_back(it.id); break;
     case tx::ItemKind::Result:
-      u.tainted |= it.cls == tx::ResultClass::Outside;
       u.intents.erase(std::remove(u.intents.begin(), u.intents.end(), it.id), u.intents.end());
       break;
-    case tx::ItemKind::DeviceNote: u.tainted |= it.note == tx::NoteClass::Agent; break;
     default: break;
   }
 }
@@ -335,33 +378,24 @@ size_t heldFrom(const std::vector<Unit>& units, const SliceRules& r) {
   return units.size();
 }
 
-// The oldest of the newest kNewestOwnerTurnsKept owner turns.
-size_t newestOwnersFrom(const std::vector<Unit>& units) {
+// The oldest of the newest kNewestOwnerTurnsKept owner turns that fit under H (ruling 106 item 2:
+// "never fewer than the newest six owner turns when they fit"); the newest owner turn always stays.
+size_t newestOwnersFrom(const std::vector<Unit>& units, const SliceRules& r) {
   uint32_t owners = 0;
-  for (size_t i = units.size(); i-- > 0;)
-    if (units[i].owner && ++owners == tx::kNewestOwnerTurnsKept) return i;
-  return units.size();
-}
-
-// The first turn of the owner's current day; when that day alone is above H, the first turn
-// past its oldest half.
-size_t todayFrom(const std::vector<Unit>& units, const SliceRules& r, const std::string& today) {
-  size_t from = units.size(), bytes = 0;
-  for (size_t i = 0; i < units.size(); ++i) {
-    if (units[i].day.empty() || units[i].day < today) continue;
-    if (from == units.size()) from = i;
+  size_t bytes = 0, from = units.size();
+  for (size_t i = units.size(); i-- > 0;) {
     bytes += units[i].bytes;
+    if (owners && bytes > r.high) return from;   // the older ones do not fit
+    from = i;
+    if (units[i].owner && ++owners == tx::kNewestOwnerTurnsKept) return i;
   }
-  if (from == units.size() || bytes <= r.high) return from;
-  size_t half = 0;
-  while (from < units.size() && half + units[from].bytes <= bytes / 2) half += units[from++].bytes;
-  return from;
+  return owners ? from : units.size();   // fewer than six, all fitting: every one stays
 }
 
 // The first unit a slice may not reach.
-size_t protectedFrom(const std::vector<Unit>& units, const SliceRules& r, const std::string& today) {
+size_t protectedFrom(const std::vector<Unit>& units, const SliceRules& r) {
   if (r.readBack) return heldFrom(units, r);
-  return std::min(heldFrom(units, r), std::min(newestOwnersFrom(units), todayFrom(units, r, today)));
+  return std::min(heldFrom(units, r), newestOwnersFrom(units, r));
 }
 
 // A tool name as the summarizer sees it: letters and '_' only, so no figure rides in it.
@@ -459,15 +493,48 @@ void clipUtf8(std::string& s, size_t cap) {
   s.resize(n);
 }
 
-Status renderUnit(const tx::TxArena& arena, const Unit& u, int16_t tz, std::string& out, uint64_t& lastRow) {
+// A file-change call's path and whether it deletes: "path" in its arguments, or for a `more` call the
+// tool it routes ("name") and that tool's "path" ("args": {"path": ...}). False when the call changes no
+// file or names no path (or its arguments are a long-argument stub).
+bool fileCall(const tx::Item& c, std::string& path, bool& deleted) {
+  JsonDocument doc;
+  if (c.args.empty() || c.args.size() > tx::kTier1CallArgs || deserializeJson(doc, c.args)) return false;
+  const bool more = c.n == "more";
+  const std::string tool = more ? std::string(doc["name"] | "") : c.n;
+  const char* p = more ? (doc["args"]["path"] | (const char*)nullptr) : (doc["path"] | (const char*)nullptr);
+  if (!fileChange(tool) || !p) return false;
+  path = p;
+  deleted = tool == "delete_file";
+  return true;
+}
+
+// What renderUnit reads beside the text: the newest owner row, and the turn's file changes.
+struct UnitFacts {
+  uint64_t lastRow = 0;
+  std::vector<FileNote> files;
+};
+
+Status renderUnit(const tx::TxArena& arena, const Unit& u, int16_t tz, std::string& out, UnitFacts& facts) {
   tx::Item it;
+  std::vector<std::pair<std::string, FileNote>> calls;   // call id, its file change
   for (size_t i = u.first; i <= u.last; ++i) {
     Status s = arena.get(i, it);
     if (!s.ok()) return s;
-    if (it.kind == tx::ItemKind::User && it.m > lastRow) lastRow = it.m;
+    if (it.kind == tx::ItemKind::User && it.m > facts.lastRow) facts.lastRow = it.m;
+    FileNote f;
+    if (it.kind == tx::ItemKind::Call && fileCall(it, f.path, f.deleted)) calls.emplace_back(it.id, f);
+    for (const auto& c : calls)   // a successful result of such a call: the device's Files line
+      if (it.kind == tx::ItemKind::Result && it.ok && c.first == it.id)
+        facts.files.push_back(FileNote{c.second.path, it.t, c.second.deleted});
     renderItem(it, u.tainted, tz, out);
   }
   return Status::success();
+}
+
+// The day line the input shows before the first turn of each day: "Tue 17 Nov 2026:".
+std::string dayLine(const std::string& day) {
+  std::string head;
+  return tx::dayHeader(day, head).ok() ? head + ":\n" : std::string();
 }
 
 }  // namespace
@@ -504,12 +571,13 @@ bool pressed(const SliceRules& r, const SlicePlan& plan) {
   return r.arenaRoom && r.arenaFree < r.arenaRoom && r.arenaFree + plan.freed < 2 * r.arenaRoom;
 }
 
-// May a turn with text join the slice: its day, and what stays after it at least L, with at least
-// the head's v5.1.2 keep of owner and assistant text (owner ruling 81). The arena's room is the one
+// May a turn with text join the slice: a dated turn, and what stays after it at least L (the owner's
+// recent part), with at least keepText of owner and assistant text (the v5.1.2 keep, only for an
+// owner's recent part that reaches it: ruling 106 item 2). The arena's room is the one
 // real limit that may take a slice under them (ruling 91 table/F1): never silently, the plan says so.
 bool joins(const Unit& u, const SliceRules& r, SlicePlan& plan) {
   if (!u.content) return true;
-  if (u.day.empty() || (!plan.day.empty() && u.day != plan.day)) return false;
+  if (u.day.empty()) return false;   // no clock reached it or its neighbors: no date to state
   if (r.manual) return true;
   const bool keepsL = plan.rest >= u.bytes && plan.rest - u.bytes >= r.low;
   if (keepsL && plan.restText >= u.text + r.keepText) return true;
@@ -518,14 +586,15 @@ bool joins(const Unit& u, const SliceRules& r, SlicePlan& plan) {
   return false;
 }
 
-void take(const Unit& u, std::string& text, uint64_t row, SlicePlan& out) {
+void take(const Unit& u, std::string& text, UnitFacts& facts, SlicePlan& out) {
   if (text.size() > kCompactSliceMaxBytes) {   // one turn over the input cap: summarized from its start
     clipUtf8(text, kCompactSliceMaxBytes - sizeof(st::kCut));
     text += st::kCut;
     text += '\n';
   }
   out.input += text;
-  out.lastRow = row;
+  out.lastRow = facts.lastRow;
+  out.files.insert(out.files.end(), facts.files.begin(), facts.files.end());
   out.freed += u.stored;
   out.rest -= u.bytes;
   out.restText -= u.text;
@@ -536,6 +605,24 @@ void take(const Unit& u, std::string& text, uint64_t row, SlicePlan& out) {
   out.day = u.day;
 }
 
+}  // namespace
+
+namespace {
+// Device items alone are never a slice (they go with the next turn); stored items the arena could not
+// hold are named, never silent.
+void finishPlan(const SliceRules& r, uint64_t thru, SlicePlan& out) {
+  if (out.turns) {
+    if (r.omittedThru > thru)
+      out.input.insert(0, std::string(st::kNotLoaded) + (r.searchBound ? st::kNotLoadedSearch : st::kNotLoadedEnd) + "\n");
+    return;
+  }
+  const size_t resident = out.resident, text = out.restText;
+  const bool held = out.textHeld;
+  out = SlicePlan{};
+  out.resident = out.rest = resident;
+  out.restText = text;
+  out.textHeld = held;
+}
 }  // namespace
 
 Status planSlice(const tx::TxArena& arena, uint64_t thru, const SliceRules& r, SlicePlan& out) {
@@ -550,51 +637,51 @@ Status planSlice(const tx::TxArena& arena, uint64_t thru, const SliceRules& r, S
     out.restText += u.text;
   }
   out.rest = out.resident;
-  const size_t stop = protectedFrom(units, r, localDay(r.now, r.tzMinutes, r.dayStartMin));
-  std::string text;
+  const size_t stop = protectedFrom(units, r);
+  std::string text, shownDay;
   for (size_t i = 0; i < stop && joins(units[i], r, out); ++i) {
     text.clear();
-    uint64_t row = out.lastRow;
-    if (!(s = renderUnit(arena, units[i], r.tzMinutes, text, row)).ok()) return s;
+    if (units[i].content && units[i].day != shownDay) text = dayLine(units[i].day);   // a slice may span days
+    UnitFacts facts;
+    facts.lastRow = out.lastRow;
+    if (!(s = renderUnit(arena, units[i], r.tzMinutes, text, facts)).ok()) return s;
     if (units[i].content && out.turns && out.input.size() + text.size() > kCompactSliceMaxBytes) break;
-    take(units[i], text, row, out);
+    if (units[i].content) shownDay = units[i].day;
+    take(units[i], text, facts, out);
   }
-  if (!out.turns) {   // device items alone are never a slice: they go with the next turn
-    const size_t resident = out.resident, text = out.restText;
-    const bool held = out.textHeld;
-    out = SlicePlan{};
-    out.resident = out.rest = resident;
-    out.restText = text;
-    out.textHeld = held;
-  } else if (r.omittedThru > thru) {   // stored items the arena could not hold: named, never silent
-    out.input.insert(0, std::string(st::kNotLoaded) + "\n");
-  }
+  finishPlan(r, thru, out);
   return Status::success();
 }
 
 namespace {
 
-// One closed unit's results that render whole, as the tool fold takes them (oldest first) while
-// the transcript is still over `target`; `left` is what it still renders.
+// One closed unit's items of one kind that render whole and have a stub form, as the tool fold takes
+// them (oldest first) while the transcript is still over `target`; `left` is what it still renders.
+// Results first, then long call arguments (lane E2-VERB, ruling 106: older and larger results
+// first, then older call arguments).
 struct FoldScan {
   const tx::TxArena& arena;
   uint64_t thru;
   const ShowState& show;
   size_t target;
+  tx::ItemKind kind;
 };
+bool foldable(const tx::Item& it, const ShowState& show) {
+  if (it.st.empty()) return false;   // none to show
+  if (it.kind == tx::ItemKind::Result) return shownWhole(it, show);
+  return &tx::shownArgs(it, showFactsOf(show)) == &it.args;   // a call still showing its arguments
+}
 Status foldUnit(const FoldScan& f, const Unit& u, size_t& left, std::vector<uint64_t>& sup) {
-  const tx::TxArena& arena = f.arena;
-  const uint64_t thru = f.thru;
-  const ShowState& show = f.show;
   tx::Item it;
   for (size_t k = u.first; k <= u.last && left > f.target; ++k) {
     tx::ArenaEntry e;
-    Status s = arena.header(k, e);
+    Status s = f.arena.header(k, e);
     if (!s.ok()) return s;
-    if (e.q <= thru || e.kind != tx::ItemKind::Result) continue;
-    if (!(s = arena.get(k, it)).ok()) return s;
-    if (!shownWhole(it, show) || it.st.empty()) continue;   // already a stub, or none to show
-    const size_t whole = shownBytes(it, show), stub = kItemFramingBytes + it.id.size() + it.st.size();
+    if (e.q <= f.thru || e.kind != f.kind) continue;
+    if (!(s = f.arena.get(k, it)).ok()) return s;
+    if (!foldable(it, f.show)) continue;   // already a stub, or none to show
+    const size_t whole = shownBytes(it, f.show);
+    const size_t stub = kItemFramingBytes + it.id.size() + (it.kind == tx::ItemKind::Call ? it.n.size() : 0) + it.st.size();
     if (whole <= stub) continue;
     left -= whole - stub;
     sup.push_back(it.q);
@@ -617,10 +704,12 @@ Status planToolFold(const tx::TxArena& arena, uint64_t thru, const SliceRules& r
   for (const Unit& u : units) rest += u.bytes;
   ShowState show;
   if (!(s = showState(arena, show)).ok()) return s;
-  const size_t stop = protectedFrom(units, r, localDay(r.now, r.tzMinutes, r.dayStartMin));
+  const size_t stop = protectedFrom(units, r);
   size_t left = rest;
-  for (size_t i = 0; i < stop && left > r.low && units[i].closed; ++i)   // thru never jumps a turn; nor a fold
-    if (!(s = foldUnit(FoldScan{arena, thru, show, r.low}, units[i], left, sup)).ok()) return s;
+  for (tx::ItemKind kind : {tx::ItemKind::Result, tx::ItemKind::Call})   // results, then arguments
+    for (size_t i = 0; i < stop && left > r.low && units[i].closed; ++i)   // thru never jumps a turn; nor a fold
+      if (!(s = foldUnit(FoldScan{arena, thru, show, r.low, kind}, units[i], left, sup)).ok()) return s;
+  std::sort(sup.begin(), sup.end());
   saved = rest - left;
   return Status::success();
 }
@@ -639,28 +728,52 @@ Status noHead(const CompactDeps& d, const char* where) {
 
 uint32_t calendarDay(uint64_t now, int16_t tz) { return (uint32_t)dayNumber(now, tz, 0); }
 
-// The head that answered the newest resident turn (its t item's "host/model"), read at every step
-// (ruling 91 blockers/F5): the marks follow a head switched in the chat without a new driver. The
-// host is read as the engine reads it (providerSlugOf: a slug, or an endpoint host such as
-// api.anthropic.com); the installed head stands when no t item is resident or the t item names its
-// model (its routing is known only there).
-tx::HeadKey answeringHead(const tx::TxArena& arena, const tx::HeadKey& installed) {
+// The head a resident turn's t item names ("host/model"), read at every step (ruling 91 blockers/F5):
+// the marks follow a head switched in the chat without a new driver (markHeads below). The host is
+// read as the engine reads it (providerSlugOf: a slug, or an endpoint host such as
+// api.anthropic.com); the installed head stands when the t item names no head or names its model
+// (its routing is known only there).
+tx::HeadKey headOfTurn(const tx::Item& it, const tx::HeadKey& installed) {
+  const size_t slash = it.head.find('/');
+  if (slash == std::string::npos || slash == 0 || slash + 1 >= it.head.size()) return installed;
+  TurnCtx t;
+  t.host = it.head.substr(0, slash);
+  HeadEndpoint ep;
+  ep.host = t.host;
+  tx::HeadKey k{providerSlugOf(t, ep), it.head.substr(slash + 1), false};
+  if (k.model == installed.model && (k.host == installed.host || k.host == "custom")) return installed;
+  k.routed = k.host == "cumulo";
+  return k;
+}
+
+// Lane E2-R4b (router design section 6 item 6): the heads whose marks compaction keeps, the installed head
+// first, then every head a resident t item names (each read as above, once). Its marks are the largest of
+// theirs, so a switch to a smaller window adds no digest for the small head (the ladder leaves older turns
+// out of its requests at render time) and a switch back renders every stored turn again.
+std::vector<tx::HeadKey> markHeads(const tx::TxArena& arena, const tx::HeadKey& installed) {
+  std::vector<tx::HeadKey> heads{installed};
   tx::Item it;
   for (size_t i = arena.count(); i-- > 0;) {
     tx::ArenaEntry e;
     if (!arena.header(i, e).ok() || e.kind != tx::ItemKind::TurnOpen || !arena.get(i, it).ok()) continue;
-    const size_t slash = it.head.find('/');
-    if (slash == std::string::npos || slash == 0 || slash + 1 >= it.head.size()) return installed;
-    TurnCtx t;
-    t.host = it.head.substr(0, slash);
-    HeadEndpoint ep;
-    ep.host = t.host;
-    tx::HeadKey k{providerSlugOf(t, ep), it.head.substr(slash + 1), false};
-    if (k.model == installed.model && (k.host == installed.host || k.host == "custom")) return installed;
-    k.routed = k.host == "cumulo";
-    return k;
+    const tx::HeadKey k = headOfTurn(it, installed);
+    const bool seen = std::any_of(heads.begin(), heads.end(), [&k](const tx::HeadKey& h) {
+      return h.host == k.host && h.model == k.model && h.routed == k.routed;
+    });
+    if (!seen) heads.push_back(k);
   }
-  return installed;
+  return heads;
+}
+
+// The budget with the largest marks among markHeads; the installed head's failure is the answer's.
+Status largestMarks(const tx::TxArena& arena, const tx::HeadKey& installed, tx::Profile profile,
+                    const tx::EngineSettings& set, tx::HeadBudget& out) {
+  Status s = tx::budgetFor(installed, profile, set, out);
+  if (!s.ok()) return s;
+  tx::HeadBudget b;
+  for (const tx::HeadKey& k : markHeads(arena, installed))
+    if (tx::budgetFor(k, profile, set, b).ok() && b.marks.high > out.marks.high) out = b;
+  return Status::success();
 }
 
 // The whole prompt of the newest turn's last request (its e item's lastPromptTokens), 0 when none
@@ -677,35 +790,6 @@ uint32_t lastPromptTokens(const tx::TxArena& arena, uint64_t& endQ) {
   }
   return 0;
 }
-
-// The rung's wire with the summarizer's output cap: the exchange picks a cap per request and
-// this wire holds it at `cap` (kSummarizerMaxTokens, then kSummarizerRetryMaxTokens).
-class CappedWire : public WireCodec {
- public:
-  CappedWire(const WireCodec& inner, uint16_t cap) : inner_(inner), cap_(cap) {}
-  Dialect dialect() const override { return inner_.dialect(); }
-  Status render(const RenderInput& in, HttpRequest& out) const override {
-    RenderInput capped = in;
-    capped.maxTokens = cap_;
-    return inner_.render(capped, out);
-  }
-  // A cut answer is read as a plain stop and remembered: the exchange would ask again at its own
-  // retry cap, which this wire holds at the same cap, so the retry could only be cut again; the
-  // driver asks once more itself, with more room.
-  Status parse(const HttpResponse& in, ParsedStep& out) const override {
-    const Status s = inner_.parse(in, out);
-    if (s.ok() && out.stop == StopReason::MaxTokens) {
-      cut = true;
-      out.stop = StopReason::Other;
-    }
-    return s;
-  }
-  mutable bool cut = false;
-
- private:
-  const WireCodec& inner_;
-  uint16_t cap_;
-};
 
 // The digest body: the summary, framed when its slice read outside content, made to fit
 // kDigestMaxBytes with its day header so the frame is never cut.
@@ -769,7 +853,7 @@ Status CompactDriver::step(const IdleCtx& ctx, CompactOutcome& out) {
   if (!d_.platform || !d_.transport || !d_.log || !d_.arena || !d_.head || !d_.digests || !d_.head() ||
       !d_.digests())
     return Status::fail(Err::InvalidArgument, "plain::CompactDriver::step");
-  if (ctx.ownerWaiting) return Status::success();   // the owner's message goes first
+  if (ctx.ownerWaiting && ctx.urgency == Urgency::None) return Status::success();   // the owner's message goes first
   PsramFirstScope scope;
   try {
     return run(ctx, out);
@@ -786,19 +870,45 @@ Status CompactDriver::step(const IdleCtx& ctx, CompactOutcome& out) {
   return Status::fail(Err::TooLarge, "plain::CompactDriver::step");
 }
 
+// Lane E2-FIX9: a turn's attempt that cannot run says why in the log, every time (an idle step stays quiet: the
+// next turn asks again), so a conversation never grows past its due mark without a line.
+// (The reasons are whole log formats, never separate literals: the model-text catalog reads a plain engine file's
+// string literals.)
+bool CompactDriver::turnAsks(const IdleCtx& ctx) const { return ctx.urgency != Urgency::None; }
+
 Status CompactDriver::run(const IdleCtx& ctx, CompactOutcome& out) {
   out.thru = d_.head()->thru;
   if (!ctx.clockSet || !ctx.now) {   // the day rule cannot be applied without a clock
+    if (turnAsks(ctx)) hlog::logf("compact(%s): not compacted at this turn: the clock is not set", d_.chatKey.c_str());
     if (manual_) endManual(texts::device_notes::kCompactNoClock);
     return Status::success();
   }
-  if (!manual_ && !automaticMayAsk(ctx)) return Status::success();
+  const bool urgent = ctx.urgency != Urgency::None;
+  if (!manual_ && !urgent && !automaticMayAsk(ctx)) return Status::success();
   SlicePlan plan;
   bool due = false;
   Status s = planIfDue(ctx, plan, due);
-  if (!s.ok() && manual_) endManual(texts::device_notes::kCompactFailed);   // answered, never left waiting
-  if (!s.ok() || !due) return s;
-  if (!plan.thru) return noSlice(plan, out);
+  if (!s.ok()) {
+    if (turnAsks(ctx))
+      hlog::logf("compact(%s): not compacted at this turn: the slice could not be planned", d_.chatKey.c_str());
+    if (manual_) endManual(texts::device_notes::kCompactFailed);   // answered, never left waiting
+    return s;
+  }
+  if (ctx.urgency == Urgency::Now) due = cycle_ = true;   // the request does not fit: compact first
+  if (!due) return urgent || manual_ ? s : prepare(ctx, out);
+  return onDue(ctx, plan, out);
+}
+
+// Due: the summary prepared ahead is swapped in with no request, else one attempt (or nothing to take).
+Status CompactDriver::onDue(const IdleCtx& ctx, const SlicePlan& plan, CompactOutcome& out) {
+  if (!manual_ && (plan.thru || pendingValid())) return crossing(ctx, plan, out);
+  if (pendingValid()) return swapPending(ctx.now, out);
+  if (!plan.thru) {
+    if (turnAsks(ctx))
+      hlog::logf("compact(%s): not compacted at this turn: no turn may go (the newest six owner turns, an open turn or a "
+                 "running job hold them)", d_.chatKey.c_str());
+    return noSlice(plan, out);
+  }
   if (manual_ && manualAsks_ >= kCompactManualRequests) {
     endManual(texts::device_notes::kCompactDone);
     return Status::success();
@@ -833,12 +943,15 @@ SliceRules CompactDriver::rulesFor(const IdleCtx& ctx, const tx::HeadBudget& b) 
   rules.dayStartMin = d_.dayStartMin;
   rules.high = b.marks.high;
   rules.low = b.marks.low;
-  rules.keepText = b.profile == tx::Profile::Full ? b.releasedKeep : 0;   // an owner's smaller profile is his choice
+  // v5.1.2's text keep binds only an owner's recent part that reaches it (ruling 106 item 2); an owner's
+  // smaller profile is his choice.
+  rules.keepText = b.profile == tx::Profile::Full && b.marks.low >= b.releasedKeep ? b.releasedKeep : 0;
   rules.manual = manual_;
   rules.jobRunning = d_.jobRunning;
   rules.omittedThru = d_.omittedThru ? d_.omittedThru() : 0;
   rules.arenaFree = d_.arena->freeBytes();
   rules.arenaRoom = compactArenaRoom(d_.arena->capacity());
+  rules.searchBound = d_.searchBound;
   return rules;
 }
 
@@ -846,8 +959,9 @@ Status CompactDriver::planIfDue(const IdleCtx& ctx, SlicePlan& plan, bool& due) 
   // The head's marks at its profile (tx::budgetFor). No head named: nothing is compacted, never a
   // fixed smaller profile in its place (ruling 83 item 4).
   if (!headNamed(d_)) return noHead(d_, "plain::CompactDriver.headKey");
-  tx::HeadBudget b;
-  Status s = tx::budgetFor(answeringHead(*d_.arena, d_.headKey), tx::profileOfHead(d_.head()->profile), b);
+  tx::HeadBudget& b = budget_;
+  const tx::EngineSettings set = d_.settings ? d_.settings() : tx::EngineSettings{};
+  Status s = largestMarks(*d_.arena, d_.headKey, tx::profileOfHead(d_.head()->profile), set, b);
   if (!s.ok()) return s;
   rules_ = rulesFor(ctx, b);
   if (!(s = planSlice(*d_.arena, d_.head()->thru, rules_, plan)).ok()) return s;
@@ -995,20 +1109,35 @@ bool CompactDriver::held(const IdleCtx& ctx, const CompactCtl::Chat& chat) {
     endManual(texts::device_notes::kCompactFailed);
     return true;
   }
-  // A wait longer than the longest one was set by a clock that ran ahead: it does not hold.
-  const bool waits = chat.next > ctx.now && chat.next <= ctx.now + compactWaitS(UINT32_MAX);
-  return waits || ctl_.paid >= kCompactPaidPerDay;
+  // A wait longer than the longest one was set by a clock that ran ahead: it does not hold. Lane E2-FIX9: nor does
+  // any wait for a turn that opens over the due mark (or a request that does not fit), nor the daily count: it tries
+  // again, inside kCompactUrgentMs, at every turn until one succeeds, instead of growing for hours (on the bench unit
+  // a conversation grew from 36k to 169k tokens with no attempt and no line); idle steps keep both, and a turn's
+  // attempt past the count says so.
+  const bool urgent = ctx.urgency != Urgency::None;
+  const bool waits = !urgent && chat.next > ctx.now && chat.next <= ctx.now + compactWaitS(UINT32_MAX);
+  const bool capped = ctl_.paid >= kCompactPaidPerDay;
+  if (urgent && capped)
+    hlog::logf("compact(%s): %u attempts today, past the daily %u: a turn over the due mark asks anyway", d_.chatKey.c_str(),
+               (unsigned)ctl_.paid, (unsigned)kCompactPaidPerDay);
+  return waits || (capped && !urgent);
 }
 
 // One attempt: the daily cap and this chat's wait, one rung, one exchange, the swap.
-Status CompactDriver::attempt(const IdleCtx& ctx, const SlicePlan& plan, CompactOutcome& out) {
+Status CompactDriver::attempt(const IdleCtx& ctx, const SlicePlan& plan, CompactOutcome& out, bool prepareOnly) {
   loadCtl();
   const CompactCtl::Chat before = ctl_.chat(d_.chatKey);
   out.step = CompactStep::Waiting;
   if (held(ctx, before)) return Status::success();
   std::vector<SummarizerRung> rungs;
   if (d_.rungs) d_.rungs(rungs);
+  if (dropHeld(d_, rungs) && rungs.empty()) {   // E2-REP1: nothing sent or counted; a later step asks again
+    hlog::logf("compact(%s): every summarizer's provider is held: no request", d_.chatKey.c_str());
+    if (manual_) endManual(texts::device_notes::kCompactFailed);
+    return Status::success();
+  }
   if (rungs.empty()) {
+    if (turnAsks(ctx)) hlog::logf("compact(%s): not compacted at this turn: no summarizer is set up", d_.chatKey.c_str());
     if (manual_) endManual(texts::device_notes::kCompactFailed);
     return Status::success();
   }
@@ -1017,17 +1146,67 @@ Status CompactDriver::attempt(const IdleCtx& ctx, const SlicePlan& plan, Compact
   saveCtl();
   ++windowAsks_;
   manualAsks_ += manual_;
-  Asked asked;
-  Status s = ask(rung, plan, ctx.now, asked);
-  out.requests = asked.requests;
-  out.ran = asked.requests > 0;
-  if (asked.parked && d_.park) d_.park(rung);
-  if (s.ok() && plan.belowKeep)
-    hlog::logf("compact(%s): the arena has %u B free: this slice leaves under the v5.1.2 text keep (%u B kept)",
-               d_.chatKey.c_str(), (unsigned)d_.arena->freeBytes(), (unsigned)(plan.restText));
-  if (s.ok()) s = swap(plan, asked.summary, ctx.now, out);
+  if (ctx.urgency != Urgency::None && ctx.waiting) ctx.waiting();   // the turn waits: its status line says so
+  tz_ = ctx.tzMinutes;
+  bool parked = false;
+  const Status s = askAndKeep(ctx, rung, plan, prepareOnly, out, parked);
+  if (parked && d_.park) d_.park(rung);
   settle(rung, plan, before.fails, ctx.now, s, out);
   return s.err == Err::TooLarge ? s : Status::success();
+}
+
+// The form a rung is asked in first: lines for a model whose provider refused the structured form by name.
+AnswerForm CompactDriver::formFor(const SummarizerRung& rung) const {
+  const std::string key = rung.host + "/" + rung.model;
+  return std::find(noForm_.begin(), noForm_.end(), key) != noForm_.end() ? AnswerForm::Lines : firstAnswerForm(rung);
+}
+
+// A provider that refused the form by name: its model is asked in lines from now on (until a restart).
+void CompactDriver::noteForm(const SummarizerRung& rung, const Status& s) {
+  const std::string key = rung.host + "/" + rung.model;
+  if (s.where != kNotTakenForm || noForm_.size() >= kNoFormModels ||
+      std::find(noForm_.begin(), noForm_.end(), key) != noForm_.end())
+    return;
+  noForm_.push_back(key);
+  hlog::logf("compact(%s): %s takes no structured form: lines from now on", d_.chatKey.c_str(), key.c_str());
+}
+
+// The second try: only for an answer sent and not taken, never after a refusal (the same content goes to the same
+// model), never past an urgent attempt's time.
+bool CompactDriver::secondTry(const Status& s, const Asked& asked, AnswerForm form, uint32_t untilMs) const {
+  if (!answerNotTaken(s) || s.where == kNotTakenRefused || !asked.requests || asked.parked || form != AnswerForm::Changes)
+    return false;
+  if (untilMs && msLeft(*d_.platform, untilMs) < kCompactMinRequestMs) {
+    hlog::logf("compact(%s): no time left in this turn for a second try", d_.chatKey.c_str());
+    return false;
+  }
+  return true;
+}
+
+// The exchange and the merge. An answer that was sent but not taken (secondTry) is asked once more at once as free
+// lines, then the stated wait holds.
+Status CompactDriver::askAndKeep(const IdleCtx& ctx, const SummarizerRung& rung, const SlicePlan& plan,
+                                 bool prepareOnly, CompactOutcome& out, bool& parked) {
+  AnswerForm form = formFor(rung);
+  const bool urgent = ctx.urgency != Urgency::None && d_.platform->nowMs;
+  // An urgent attempt's end; inside a crossing, the crossing's own (lane E2-FIX15: one bound for all its slices).
+  const uint32_t untilMs = !urgent ? 0 : crossingUntilMs_ ? crossingUntilMs_ : d_.platform->nowMs() + kCompactUrgentMs;
+  Status s;
+  for (int tries = 0; tries < 2; ++tries) {
+    Asked asked;
+    s = ask(rung, plan, ctx.now, form, untilMs, asked);
+    out.requests = (uint8_t)std::min<uint32_t>(255, out.requests + asked.requests);
+    out.ran = out.ran || asked.requests > 0;
+    parked = parked || asked.parked;
+    noteForm(rung, s);
+    if (s.ok()) s = keep(plan, asked.summary, ctx.now, prepareOnly, out);
+    if (!secondTry(s, asked, form, untilMs)) return s;
+    form = AnswerForm::Lines;
+    ctl_.paid += 1;   // the second request is counted like the first
+    saveCtl();
+    hlog::logf("compact(%s): asking once more as lines", d_.chatKey.c_str());
+  }
+  return s;
 }
 
 // The attempt's outcome into the control record: a stored digest clears the chat's failures,
@@ -1035,12 +1214,13 @@ Status CompactDriver::attempt(const IdleCtx& ctx, const SlicePlan& plan, Compact
 void CompactDriver::settle(const SummarizerRung& rung, const SlicePlan& plan, uint32_t fails, uint64_t now,
                            const Status& s, CompactOutcome& out) {
   CompactCtl::Chat& c = ctl_.chat(d_.chatKey);
-  if (s.ok() && out.step == CompactStep::Stored) {
+  if (s.ok() && (out.step == CompactStep::Stored || out.step == CompactStep::Prepared)) {
     c.fails = 0;
     c.next = 0;
     manualStored_ += manual_;
-    hlog::logf("compact(%s): day %s through q%llu, %u turns on %s/%s", d_.chatKey.c_str(), plan.day.c_str(),
-               (unsigned long long)plan.thru, (unsigned)plan.turns, rung.host.c_str(), rung.model.c_str());
+    hlog::logf("compact(%s): summary %s through q%llu (%s), %u turns on %s/%s", d_.chatKey.c_str(),
+               out.step == CompactStep::Prepared ? "prepared" : "updated", (unsigned long long)plan.thru,
+               plan.day.c_str(), (unsigned)plan.turns, rung.host.c_str(), rung.model.c_str());
   } else {
     if (out.step != CompactStep::Refused) out.step = CompactStep::Failed;
     c.fails = fails + 1;
@@ -1057,7 +1237,7 @@ namespace {
 
 // The summarizer's one message, in an arena of its own (PSRAM on the device). Escaping grows a
 // line: twice the text covers line ends and quotes, six times any byte.
-Status messageArena(const Platform& p, const SlicePlan& plan, uint64_t now, tx::TxArena& arena) {
+Status messageArena(const Platform& p, const std::string& message, uint64_t now, tx::TxArena& arena) {
   auto alloc = p.allocLarge ? p.allocLarge : [](size_t n) { return std::malloc(n); };
   auto release = p.freeLarge ? p.freeLarge : [](void* q) { std::free(q); };
   tx::Item msg;
@@ -1065,21 +1245,41 @@ Status messageArena(const Platform& p, const SlicePlan& plan, uint64_t now, tx::
   msg.turn = 1;
   msg.kind = tx::ItemKind::User;
   msg.t = now;
-  msg.x = plan.input;
+  msg.x = message;
   Status s;
   for (size_t grow : {size_t(2), size_t(6)}) {
-    if (!arena.init(plan.input.size() * grow + 4096, alloc, release).ok())
+    if (!arena.init(message.size() * grow + 4096, alloc, release).ok())
       return Status::fail(Err::TooLarge, "plain::CompactDriver::ask");
     if ((s = arena.append(msg)).ok() || s.err != Err::TooLarge) break;
   }
   return s;
 }
 
-// An answer is taken when it is the model's whole text, not cut, and not thin for its input.
-Status answerOf(const ExchangeResult& r, bool cut, const SlicePlan& plan, std::string& summary) {
+// How an answer not taken began, for its log line (ruling 116: a failure leaves its cause in the log; the
+// answer never did before lane E2-CMP): the first bytes, cut whole, line ends shown as '|'.
+std::string answerHead(const std::string& answer) {
+  constexpr size_t kHead = 80;   // the whole line stays under hlog's 192 B with a long chat key
+  size_t n = std::min(answer.size(), kHead);
+  while (n < answer.size() && n > 0 && ((unsigned char)answer[n] & 0xC0) == 0x80) --n;
+  std::string head = answer.substr(0, n);
+  for (char& c : head)
+    if (c == '\n' || c == '\r' || c == '\t') c = '|';
+  return head;
+}
+
+// An answer is taken when it is the model's whole text, not cut, not refused, and not thin for its input.
+// `thinInput`: the input size the thin rule reads (a day digest of migration's digest 0); 0: none (an
+// update's answer is changes, and "=" is a whole answer). A refusal is an answer not taken
+// (InvalidArgument, so the second try runs); a cut or a failed exchange is Io.
+Status answerOf(const std::string& chatKey, const ExchangeResult& r, bool cut, size_t thinInput, std::string& summary) {
+  if (r.err == ExchangeErr::None && r.step.stop == StopReason::Refusal) {
+    const std::string& said = r.step.refusal.empty() ? r.step.text : r.step.refusal;
+    hlog::logf("compact(%s): answer not taken (refused, %u B): %s", chatKey.c_str(), (unsigned)said.size(), answerHead(said).c_str());
+    return Status::fail(Err::InvalidArgument, kNotTakenRefused);
+  }
   if (cut || r.err != ExchangeErr::None || r.step.stop == StopReason::MaxTokens || !r.step.calls.empty())
     return Status::fail(Err::Io, "plain::CompactDriver::ask");
-  if (plan.input.size() >= kCompactThinSlice && r.step.text.size() < kCompactThinFloor)
+  if (thinInput >= kCompactThinSlice && r.step.text.size() < kCompactThinFloor)
     return Status::fail(Err::InvalidArgument, "plain::CompactDriver::ask");
   summary = r.step.text;
   return Status::success();
@@ -1094,16 +1294,87 @@ struct RungAnswer {
   std::string summary;
   uint8_t requests = 0;
   bool parked = false;
+  nimbus::orch::TokenUsage usage;   // every billed response of the rung's requests (lane E2-CMP)
 };
 
 // One summarizer exchange on one rung (the driver's attempt and a migration's digest 0).
-Status askRung(const CompactDeps& d, const SummarizerRung& rung, const SlicePlan& plan, uint64_t now,
+// The summarizer's request: the summary so far (system text), the one message, and the input size the
+// thin rule reads (0: none).
+struct RungMessage {
+  std::string sofar, message;
+  size_t thinInput = 0;
+  const char* schema = nullptr;   // the answer's structured form (AnswerForm::Changes); null: free text
+  // An empty change list over this slice is a whole answer: true on a row whose structured summary is
+  // recorded working (Anthropic's); false elsewhere, where it is asked once more as lines (lane E2-R4b).
+  bool emptyListTaken = true;
+  uint32_t untilMs = 0;           // an urgent attempt's end on the platform clock; 0: none (lane E2-FIX7)
+};
+
+// The provider's own words in a refusal body: its "message" when it has one, else the body.
+std::string providerWords(const std::string& body) {
+  static const char kKey[] = "\"message\":\"";
+  const size_t at = body.find(kKey);
+  return at == std::string::npos ? body : body.substr(at + sizeof(kKey) - 1);
+}
+
+// A provider's refusal body that names the structured form (its field or its type).
+bool namesTheForm(const std::string& body) {
+  std::string low = body;
+  for (char& c : low) c = (char)std::tolower((unsigned char)c);
+  for (const char* w : {"output_config", "output_format", "json_schema", "structured"})
+    if (low.find(w) != std::string::npos) return true;
+  return false;
+}
+
+// One exchange's answer, taken or not (answerOf), and the structured form read back as lines.
+Status takeAnswer(const std::string& chatKey, const RungMessage& m, const ExchangeResult& r, bool cut, std::string& summary) {
+  if (m.schema && r.err == ExchangeErr::Other && r.httpStatus == 400) {
+    // Lane E2-FIX7 (M6): the form is named as the cause only when the provider's own words name it (and then the
+    // model is asked in lines from then on); any other HTTP 400 is logged as what it is, with the provider's words,
+    // and asked once more in lines without marking the model.
+    if (namesTheForm(r.providerBody)) {
+      hlog::logf("compact(%s): answer not taken (the form was refused, %u B): %s", chatKey.c_str(),
+                 (unsigned)r.providerBody.size(), answerHead(providerWords(r.providerBody)).c_str());
+      return Status::fail(Err::InvalidArgument, kNotTakenForm);
+    }
+    hlog::logf("compact(%s): the summarizer request was refused (HTTP 400, %u B): %s", chatKey.c_str(),
+               (unsigned)r.providerBody.size(), answerHead(providerWords(r.providerBody)).c_str());
+    return Status::fail(Err::InvalidArgument, kNotTakenHttp400);   // lines once more; the model is not marked
+  }
+  const Status s = answerOf(chatKey, r, cut, m.thinInput, summary);
+  if (!s.ok() || !m.schema) return s;
+  // The change list read back as lines. A text that is not that object (a host that ignored the form)
+  // is read as lines as it stands: the parser decides, and no request is paid twice for it.
+  std::string lines;
+  if (!changeLinesOf(summary, lines)) return s;
+  if (lines == "=" && !m.emptyListTaken && !m.message.empty()) {
+    hlog::logf("compact(%s): answer not taken (an empty change list on a row without a recorded structured summary)",
+               chatKey.c_str());
+    return Status::fail(Err::InvalidArgument, kNotTakenEmpty);
+  }
+  summary = std::move(lines);
+  return s;
+}
+
+// The summary so far rides in the system text (the one message keeps under a line's cap), AHEAD of the prompt
+// (lane E2-FIX9): the prompt ends with its "nothing to change" answer, "=", and a summary right after it read as
+// "=Facts and standing preferences:", which the summarizer then wrote as its answer for a slice with nothing new
+// (evidence/probes.jsonl: 2 of 12 with the summary after the prompt, 0 of 12 with it first). The blocks render in
+// the order core, notes, digests; an empty one is left out.
+SystemBlocks summarizerSystem(const std::string& sofar) {
+  SystemBlocks system;
+  system.core = sofar.empty() ? std::string(st::kPrompt) : sofar;   // no summary yet: the prompt alone, as before
+  if (!sofar.empty()) system.digests = st::kPrompt;
+  return system;
+}
+
+Status askRung(const CompactDeps& d, const SummarizerRung& rung, const RungMessage& m, uint64_t now,
                RungAnswer& ans) {
   const WireCodec* wire = rung.wire;
   Status s = wire ? Status::success() : wireFor(rung.dialect, wire);
   if (!s.ok() || !wire) return s.ok() ? Status::fail(Err::NotFound, "plain::CompactDriver::ask") : s;
   tx::TxArena arena;
-  if (!(s = messageArena(*d.platform, plan, now, arena)).ok()) return s;
+  if (!(s = messageArena(*d.platform, m.message, now, arena)).ok()) return s;
   TurnCtx turn;
   turn.chatKey = d.chatKey;
   turn.chatId = d.chatId;
@@ -1114,8 +1385,7 @@ Status askRung(const CompactDeps& d, const SummarizerRung& rung, const SlicePlan
   turn.dialect = rung.dialect;
   turn.startedAt = now;
   turn.startedMs = d.platform->nowMs ? d.platform->nowMs() : 0;
-  SystemBlocks system;
-  system.core = st::kPrompt;
+  const SystemBlocks system = summarizerSystem(m.sofar);
   const std::vector<ToolSpec> tools;
   RenderInput in;
   in.turn = &turn;
@@ -1123,31 +1393,109 @@ Status askRung(const CompactDeps& d, const SummarizerRung& rung, const SlicePlan
   in.system = &system;
   in.tools = &tools;
   in.items = &arena;
-  // Ruling 89 item 4: a cut answer is asked once more with room to finish; never stored cut.
-  for (uint16_t cap : {kSummarizerMaxTokens, kSummarizerRetryMaxTokens}) {
-    in.maxTokens = cap;
-    CappedWire capped(*wire, cap);
-    ExchangeRequest req;
-    req.wire = &capped;
-    req.render = &in;
-    req.timeoutMs = kCompactRequestMs;
-    req.deadlineMs = kCompactRequestMs;
-    ExchangeResult r;
-    s = runExchange(ExchangeDeps{d.transport, d.platform}, req, r);
-    ans.requests = (uint8_t)std::min<uint32_t>(255, ans.requests + r.requests);
-    ans.parked |= r.parkHost;
-    if (!s.ok()) return s;
-    const bool cut = capped.cut || r.step.stop == StopReason::MaxTokens || r.err == ExchangeErr::Cut;
-    if (!cut || cap == kSummarizerRetryMaxTokens) return answerOf(r, cut, plan, ans.summary);
-  }
-  return Status::fail(Err::Io, "plain::CompactDriver::ask");
+  in.answerSchema = m.schema;
+  // Ruling 89 item 4: a cut answer is asked once more with room to finish; never stored cut. Lane E2-R4b
+  // (router design section 6 item 8): the two rungs are cap CEILINGS the exchange applies inside its own cap
+  // rule and time fit (pre-flight), so an uncapped row sends none, a slow model is asked for what fits, and
+  // the second rung is the exchange's cut retry, sent only when it gives more room (the retry-gain rule).
+  const uint32_t window = requestWindow(*d.platform, m.untilMs);
+  if (window < kCompactMinRequestMs) return Status::fail(Err::Io, "plain::CompactDriver.time");
+  ExchangeRequest req;
+  req.wire = wire;
+  req.render = &in;
+  req.timeoutMs = window;
+  req.deadlineMs = window;
+  req.capCeiling = kSummarizerMaxTokens;
+  req.retryCeiling = kSummarizerRetryMaxTokens;
+  req.summary = true;   // E2-REP5: RoundKind::Fold, the design's summary kind (section 6 item 8)
+  ExchangeResult r;
+  s = runExchange(ExchangeDeps{d.transport, d.platform}, req, r);
+  ans.requests = (uint8_t)std::min<uint32_t>(255, ans.requests + r.requests);
+  if (r.step.usage.responses) ans.usage += r.step.usage;   // paid whether or not the answer is taken
+  ans.parked |= r.parkHost;
+  if (!s.ok()) return s;
+  const bool cut = r.step.stop == StopReason::MaxTokens || r.err == ExchangeErr::Cut;
+  return takeAnswer(d.chatKey, m, r, cut, ans.summary);
 }
 
 }  // namespace
 
-Status CompactDriver::ask(const SummarizerRung& rung, const SlicePlan& plan, uint64_t now, Asked& out) {
+Status recheckAsk(const Platform& platform, HttpTransport& transport, const SummarizerRung& rung, ExchangeResult& out) {
+  const WireCodec* wire = rung.wire;
+  Status s = wire ? Status::success() : wireFor(rung.dialect, wire);
+  if (!s.ok() || !wire) return s.ok() ? Status::fail(Err::NotFound, "plain::recheckAsk") : s;
+  const uint64_t now = platform.nowEpoch ? platform.nowEpoch() : 0;
+  tx::TxArena arena;
+  if (!(s = messageArena(platform, "ok", now, arena)).ok()) return s;
+  TurnCtx turn;
+  turn.chatKey = turn.chatId = "recheck";
+  turn.turn = 1;
+  turn.trigger = Trigger::Notice;
+  turn.host = rung.host;
+  turn.model = rung.model;
+  turn.dialect = rung.dialect;
+  turn.startedAt = now;
+  turn.startedMs = platform.nowMs ? platform.nowMs() : 0;
+  SystemBlocks system;
+  system.core = nimbus::orch::ORCH_PARK_RECHECK_PROMPT;
+  const std::vector<ToolSpec> tools;
+  RenderInput in;
+  in.turn = &turn;
+  in.head = &rung.endpoint;
+  in.system = &system;
+  in.tools = &tools;
+  in.items = &arena;
+  ExchangeRequest req;
+  req.wire = wire;
+  req.render = &in;
+  req.timeoutMs = req.deadlineMs = kCompactMinRequestMs * 3;
+  req.capCeiling = kRecheckMaxTokens;
+  req.summary = true;   // a single-shot request: the fold's cap table and time fit (engine 1's askParkedHost)
+  req.once = true;
+  return runExchange(ExchangeDeps{&transport, &platform}, req, out);
+}
+
+// The row's structured summary (lane E2-R4b, router design section 5 item 8): none for a host no table
+// slot names (a routed or custom head: an Anthropic-shaped proxy may not have the form).
+namespace {
+nimbus::orch::caps::Structured summarizerStructuredOf(const SummarizerRung& rung) {
+  namespace caps = nimbus::orch::caps;
+  caps::Slot slot;
+  if (!caps::slotFromHost(rung.host.c_str(), &slot) || rung.endpoint.routed) return caps::Structured::None;
+  return caps::capsFor(slot, rung.model.c_str(), false).row.summarizerStructured;
+}
+}  // namespace
+
+AnswerForm firstAnswerForm(const SummarizerRung& rung) {
+  return summarizerStructuredOf(rung) == nimbus::orch::caps::Structured::None ? AnswerForm::Lines : AnswerForm::Changes;
+}
+
+bool changeLinesOf(const std::string& json, std::string& lines) {
+  lines.clear();
+  JsonDocument doc;
+  if (deserializeJson(doc, json) || !doc.is<JsonObjectConst>() || !doc["changes"].is<JsonArrayConst>()) return false;
+  JsonArrayConst list = doc["changes"].as<JsonArrayConst>();
+  for (JsonVariantConst v : list) {
+    if (!v.is<const char*>()) return lines.clear(), false;
+    std::string item = v.as<const char*>();
+    for (char& c : item)
+      if (c == '\r') c = '\n';
+    lines += item + "\n";   // an item holding line ends is several lines, as free text would be
+  }
+  if (list.size() == 0) lines = "=";
+  return true;
+}
+
+Status CompactDriver::ask(const SummarizerRung& rung, const SlicePlan& plan, uint64_t now, AnswerForm form,
+                          uint32_t untilMs, Asked& out) {
   RungAnswer ans;
-  const Status s = askRung(d_, rung, plan, now, ans);
+  RungMessage m;
+  m.schema = form == AnswerForm::Changes ? st::kChangesSchema : nullptr;
+  m.emptyListTaken = summarizerStructuredOf(rung) == nimbus::orch::caps::Structured::AnthropicOutputConfig;
+  m.untilMs = untilMs;
+  Status s = messageFor(plan, m.sofar, m.message);
+  if (s.ok()) s = askRung(d_, rung, m, now, ans);
+  if (ans.usage.responses && d_.spent) d_.spent(rung, ans.usage);   // every paid request is counted
   out.summary = std::move(ans.summary);
   out.requests = ans.requests;
   out.parked = ans.parked;
@@ -1158,18 +1506,24 @@ Status CompactDriver::ask(const SummarizerRung& rung, const SlicePlan& plan, uin
 // paid answer and a cut leaves storage ahead of RAM, never behind. Everything that can throw
 // (the digest's copy into `live` included) happens before the store or after thru moved, so
 // RAM never disagrees with storage about which items a digest covers.
-Status CompactDriver::swap(const SlicePlan& plan, const std::string& summary, uint64_t now, CompactOutcome& out) {
+Status CompactDriver::swap(const SlicePlan& plan, const std::string& text, uint64_t now, CompactOutcome& out) {
   tx::HeadState& head = *d_.head();
   std::vector<tx::DigestEntry>& live = *d_.digests();
   tx::DigestEntry d;
-  Status s = digestFor(plan, summary, d.text);
-  if (!s.ok()) return s;
+  d.text = text;
   if (!live.empty() && live.back().thru >= plan.thru) return Status::fail(Err::InvalidArgument, "plain::swap");
+  // The day digests the summary took in go to the archive first, so a restart that stops at the newest
+  // summary (tx::loadDigests) leaves none behind; a refusal stores nothing and is tried again.
+  if (!archiveLegacy().ok()) {
+    out.step = CompactStep::Refused;
+    return Status::success();
+  }
   d.day = plan.day;
   d.q = std::max<uint64_t>({head.nextQ, d_.arena->lastQ() + 1, d_.log->lastQ() + 1});
   d.thru = plan.thru;
   tx::Item item;
   std::string line;
+  Status s;
   if (!(s = tx::digestItem(d, 0, now, item)).ok() || !(s = tx::encodeLine(item, line)).ok()) return s;
   live.push_back(d);   // taken back below unless storage holds the line
   tx::StoreState state = tx::StoreState::NotStored;
@@ -1201,6 +1555,294 @@ Status CompactDriver::swap(const SlicePlan& plan, const std::string& summary, ui
   std::string mirrored;
   tx::MirrorFacts facts{d_.chatId, head.thru, plan.lastRow, (uint32_t)now};
   if (tx::mirrorChatsum(blob, facts, live, mirrored).ok() && mirrored != blob) (void)d_.chatsum.save(mirrored);
+  return Status::success();
+}
+
+// ---- the cumulative summary: what an update builds on, the merge, ahead of time ------------------
+
+namespace {
+
+// A new line of a slice that read outside content sits inside the data frame; any line's frame tags
+// are made inert first, so no summary line opens or closes a frame.
+std::string framedLine(const std::string& clean) { return std::string(st::kFrameOpen) + inert(clean) + st::kFrameClose; }
+std::string inertLine(const std::string& clean) { return inert(clean); }
+bool framedIn(const tx::Summary& s, uint32_t id) {
+  for (const tx::SummaryLine& l : s.lines)
+    if (l.id == id) return l.text.compare(0, sizeof(st::kFrameOpen) - 1, st::kFrameOpen) == 0;
+  return true;   // no such line: applySummaryEdits counts it unread
+}
+
+}  // namespace
+
+bool CompactDriver::pendingValid() const {
+  return !pending_.text.empty() && pending_.baseThru == d_.head()->thru && pending_.thru > d_.head()->thru &&
+         pending_.thru <= d_.arena->lastQ();
+}
+
+Status CompactDriver::baseFor(tx::Summary& base, std::string& baseText, std::string& legacy) const {
+  base = tx::Summary{};
+  baseText.clear();
+  legacy.clear();
+  if (pendingValid()) baseText = pending_.text;
+  const std::vector<tx::DigestEntry>& live = *d_.digests();
+  for (size_t i = live.size(); baseText.empty() && i-- > 0;)
+    if (tx::isSummaryText(live[i].text)) baseText = live[i].text;
+  if (baseText.empty()) {   // no summary yet: the day digests the chat holds are read as dated lines
+    for (const tx::DigestEntry& d : live) legacy += d.text + "\n";
+    return Status::success();
+  }
+  const Status s = tx::parseSummary(baseText, base);
+  if (!s.ok()) hlog::logf("compact(%s): the summary in force does not read back: not updated", d_.chatKey.c_str());
+  return s;
+}
+
+Status CompactDriver::messageFor(const SlicePlan& plan, std::string& sofar, std::string& message) const {
+  tx::Summary base;
+  std::string legacy;
+  const Status s = baseFor(base, sofar, legacy);
+  if (!s.ok()) return s;
+  if (base.lines.empty() && !base.archived) sofar.clear();
+  message = std::string(st::kSince) + "\n" + legacy + plan.input;
+  return Status::success();
+}
+
+// The answer's changes applied to the summary so far in code (never a rewrite), the device's Files
+// lines, the head's budget; every line that left goes to the archive before anything is kept.
+// A taken answer: merged into the summary, then kept ahead of time or swapped in.
+Status CompactDriver::keep(const SlicePlan& plan, const std::string& answer, uint64_t now, bool prepareOnly,
+                           CompactOutcome& out) {
+  if (plan.belowKeep)
+    hlog::logf("compact(%s): the arena has %u B free: this slice leaves under the v5.1.2 text keep (%u B kept)",
+               d_.chatKey.c_str(), (unsigned)d_.arena->freeBytes(), (unsigned)(plan.restText));
+  std::string text;
+  const Status s = merge(plan, answer, text);
+  if (!s.ok()) return s;
+  if (!prepareOnly) return swap(plan, text, now, out);
+  keepPending(plan, text, out);
+  return s;
+}
+
+Status CompactDriver::merge(const SlicePlan& plan, const std::string& answer, std::string& text) {
+  tx::Summary sum;
+  std::string baseText, legacy;
+  Status s = baseFor(sum, baseText, legacy);
+  if (!s.ok()) return s;
+  const tx::SummaryEdits edits = tx::parseSummaryEdits(answer);
+  if (!edits.taken()) {   // prose or a rewrite: never taken as the summary
+    hlog::logf("compact(%s): the answer held no change (%u lines unread): not taken", d_.chatKey.c_str(),
+               (unsigned)edits.unread);
+    hlog::logf("compact(%s): answer not taken (no change line, %u B): %s", d_.chatKey.c_str(), (unsigned)answer.size(), answerHead(answer).c_str());
+    return Status::fail(Err::InvalidArgument, kNotTakenChanges);
+  }
+  if (edits.frame && edits.edits.empty() && !edits.none)   // lane E2-FIX9: "=Facts and standing preferences:"
+    hlog::logf("compact(%s): the answer named %u summary titles and no change: nothing to change", d_.chatKey.c_str(),
+               (unsigned)edits.frame);
+  if (edits.numbered)
+    hlog::logf("compact(%s): %u adds numbered from 1: the numbers were read as ids", d_.chatKey.c_str(),
+               (unsigned)edits.numbered);
+  std::vector<tx::SummaryLine> left;
+  size_t unread = 0;
+  if (!(s = takeEdits(plan, edits.edits, sum, left, unread)).ok()) return s;
+  addFiles(plan, sum, left);
+  const size_t cap = budget_.summaryBytes ? budget_.summaryBytes : tx::kSummaryMaxBytes;
+  if (!(s = tx::fitSummary(sum, cap, left)).ok() || !(s = tx::encodeSummary(sum, text)).ok()) return s;
+  if (unread + edits.unread)
+    hlog::logf("compact(%s): %u lines of the answer were not changes", d_.chatKey.c_str(), (unsigned)(unread + edits.unread));
+  return archiveLeft(plan, left);
+}
+
+// The answer's changes on the summary; a slice that read outside content rewrites or drops only framed lines.
+Status CompactDriver::takeEdits(const SlicePlan& plan, const std::vector<tx::SummaryEdit>& edits, tx::Summary& sum,
+                                std::vector<tx::SummaryLine>& left, size_t& unread) const {
+  size_t held = 0;
+  std::vector<tx::SummaryEdit> taken;
+  for (const tx::SummaryEdit& e : edits)
+    if (plan.tainted && e.op != tx::SummaryOp::Add && !framedIn(sum, e.id)) ++held;
+    else taken.push_back(e);
+  const Status s = tx::applySummaryEdits(sum, taken, plan.tainted ? framedLine : inertLine, left, unread);
+  unread += held;
+  return s;
+}
+
+// The device's Files lines from the slice's file changes; never a frame tag in the system text.
+void CompactDriver::addFiles(const SlicePlan& plan, tx::Summary& sum, std::vector<tx::SummaryLine>& left) const {
+  for (const FileNote& f : plan.files) {
+    if (f.path.find_first_of("<>") != std::string::npos) continue;
+    std::string when;
+    if (!tx::photoWhen(f.at, tz_, when).ok()) when.clear();
+    tx::noteSummaryFile(sum, f.path, when, f.deleted, left);
+  }
+}
+
+// Every line that left goes to the archive before anything is kept (a refusal: the attempt fails).
+Status CompactDriver::archiveLeft(const SlicePlan& plan, const std::vector<tx::SummaryLine>& left) const {
+  if (left.empty()) return Status::success();
+  if (!d_.files) {   // no card: nothing can hold them; the conversation itself is not stored either
+    hlog::logf("compact(%s): %u summary lines left with no storage to archive them", d_.chatKey.c_str(), (unsigned)left.size());
+    return Status::success();
+  }
+  const Status s = tx::archiveSummaryLines(*d_.files, d_.chatKey, plan.day, left);
+  if (!s.ok()) hlog::logf("compact(%s): %u summary lines could not be archived: not taken", d_.chatKey.c_str(), (unsigned)left.size());
+  return s;
+}
+
+Status CompactDriver::archiveLegacy() {
+  if (!d_.files) return Status::success();
+  for (const tx::DigestEntry& d : *d_.digests()) {
+    if (tx::isSummaryText(d.text)) continue;
+    const Status s = tx::archiveDigest(*d_.files, d_.chatKey, d);
+    if (!s.ok()) return s;
+  }
+  return Status::success();
+}
+
+void CompactDriver::keepPending(const SlicePlan& plan, const std::string& text, CompactOutcome& out) {
+  const bool chained = pendingValid();
+  pending_.baseThru = chained ? pending_.baseThru : d_.head()->thru;
+  pending_.turns = (chained ? pending_.turns : 0) + plan.turns;
+  pending_.text = text;
+  pending_.thru = plan.thru;
+  pending_.lastRow = plan.lastRow;
+  pending_.day = plan.day;
+  out.step = CompactStep::Prepared;
+}
+
+// Ahead of time: once the last request reached kPreparePercent of the due mark, the turns already older
+// than the recent part go into the pending summary (one slice per step, the usual gates).
+Status CompactDriver::prepare(const IdleCtx& ctx, CompactOutcome& out) {
+  uint64_t endQ = 0;
+  if ((uint64_t)lastPromptTokens(*d_.arena, endQ) * 100 < (uint64_t)budget_.tokens.due * kPreparePercent) return Status::success();
+  if (!pendingValid()) pending_ = Pending{};
+  SlicePlan plan;
+  const Status s = planSlice(*d_.arena, pendingValid() ? pending_.thru : d_.head()->thru, rules_, plan);
+  if (!s.ok() || !plan.thru) return s;
+  return attempt(ctx, plan, out, true);
+}
+
+// Lane E2-FIX15: a crossing of the due mark is one event. Slice after slice goes into the pending summary (no request
+// changes meanwhile) until no turn may go, an urgent step's time or kCompactCrossingSlices is spent, or an attempt
+// fails; then the summary is swapped in once. The cycle ends there unless slices remain that only the slice count or
+// the time held back (a very large backlog: the next step goes on with it). Before, the cycle stayed open while the newest six
+// owner turns held more than the recent part, so every turn open folded the one turn that had just aged out of them
+// and swapped (the bench: 15 updates in a row, each rewriting the whole cached request).
+Status CompactDriver::crossing(const IdleCtx& ctx, SlicePlan plan, CompactOutcome& out) {
+  if (pendingValid()) {   // prepared ahead of time (ruling 106 item 3): swapped at once, no request, no wait
+    endCycle();
+    return swapPending(ctx.now, out);
+  }
+  uint32_t slices = 0;
+  bool failed = false;
+  const Status prep = prepareSlices(ctx, plan, out, slices, failed);
+  if (!prep.ok()) return prep;
+  if (failed || !plan.thru) endCycle();
+  if (!pendingValid()) return Status::success();   // nothing prepared: the failed attempt logged its cause
+  const uint8_t requests = out.requests;
+  const bool ran = out.ran;
+  const Status s = swapPending(ctx.now, out);
+  out.requests = requests;
+  out.ran = ran;
+  if (out.step == CompactStep::Swapped) out.step = CompactStep::Stored;   // asked in this crossing
+  hlog::logf("compact(%s): one summary write for this crossing (%u slices prepared, %u requests)", d_.chatKey.c_str(),
+             (unsigned)slices, (unsigned)requests);
+  return s.err == Err::TooLarge ? s : Status::success();   // as attempt: a refused swap stores nothing and is tried again
+}
+
+// A crossing's slices into the pending summary, one attempt each, while crossingMayAsk; `plan` is what is left after
+// them. The turn's status line says once that it waits, however many slices. `failed`: an attempt was not taken.
+Status CompactDriver::prepareSlices(const IdleCtx& ctx, SlicePlan& plan, CompactOutcome& out, uint32_t& slices,
+                                    bool& failed) {
+  const bool urgent = ctx.urgency != Urgency::None;
+  const uint32_t startMs = urgent && d_.platform->nowMs ? d_.platform->nowMs() : 0;
+  crossingUntilMs_ = urgent && d_.platform->nowMs ? startMs + kCompactUrgentMs : 0;
+  bool said = false;
+  IdleCtx once = ctx;
+  once.waiting = [&ctx, &said] {
+    if (!said && ctx.waiting) ctx.waiting();
+    said = true;
+  };
+  for (; plan.thru && slices < kCompactCrossingSlices && crossingMayAsk(urgent, startMs); ++slices) {
+    CompactOutcome one;
+    const Status s = attempt(once, plan, one, true);
+    out.requests = (uint8_t)std::min<uint32_t>(255, out.requests + one.requests);
+    out.ran = out.ran || one.ran;
+    if (!s.ok() || one.step != CompactStep::Prepared) {
+      out.step = one.step;
+      failed = s.ok() && one.step != CompactStep::Waiting;   // held by a wait or the count: the cycle goes on later
+      crossingUntilMs_ = 0;
+      return s;
+    }
+    if (!planSlice(*d_.arena, pending_.thru, rules_, plan).ok()) plan = SlicePlan{};
+  }
+  crossingUntilMs_ = 0;
+  return Status::success();
+}
+
+// Another slice in this crossing: an urgent step inside its time, an idle one inside its window's requests.
+bool CompactDriver::crossingMayAsk(bool urgent, uint32_t startMs) const {
+  if (urgent) return !d_.platform->nowMs || (uint32_t)(d_.platform->nowMs() - startMs) < kCompactUrgentMs;
+  return manual_ || windowAsks_ < kCompactRequestsPerWindow;   // an idle window's requests (RB-C2)
+}
+
+// At the due mark: the pending summary is swapped in with no request.
+Status CompactDriver::swapPending(uint64_t now, CompactOutcome& out) {
+  SlicePlan plan;
+  plan.thru = pending_.thru;
+  plan.day = pending_.day;
+  plan.lastRow = pending_.lastRow;
+  plan.turns = pending_.turns;
+  const Status s = swap(plan, pending_.text, now, out);
+  windowQ_ = d_.arena->lastQ();   // the summary's own s item is no turn: the idle window goes on (lane E2-FIX15)
+  if (!s.ok() || out.step != CompactStep::Stored) return s;
+  out.step = CompactStep::Swapped;
+  manualStored_ += manual_;
+  hlog::logf("compact(%s): the summary prepared ahead swapped in through q%llu, %u turns", d_.chatKey.c_str(),
+             (unsigned long long)plan.thru, (unsigned)plan.turns);
+  pending_ = Pending{};
+  return s;
+}
+
+// ---- the owner's settings and the budget view ----------------------------------------------------
+
+TurnCeiling ownerCeiling(const tx::EngineSettings& settings) {
+  const tx::EngineSettings s = tx::clampSettings(settings);
+  TurnCeiling c;
+  c.rounds = s.maxRounds;
+  c.hardWallMs = s.hardTimeS * 1000u;
+  c.softWallMs = c.hardWallMs > kLastRoundReserveMs ? c.hardWallMs - kLastRoundReserveMs : c.hardWallMs / 2;
+  return c;
+}
+
+Status budgetView(const BudgetViewIn& in, BudgetView& out) {
+  out = BudgetView{};
+  if (!in.budget || !in.system || !in.tools || !in.live || !in.arena || !in.budget->bodyMilliBytesPerToken)
+    return Status::fail(Err::InvalidArgument, "plain::budgetView");
+  const tx::HeadBudget& b = *in.budget;
+  const SystemBlocks& system = *in.system;
+  const std::vector<ToolSpec>& tools = *in.tools;
+  const std::vector<tx::DigestEntry>& live = *in.live;
+  const tx::TxArena& arena = *in.arena;
+  const uint64_t thru = in.thru;
+  const tx::EngineSettings settings = in.settings;
+  auto tokens = [&](size_t bytes) { return (uint32_t)((uint64_t)bytes * 1000 / b.bodyMilliBytesPerToken); };
+  size_t toolBytes = 0;
+  for (const ToolSpec& t : tools) toolBytes += t.name.size() + t.description.size() + t.schemaJson.size();
+  std::string block;
+  std::vector<tx::DigestEntry> archive;
+  if (!live.empty() && !tx::digestBlock(live, b.profile, block, archive).ok()) block.clear();
+  const size_t digests = system.digests.size() > block.size() ? system.digests.size() - block.size() : 0;
+  out.systemTokens = tokens(system.core.size() + system.notes.size() + digests);
+  out.toolsTokens = tokens(toolBytes);
+  out.fixedTokens = out.systemTokens + out.toolsTokens;
+  out.summaryTokens = tokens(block.size());
+  out.recentTokens = tokens(residentBytes(arena, thru));
+  out.summaryBudgetTokens = b.summaryTokens;
+  out.recentPartTokens = b.recentTokens;
+  out.dueTokens = b.tokens.due;
+  out.aimTokens = b.tokens.aim;
+  const tx::EngineSettings s = tx::clampSettings(settings);
+  out.maxRounds = s.maxRounds;
+  out.hardTimeS = s.hardTimeS;
+  out.nominal = b.bodyInterceptBytes == 0;
   return Status::success();
 }
 
@@ -1242,10 +1884,17 @@ Status summaryArena(const Platform& p, const tx::Digest0Ask& ask, tx::TxArena& a
   return s;
 }
 
+// The rungs digest 0 may ask (E2-REP1: every one held is Busy, nothing sent).
+Status digest0Rungs(const CompactDeps& d, std::vector<SummarizerRung>& rungs) {
+  if (d.rungs) d.rungs(rungs);
+  if (dropHeld(d, rungs) && rungs.empty()) return Status::fail(Err::Busy, "plain::digest0Answer.held");
+  return rungs.empty() ? Status::fail(Err::NotFound, "plain::digest0Answer") : Status::success();
+}
+
 Status digest0Run(const CompactDeps& d, const tx::Digest0Ask& ask, tx::Digest0Answer& out) {
   std::vector<SummarizerRung> rungs;
-  if (d.rungs) d.rungs(rungs);
-  if (rungs.empty()) return Status::fail(Err::NotFound, "plain::digest0Answer");
+  const Status found = digest0Rungs(d, rungs);
+  if (!found.ok()) return found;
   if (ask.summary.empty() || !ask.at) return Status::fail(Err::InvalidArgument, "plain::digest0Answer");
   const SummarizerRung& rung = rungs[std::min<size_t>(ask.attempt, rungs.size() - 1)];
   tx::TxArena arena;
@@ -1262,7 +1911,11 @@ Status digest0Run(const CompactDeps& d, const tx::Digest0Ask& ask, tx::Digest0An
   if (!(s = planSlice(arena, 0, rules, plan)).ok()) return s;
   if (!plan.thru) return Status::fail(Err::InvalidArgument, "plain::digest0Answer");
   RungAnswer ans;
-  s = askRung(d, rung, plan, ask.now ? ask.now : rules.now, ans);
+  RungMessage m;
+  m.message = plan.input;
+  m.thinInput = plan.input.size();
+  s = askRung(d, rung, m, ask.now ? ask.now : rules.now, ans);
+  if (ans.usage.responses && d.spent) d.spent(rung, ans.usage);
   if (ans.parked && d.park) d.park(rung);
   if (!s.ok()) return s;
   if (!(s = digestFor(plan, ans.summary, out.text)).ok()) return s;
@@ -1296,7 +1949,10 @@ IdleStepFn idleOf(CompactDriver* driver) {
   return [driver](const IdleCtx& ctx) {
     CompactOutcome out;
     IdleOutcome o;
-    o.worked = driver->step(ctx, out).ok() && out.ran;   // a request was one unit of idle work
+    const bool ok = driver->step(ctx, out).ok();
+    // Idle: a request was one unit of idle work. Urgent (the engine's own ask): thru moved.
+    o.worked = ok && (ctx.urgency == Urgency::None ? out.ran
+                                                   : out.step == CompactStep::Stored || out.step == CompactStep::Swapped);
     return o;
   };
 }

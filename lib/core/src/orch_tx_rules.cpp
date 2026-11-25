@@ -5,6 +5,8 @@
 #include "nimbus/orch/tx/rules.h"
 
 #include "nimbus/orch/day_start.h"
+#include "nimbus/orch/tx/photo_text.h"
+#include "nimbus/orch/tx/result_text.h"
 
 #include <ArduinoJson.h>
 
@@ -21,13 +23,15 @@ namespace {
 
 // ---- templates (model-text class "stub templates") ----------------------------------------
 constexpr const char kStubOpen[] = "[stub ";
-constexpr const char kViewHintOpen[] = " ... (full: view id=r";
-constexpr const char kNoCardHint[] = " ... (full result not kept: no storage card)";
-constexpr const char kOutsideMid[] = "B outside content, not shown: ";
-constexpr const char kNoCardOutside[] = "full result not kept: no storage card";
+constexpr const char kArgMid[] = "B sha:";
+constexpr const char kArgNotContent[] = ": an argument sent earlier, not content; ";
+constexpr const char kArgFile[] = " shows the file";
+constexpr const char kOutsideFrame[] = ": ";
+constexpr const char kOutsideMid[] = " outside content";
 constexpr const char kNoClock[] = "--:--";
 constexpr const char kOmissionMid[] = " earlier turns, ";
 constexpr const char kOmissionTail[] = ", not shown: search finds them]";
+constexpr const char kOmissionPlain[] = ", not shown]";   // E2-FIX5: search not bound
 constexpr const char kTextContinues[] = "\n[text continues: ";
 constexpr const char kTextMore[] = "B more: ";
 constexpr const char kTextNotKept[] = "not kept: no storage card";
@@ -137,6 +141,13 @@ bool isHex8(const std::string& s) {
   for (char c : s)
     if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) return false;
   return true;
+}
+
+// A model-chosen field on one line, framed so it cannot close a stub.
+std::string oneLineOf(const std::string& src, size_t maxBytes) {
+  std::string out;
+  appendLine(out, src, maxBytes, true);
+  return out;
 }
 
 bool isHhmm(const std::string& s) {
@@ -260,23 +271,21 @@ Status superseded(const Item& writeCall, const Item* writeResult, const std::vec
 
 }  // namespace
 
-// ---- the pointer ----------------------------------------------------------------------------------
-
-Status decideTurnOpen(const OpenFacts& f, PointerMove& out) {
-  out = PointerMove{};
-  const bool cold = f.afterRestart || f.now == 0 || f.lastReqAt == 0 || f.now < f.lastReqAt ||
-                    f.now - f.lastReqAt > kColdGapS;
-  const uint32_t limit = f.floorHead ? kWarmBulkBytesFloor : kWarmBulkBytes;
-  if (f.lastClosedTurnQ <= f.pointer) return Status::success();   // never backwards, never nowhere
-  if (cold) out.why = MoveWhy::ColdOpen;
-  else if (f.wholeBulkAbove > limit) out.why = MoveWhy::WarmBulk;
-  else return Status::success();
-  out.move = true;
-  out.to = f.lastClosedTurnQ;
-  return Status::success();
-}
-
 // ---- stub texts --------------------------------------------------------------------------------------
+
+// A kept result's stub after its frame (lane E2-FIX9): what is true of it, then the way back (view when bound, else a
+// file read's call cut to keep the stub within kStubMaxBytes, else none).
+void keptTail(const StubFacts& f, const std::string& q, std::string& s) {
+  s += std::string(kResultFactsOpen) + kResultShownInFull;
+  if (f.bound.view) {
+    s += kResultViewOpen + q + kPhotoViewClose;
+  } else if (!f.again.empty()) {
+    const size_t fixed = s.size() + std::strlen(kResultAgainOpen) + std::strlen(kPhotoViewClose) + std::strlen(kResultTailClose);
+    const size_t room = kStubMaxBytes > fixed ? std::min(kStubWayBackMaxBytes, kStubMaxBytes - fixed) : 0;
+    if (room) s += kResultAgainOpen + oneLineOf(f.again, room) + kPhotoViewClose;
+  }
+  s += kResultTailClose;
+}
 
 Status stubText(const StubFacts& f, std::string& out) {
   out.clear();
@@ -285,11 +294,24 @@ Status stubText(const StubFacts& f, std::string& out) {
   std::string s = kStubOpen;
   appendTool(s, f.tool);
   if (f.cls == ResultClass::Outside) {
-    // The call and the size only: no byte of the result is read.
-    s += '(';
-    appendLine(s, f.args, kStubArgsPreviewBytes, true);
-    s += ") r" + q + " " + std::to_string(f.bytes) + kOutsideMid;
-    s += f.noCard ? std::string(kNoCardOutside) : "view id=r" + q;
+    // The call only: no byte of the result is read. Lane E2-BFIX3: what is true of it comes first and there is no
+    // byte count. "<n>B outside content, not shown" read on Haiku as a call that returned nothing, and the count (the
+    // tool's whole output) differed from the size the answer had quoted, so the head called its right answer made up
+    // (10 of 10 runs; lanes/E2-BFIX3/PR_BODY.md). With no card the result was kept inline up to a cap: "shown earlier".
+    std::string call = s.substr(std::strlen(kStubOpen));   // the tool
+    call += '(';
+    appendLine(call, f.args, kStubArgsPreviewBytes, true);
+    call += ") r" + q + kOutsideMid;
+    s = std::string(kStubOpen) + (f.noCard ? kPhotoNotAttached : kResultShownInFull) + kOutsideFrame + call;
+    if (f.noCard) {
+      s += kResultNoCard;
+    } else if (f.bound.view) {
+      s += kResultViewOpen + q + kPhotoViewClose;
+    } else if (!f.again.empty()) {
+      const size_t fixed = s.size() + std::strlen(kResultAgainOpen) + std::strlen(kPhotoViewClose) + 1;
+      const size_t room = kStubMaxBytes > fixed ? std::min(kStubWayBackMaxBytes, kStubMaxBytes - fixed) : 0;
+      if (room) s += kResultAgainOpen + oneLineOf(f.again, room) + kPhotoViewClose;
+    }
     s += ']';
     out.swap(s);
     return Status::success();
@@ -302,7 +324,17 @@ Status stubText(const StubFacts& f, std::string& out) {
   }
   if (isHex8(f.sha8)) s += " sha8=" + f.sha8;
   s += "] ";
-  const std::string tail = f.noCard ? std::string(kNoCardHint) : kViewHintOpen + q + ")";
+  // Lane E2-FIX9: a result the card kept says it was shown in full earlier and is not attached now, then the way back:
+  // view when bound (the bytes the head saw), else a file read's call (E2-VERB), else none (E2-FIX5). No preview:
+  // the bench's head read a stub's first 200 B as all the tool had returned and withdrew its correct answers
+  // (lanes/E2-FIX9/evidence/probe-stub.jsonl: 5 of 16 with the preview, 0 of 16 without). With no card the preview
+  // is all that is left of the result, so it stays, with what is true of it.
+  if (!f.noCard) {
+    keptTail(f, q, s);
+    out.swap(s);
+    return Status::success();
+  }
+  const std::string tail = std::string(kResultTailOpen) + kPhotoNotAttached + kResultNoCard + kResultTailClose;
   const size_t room = kStubMaxBytes > s.size() + tail.size() ? kStubMaxBytes - s.size() - tail.size() : 0;
   appendLine(s, f.preview, std::min(kStubPreviewBytes, room));
   s += tail;
@@ -310,15 +342,28 @@ Status stubText(const StubFacts& f, std::string& out) {
   return Status::success();
 }
 
-Status longArgStub(uint32_t bytes, const std::string& sha8, uint64_t q, std::string& out) {
+Status longArgStub(uint32_t bytes, const std::string& sha8, uint64_t q, std::string& out, const std::string& again,
+                   const BoundTools& bound) {
   out.clear();
   if (q == 0 || !isHex8(sha8)) return Status::fail(Err::InvalidArgument, "tx::longArgStub");
-  out = std::string(kStubOpen) + std::to_string(bytes) + "B sha:" + sha8 + ": view id=r" + std::to_string(q) + "]";
+  out = std::string(kStubOpen) + std::to_string(bytes) + kArgMid + sha8 + kArgNotContent;
+  if (!again.empty()) out += oneLineOf(again, kStubWayBackMaxBytes) + kArgFile;
+  else if (bound.view) out += "view id=r" + std::to_string(q);
+  else out.resize(out.size() - 2);   // E2-FIX5: '...; not content]'
+  out += ']';
   return Status::success();
 }
 
-Status photoStub(const std::string& ref8, const std::string& when, const std::string& note, std::string& out) {
-  if (note.empty()) return photoStub(ref8, when, out);
+// The tail of a photo's line: what is true of it in this request, and the way back when view is bound.
+void photoTail(std::string& s, const std::string& ref8, bool viewBound) {
+  s += kPhotoNotAttached;
+  if (viewBound) s += kPhotoViewOpen + ref8 + kPhotoViewClose;
+  s += ']';
+}
+
+Status photoStub(const std::string& ref8, const std::string& when, const std::string& note, std::string& out,
+                 bool viewBound) {
+  if (note.empty()) return photoStub(ref8, when, out, viewBound);
   if (!isRef(ref8)) {
     out.clear();
     return Status::fail(Err::InvalidArgument, "tx::photoStub");
@@ -330,7 +375,29 @@ Status photoStub(const std::string& ref8, const std::string& when, const std::st
   }
   s += ": ";
   appendLine(s, note, kPhotoNoteMax, true);
-  s += "; not shown: view id=p" + ref8 + "]";
+  s += "; ";
+  photoTail(s, ref8, viewBound);
+  out.swap(s);
+  return Status::success();
+}
+
+Status photoAbsentLine(const std::string& ref8, const std::string& when, const std::string& note, PhotoAbsent why,
+                       std::string& out) {
+  if (!isRef(ref8)) {
+    out.clear();
+    return Status::fail(Err::InvalidArgument, "tx::photoAbsentLine");
+  }
+  std::string s = "[photo p" + ref8;
+  if (!when.empty()) {
+    s += ' ';
+    appendLine(s, when, 40, true);
+  }
+  s += ": ";
+  if (!note.empty()) appendLine(s, note, kPhotoNoteMax, true);
+  if (why == PhotoAbsent::Refused) s += std::string(note.empty() ? "" : "; ") + kPhotoRefused;
+  else if (why == PhotoAbsent::OverLimit) s += std::string(note.empty() ? "" : "; ") + kPhotoOverLimit;
+  else if (note.empty()) s += kPhotoNoSight;
+  s += ']';
   out.swap(s);
   return Status::success();
 }
@@ -356,17 +423,29 @@ Status longTextHead(const std::string& text, size_t cap, const std::string& wher
   return Status::success();
 }
 
-Status photoStub(const std::string& ref8, const std::string& when, std::string& out) {
+// E2-FIX5: kept with no bound tool to read it: the line ends '<rest>B more]'. A separate body, so the
+// four-argument form (engine 1's inbox calls it) stays as it was.
+Status longTextHead(const std::string& text, size_t cap, const std::string& where, std::string& out, bool kept) {
+  const Status st = longTextHead(text, cap, where, out);
+  const std::string notKept = std::string(kTextMore) + kTextNotKept + "]";
+  if (st.ok() && kept && where.empty() && text.size() > cap && out.size() >= notKept.size() &&
+      out.compare(out.size() - notKept.size(), notKept.size(), notKept) == 0)
+    out.replace(out.size() - notKept.size(), notKept.size(), "B more]");
+  return st;
+}
+
+Status photoStub(const std::string& ref8, const std::string& when, std::string& out, bool viewBound) {
   if (!isRef(ref8)) {
     out.clear();
     return Status::fail(Err::InvalidArgument, "tx::photoStub");
   }
-  std::string s = "[photo p" + ref8 + " ";   // built apart: `when` may be `out`
+  std::string s = "[photo p" + ref8;   // built apart: `when` may be `out`
   if (!when.empty()) {
-    appendLine(s, when, 40, true);
     s += ' ';
+    appendLine(s, when, 40, true);
   }
-  s += "not shown: view id=p" + ref8 + "]";
+  s += ": ";
+  photoTail(s, ref8, viewBound);
   out.swap(s);
   return Status::success();
 }
@@ -421,6 +500,31 @@ Status supersededBy(const Item& writeCall, const Item& writeResult, const std::v
 
 // ---- whole or stub -----------------------------------------------------------------------------------
 
+std::string wayBack(const std::string& tool, const std::string& args) {
+  const bool read = tool == "read_file", write = tool == "write_file" || tool == "append_file" || tool == "edit_file";
+  JsonDocument doc;
+  if ((!read && !write) || !parseArgs(args, doc)) return std::string();
+  const std::string path = topString(doc, "path");
+  if (path.empty()) return std::string();
+  std::string out = "read_file path=" + path;
+  if (!read) return out;
+  for (const char* k : {"offset", "limit", "column", "from", "to"}) {
+    JsonVariantConst v = doc[k];
+    if (v.is<uint64_t>()) out += std::string(" ") + k + "=" + std::to_string(v.as<uint64_t>());
+    else if (v.is<const char*>()) out += std::string(" ") + k + "=" + v.as<const char*>();
+  }
+  return out;
+}
+
+bool looksLikeStub(const std::string& text) {
+  size_t a = 0, b = text.size();
+  while (a < b && (text[a] == ' ' || text[a] == '\n' || text[a] == '\r' || text[a] == '\t')) ++a;
+  while (b > a && (text[b - 1] == ' ' || text[b - 1] == '\n' || text[b - 1] == '\r' || text[b - 1] == '\t')) --b;
+  if (b - a > kStubMaxBytes || text.compare(a, std::strlen(kStubOpen), kStubOpen) != 0) return false;
+  if (std::find(text.begin() + (long)a, text.begin() + (long)b, '\n') != text.begin() + (long)b) return false;
+  return text[b - 1] == ']' || text[b - 1] == ')';
+}
+
 Status showResult(const Item& r, const ShowFacts& f, ShowAs& out) {
   out = ShowAs::Whole;
   if (r.kind != ItemKind::Result || (f.superseded && !std::is_sorted(f.superseded->begin(), f.superseded->end())))
@@ -435,68 +539,26 @@ Status showResult(const Item& r, const ShowFacts& f, ShowAs& out) {
 
 // ---- photos ------------------------------------------------------------------------------------------
 
-namespace {
-
-// How far photos from earlier owner turns are carried on this head.
-struct CarryRule {
-  bool carry = false;
-  uint32_t maxSince = 0;
-  size_t max = 0;
-};
-CarryRule carryRuleFor(const PhotoFacts& f) {
-  CarryRule c;
-  const bool clockOk = f.now != 0 && f.lastOwnerTurnAt != 0 && f.now >= f.lastOwnerTurnAt;
-  const uint64_t idle = clockOk ? f.now - f.lastOwnerTurnAt : 0;
-  const bool fileRef = f.mode == PhotoMode::FileRef;
-  c.carry = clockOk && !f.afterRestart && !f.noCard && idle <= (fileRef ? kPhotoIdleS : kColdGapS);
-  c.maxSince = fileRef ? kPhotoOwnerTurns : 1;
-  c.max = fileRef ? kFileRefPhotosMax : kInlinePhotosMax;
-  return c;
-}
-
-// File-reference heads keep the last two photo-carrying owner turns: the two smallest
-// distinct ages present.
-std::set<uint32_t> keptAgesOf(const PhotoFacts& f) {
-  std::set<uint32_t> kept;
-  for (uint32_t a : std::set<uint32_t>(f.ownerTurnsSince.begin(), f.ownerTurnsSince.end()))
-    if (kept.size() < kPhotoOwnerTurns) kept.insert(a);
-  return kept;
-}
-
-// Whether candidate i (from an earlier owner turn) may be carried, given what is already shown.
-bool mayCarry(const PhotoFacts& f, const CarryRule& rule, const std::set<uint32_t>& keptAges, size_t i,
-              size_t shown, size_t carried) {
-  const uint32_t since = f.ownerTurnsSince[i];
-  if (!rule.carry || since > rule.maxSince || carried >= rule.max) return false;
-  if (f.mode != PhotoMode::FileRef) return true;
-  return keptAges.count(since) && shown < kFileRefPhotosMax;
-}
-
-}  // namespace
-
 Status visiblePhotos(const PhotoFacts& f, std::vector<std::string>& out) {
   out.clear();
   const size_t n = f.candidates.size();
-  if (f.ownerTurnsSince.size() != n || (!f.b64Bytes.empty() && f.b64Bytes.size() != n))
+  if (f.ownerTurnsSince.size() != n || (!f.bytes.empty() && f.bytes.size() != n))
     return Status::fail(Err::InvalidArgument, "tx::visiblePhotos");
   if (f.mode == PhotoMode::None) return Status::success();
-  const CarryRule rule = carryRuleFor(f);
-  const std::set<uint32_t> keptAges = keptAgesOf(f);
-  const bool fileRef = f.mode == PhotoMode::FileRef;
-  size_t arrival = 0, carried = 0, b64 = 0;
-  for (size_t i = 0; i < n; ++i) {
-    const uint32_t since = f.ownerTurnsSince[i];
-    if (since == 0) {
-      if (arrival < kArrivalPhotosMax) out.push_back(f.candidates[i]);
-      arrival += arrival < kArrivalPhotosMax;
-      continue;
-    }
-    if (!mayCarry(f, rule, keptAges, i, out.size(), carried)) continue;
-    const uint32_t size = f.b64Bytes.empty() || fileRef ? 0 : f.b64Bytes[i];
-    if (b64 + size > kInlinePhotoB64Max) break;   // newest first: stop at the first misfit
-    b64 += size;
+  const size_t maxCount = photosInViewMax(f.mode), maxBytes = photoBytesInViewMax(f.mode);
+  size_t bytes = 0;
+  for (size_t i = 0; i < n; ++i) {   // the arrival turn's own photos first, whatever their place
+    if (f.ownerTurnsSince[i] != 0 || out.size() >= kArrivalPhotosMax) continue;
     out.push_back(f.candidates[i]);
-    ++carried;
+    bytes += f.bytes.empty() ? 0 : f.bytes[i];
+  }
+  if (f.noCard) return Status::success();   // an earlier photo cannot be read back
+  for (size_t i = 0; i < n; ++i) {          // then the earlier ones, newest first
+    if (f.ownerTurnsSince[i] == 0) continue;
+    const size_t size = f.bytes.empty() ? 0 : f.bytes[i];
+    if (out.size() >= maxCount || bytes + size > maxBytes) break;   // the oldest fall out first
+    bytes += size;
+    out.push_back(f.candidates[i]);
   }
   return Status::success();
 }
@@ -529,14 +591,15 @@ Status omissionSpan(const std::vector<TurnSpan>& turns, size_t needBytes, uint32
   return Status::success();
 }
 
-Status omissionLine(uint32_t turns, const std::string& dates, std::string& out) {
+Status omissionLine(uint32_t turns, const std::string& dates, std::string& out, const BoundTools& bound) {
   if (turns == 0) {
     out.clear();
     return Status::fail(Err::InvalidArgument, "tx::omissionLine");
   }
   std::string s = "[" + std::to_string(turns) + kOmissionMid;   // built apart: `dates` may be `out`
   appendLine(s, dates, kOmissionDatesMaxBytes, true);
-  s += dates.empty() ? kOmissionTail + 2 : kOmissionTail;   // no dates: "..., not shown: ..."
+  const char* tail = bound.search ? kOmissionTail : kOmissionPlain;
+  s += dates.empty() ? tail + 2 : tail;   // no dates: "..., not shown: ..."
   out.swap(s);
   return Status::success();
 }

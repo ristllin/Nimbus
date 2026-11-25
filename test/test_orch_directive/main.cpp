@@ -75,7 +75,7 @@ static void test_directive_read_is_capped() {
 // switches ONLY - it takes no directive/prompt text at all - so a directive can
 // never turn the outbound gate off. A guest reply is still screened; the owner is
 // exempt regardless. (The device self-tags its own system copy by device-name
-// prefix, which a model reply never carries - see orchestrator.cpp deliver().)
+// prefix, which a model reply never carries - see orchestrator_common.cpp deliver().)
 static void test_moderation_is_independent_of_directive() {
   ModConfig cfg;
   cfg.outbound = true;   // owner enabled outbound screening

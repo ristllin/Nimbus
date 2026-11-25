@@ -1,0 +1,22 @@
+# route golden parse messages-anthropic-direct/input_transformations_dropped.json served at HTTP 200
+parse ok
+parse stop tool
+parse text 0 B fnv64=14650fb0739d0383 head=""
+parse refusal ""
+parse calls 1
+parse   call 0 id="toolu_01GGMW5ssyRuXtbP8772f7xt" name="read_file" complete=1 args="{\"path\":\"notes/beta.md\"}"
+parse meta 1
+parse   meta 0 beforeCall=0 2128 B fnv64=e4f71ea9732cb1d9 head="{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"CA"
+parse usage prompt=2 completion=337 cacheRead=8073 cacheWrite=193 cacheWrite1h=0 responses=1 maxRequestIn=8268 served="claude-haiku-5-5"
+exchange err=ok http=200 requests=1 retries=0 climbs=0 cutRetried=0 failOver=0 parkHost=0 maxTokens=6664 requestBytes=917 ms=0 waitedMs=0 statusLine=0
+exchange line ""
+exchange line stored ""
+exchange request 0 917 B fnv64=0a672e6e0a2d09ce
+exchange step stop tool
+exchange step text 0 B fnv64=14650fb0739d0383 head=""
+exchange step refusal ""
+exchange step calls 1
+exchange step   call 0 id="toolu_01GGMW5ssyRuXtbP8772f7xt" name="read_file" complete=1 args="{\"path\":\"notes/beta.md\"}"
+exchange step meta 1
+exchange step   meta 0 beforeCall=0 2128 B fnv64=e4f71ea9732cb1d9 head="{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"CA"
+exchange step usage prompt=2 completion=337 cacheRead=8073 cacheWrite=193 cacheWrite1h=0 responses=1 maxRequestIn=8268 served="claude-haiku-5-5"

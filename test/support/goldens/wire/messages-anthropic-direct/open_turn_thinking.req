@@ -1,0 +1,8 @@
+# route golden request messages-anthropic-direct/open_turn_thinking
+POST https://api.anthropic.com:443/v1/messages
+header content-type: application/json
+header anthropic-version: 2023-06-01
+header x-api-key: fixture-key-not-a-secret
+splices 0
+body 1514
+{"model":"claude-sonnet-5-5","max_tokens":4096,"output_config":{"effort":"medium"},"system":[{"type":"text","text":"You are a test assistant for the route goldens. Answer briefly."},{"type":"text","text":"Pinned: the test garden has three beds.","cache_control":{"type":"ephemeral"}},{"type":"text","text":"Mon 16 Nov: planned the spring beds.","cache_control":{"type":"ephemeral"}}],"tools":[{"name":"read_note","description":"Read one note by its path.","input_schema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}},{"name":"view","description":"Show an earlier result or photo again by its id.","input_schema":{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}}],"tool_choice":{"type":"auto"},"messages":[{"role":"user","content":[{"type":"text","text":"[2026-11-17 Tue 13:02] Which bed gets the most sun?"}]},{"role":"assistant","content":[{"type":"text","text":"Bed 2 gets the most sun.","cache_control":{"type":"ephemeral"}}]},{"role":"user","content":[{"type":"text","text":"[2026-11-17 Tue 13:05] Then put the tomatoes there and check the note."}]},{"role":"assistant","content":[{"type":"thinking","thinking":"Read the note first.","signature":"c2lnLW9wZW4"},{"type":"tool_use","id":"toolu_08A","name":"read_note","input":{"path":"notes/bed2.md"}},{"type":"redacted_thinking","data":"cmVkYWN0ZWQ"}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_08A","content":"bed 2: empty, full sun","cache_control":{"type":"ephemeral"}}]}]}

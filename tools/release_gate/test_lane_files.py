@@ -28,6 +28,9 @@ PLAN_PENDING = os.environ.get("RB_PLAN_PENDING_JSON", os.path.join(os.path.dirna
 # too: a waiting lane needs no entry yet, but one that has added its entry (its first commit)
 # is checked like a plan lane, its text against the plan's.
 PLAN_FUTURE = os.environ.get("RB_PLAN_FUTURE_JSON", os.path.join(os.path.dirname(PLAN), "PLAN-future.json"))
+# The engine-2 router's lanes (ruling 122, ROUTER-DESIGN.md section 14) keep their plan text in
+# the repo beside owners.json; they count like PLAN-pending.json's.
+PLAN_ROUTER = os.path.join(REPO, "tools", "engine", "plan_e2_router.json")
 
 
 def owners(**lanes):
@@ -323,7 +326,7 @@ def test_real_owners_table_covers_every_plan_lane():
     with open(PLAN, encoding="utf-8") as f:
         plan = json.load(f)
     table = real_owners()
-    for waiting in (PLAN_PENDING, PLAN_FUTURE):
+    for waiting in (PLAN_PENDING, PLAN_FUTURE, PLAN_ROUTER):
         if os.path.exists(waiting):
             with open(waiting, encoding="utf-8") as f:
                 known = {row["id"] for row in plan["lanes"]}
@@ -349,7 +352,7 @@ def test_real_owners_hot_files_match_the_prd_order():
         "RB-Q4",
     ]
     assert hot["src/agent/telegram.cpp"] == ["RB-Q1c", "RB-TS1", "RB-TG1", "RB-TG2", "RB-P2"]
-    assert hot["lib/harness/src/plain_engine.cpp"] == ["RB-E1a", "RB-E1b"]
+    assert hot["lib/harness/src/plain_engine.cpp"] == ["RB-E1a", "RB-E1b", "E2-R4b"]
     assert len(hot) >= 17
 
 
@@ -437,3 +440,62 @@ def test_real_owners_share_the_roster_file():
 def test_the_roster_rulings_list_is_protected():
     """Ruling 79 item 3: no lane can declare an edit of the list of rulings that let the roster grow."""
     assert "tools/release_gate/roster_rulings.txt" in gate.PROTECTED
+
+
+# --- the engine-2 router's lanes (ruling 122) ---------------------------------------------
+
+
+def router_plan():
+    with open(PLAN_ROUTER, encoding="utf-8") as f:
+        return json.load(f)["lanes"]
+
+
+def concrete(glob: str) -> str:
+    """A real path the glob covers ('**' and '*' filled in)."""
+    return glob.replace("**", "x/y.cpp").replace("*", "x")
+
+
+def test_every_router_lane_has_its_entry_and_a_dry_run_of_its_files_passes():
+    table = real_owners()
+    rows = router_plan()
+    assert [r["id"] for r in rows] == [
+        "E2-R1",
+        "E2-R2a",
+        "E2-R2b",
+        "E2-R3",
+        "E2-R4a",
+        "E2-R4b",
+        "E2-R5",
+        "E2-R6",
+        "E2-R7",
+        "E2-R8",
+        "E2-R10",
+    ]
+    for row in rows:
+        entry = table["lanes"][row["id"]]
+        assert entry["plan_text"] == row["files_owned"]
+        changed = [concrete(g) for g in entry["files"]]
+        ok, _, fails = gate.check(table, row["id"], changed)
+        assert ok, (row["id"], fails)
+
+
+def test_counter_a_router_lane_cannot_touch_another_router_lanes_file():
+    ok, _, fails = gate.check(real_owners(), "E2-R7", ["lib/harness/src/providers/plain_wire_chat.cpp"])
+    assert not ok and fails
+
+
+def test_router_hot_files_follow_the_design_order():
+    hot = real_owners()["hot_files"]
+    assert hot["lib/harness/src/plain_exchange.cpp"] == ["E2-R4a", "E2-R5"]
+    assert hot["lib/harness/src/plain_compact.cpp"] == ["E2-R4b", "E2-R8"]
+    assert hot["lib/harness/src/providers/plain_plan.cpp"] == ["E2-R2b", "E2-R4b"]
+    assert hot["lib/harness/src/plain_wire.cpp"] == ["E2-R4a", "E2-R6", "E2-R7"]
+    assert hot["lib/harness/src/providers/plain_wire_anthropic.cpp"] == ["E2-R2b", "E2-R4a"]
+    assert hot["test/test_router_conformance/**"] == ["E2-R3", "E2-R4a", "E2-R4b"]
+    # Every path two router lanes share is sequenced by that order.
+    router = {r["id"] for r in router_plan()}
+    for row in gate.overlaps(real_owners()):
+        both = [lane for lane in row["lanes"] if lane in router]
+        if len(both) > 1:
+            order = hot.get(row["path"], [])
+            assert all(lane in order for lane in both), row

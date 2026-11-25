@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "nimbus/orch/rbac.h"   // effectiveQuota - the per-person byte limit
+#include "nimbus/orch/tx/rules.h"   // looksLikeStub - a stub line is never content (E2-VERB)
 #include "nimbus/utf8.h"        // utf8Lead, utf8CapLen - cuts on character boundaries
 
 namespace nimbus::orch {
@@ -46,13 +47,15 @@ const char kTooLongMore[] = "; append_file adds more";
 const char kQuota[] = "{} B of files would pass your {} B";
 const char kRoom[] = "file store full: {}";
 const char kPastEnd[] = "offset {} is past the end (size={})";
-const char kNotText[] = "{} is not text ({})";
-const char kPdf[] = "{} is a PDF; its text is not readable yet";
+const char kNotText[] = "{} is not text ({}, {} B)";
+const char kPdf[] = "{} is a PDF ({} B); its text is not readable yet";
 const char kBinary[] = "binary data";
 const char kEmptyText[] = "text is empty";
 const char kEditTooBig[] = "{} is {} B; edit_file takes files up to {} B";
 const char kChanged[] = "{} changed during the edit; nothing written";
 const char kAfter[] = "after: {} is not listed";
+// E2-VERB: a stub line stands for text the request did not show; it is never the text itself.
+const char kStubText[] = "{} is a stub line, not text; nothing written: only real text is stored";
 // results
 const char kReadHead[] = "{} size={} lines={} sha8={} bytes {}-{}";
 const char kTornNote[] = "; {}";
@@ -72,6 +75,7 @@ const char kListLine[] = "{} {} B {}";
 const char kShared[] = " shared";
 const char kMore[] = "more: {}";
 const char kMoreAfter[] = "more: {} (after={})";
+const char kDeleted[] = "deleted {} ({} B)";
 const char kNoFiles[] = "no files";
 const char kNoFilesUnder[] = "no files under {}";
 const char kTimeUnknown[] = "time?";
@@ -89,6 +93,7 @@ const std::vector<const char*> kWriteArgs = {"path", "content", "if_exists"};
 const std::vector<const char*> kAppendArgs = {"path", "text"};
 const std::vector<const char*> kEditArgs = {"path", "old", "new", "all", "line"};
 const std::vector<const char*> kListArgs = {"prefix", "after"};
+const std::vector<const char*> kDeleteArgs = {"path"};
 
 // A template with each "{}" replaced by the next value.
 std::string fill(const char* tpl, std::initializer_list<std::string> vals) {
@@ -318,6 +323,37 @@ struct FileTools::WriteMode {
   uint32_t at = 0;   // every write stamps its time, so a same-size change of a file with no hash shows too
 };
 
+// What an append's first hold saw of the entry; its commit hold writes only while the entry is
+// still exactly that (lane E2-FSAFE: the newline fence is never decided on a tail another writer
+// replaced in between).
+struct FileTools::Stamp {
+  bool had = false;
+  uint32_t bytes = 0, at = 0;
+  uint64_t hash = 0;
+  static Stamp of(const FileEntry* e) {
+    Stamp s;
+    if (!e) return s;
+    s.had = true;
+    s.bytes = e->bytes;
+    s.at = e->createdAt;
+    s.hash = e->hash;
+    return s;
+  }
+  bool same(const FileEntry* e) const {
+    const Stamp now = of(e);
+    return now.had == had && now.bytes == bytes && now.at == at && now.hash == hash;
+  }
+};
+
+// One append's bytes and what its holds found: the stamp step 1 saw, whether the entry moved
+// before the commit, whether the call created the file, the size after.
+struct FileTools::AppendPlan {
+  std::string bytes;
+  Stamp seen;
+  bool moved = false, fresh = false;
+  uint64_t size = 0;
+};
+
 bool FileTools::resolve(JsonObjectConst args, Target& t, std::string& err) const {
   const ArduinoJson::JsonString js = args["path"].as<ArduinoJson::JsonString>();
   t.asked.assign(js.c_str(), js.size());
@@ -335,6 +371,7 @@ bool FileTools::resolve(JsonObjectConst args, Target& t, std::string& err) const
 bool FileTools::lookup(Target& t, const Principal& who, int& state) {
   state = 0;
   return io_.locked([&] {
+    io_.sync(t.sp.project, t.sp.name);
     FileStore& s = io_.index();
     const FileEntry* e = s.find(t.sp.project, t.sp.name);
     if (!e) return;
@@ -456,12 +493,13 @@ bool FileTools::textFile(Target& t, const Principal& who, std::string& err) {
   if (!lookup(t, who, state)) return (err = R::kNoCard).empty();
   if (state != 1) return (err = fill(R::kNoFile, {t.path()})).empty();
   const FileKind kind = fileKindForName(t.sp.name);
-  if (isPdf(t.sp.name)) return (err = fill(R::kPdf, {t.path()})).empty();
+  const std::string size = num(t.entry.bytes);
+  if (isPdf(t.sp.name)) return (err = fill(R::kPdf, {t.path(), size})).empty();
   if (kind == FileKind::Image || kind == FileKind::Audio)
-    return (err = fill(R::kNotText, {t.path(), fileKindName(kind)})).empty();
+    return (err = fill(R::kNotText, {t.path(), fileKindName(kind), size})).empty();
   std::string head;
   if (!readSpan(t, 0, std::min<uint64_t>(t.entry.bytes, kTextSniffBytes), head)) return (err = R::kCardRead).empty();
-  if (!fileReadableAsText(t.sp.name, head)) return (err = fill(R::kNotText, {t.path(), R::kBinary})).empty();
+  if (!fileReadableAsText(t.sp.name, head)) return (err = fill(R::kNotText, {t.path(), R::kBinary, size})).empty();
   return true;
 }
 
@@ -472,6 +510,8 @@ ToolResult FileTools::readStored(Target& t, const Principal& who, uint64_t offse
   const uint64_t size = t.entry.bytes;
   if (offset > size) return ToolResult::fail(fill(R::kPastEnd, {num(offset), num(size)}));
   if (!readSpan(t, offset, std::min<uint64_t>(size, offset + limit), window)) return ToolResult::fail(R::kCardRead);
+  // E2-P-OUT2: binary bytes past the sniffed head are never sent as text; the one line says what the file is.
+  if (window.find('\0') != std::string::npos) return ToolResult::fail(fill(R::kNotText, {t.path(), R::kBinary, num(size)}));
   const bool atEnd = offset + window.size() >= size;
   if (atEnd && !window.empty()) last = window.substr(window.size() - 1);
   else if (size && !readSpan(t, size - 1, size, last)) return ToolResult::fail(R::kCardRead);
@@ -601,6 +641,11 @@ FileEntry entryAfter(const FileEntry* cur, const StorePath& sp, const Principal&
 // Inside a hold: may this caller put newBytes at the target now?
 bool FileTools::writeCheck(Target& t, const Principal& who, const WriteMode& m, uint64_t newBytes,
                            std::string& err) {
+  if (io_.writeBusy()) {   // a web upload may commit over this file later: no change starts (as engine 1)
+    err = R::kCardWrite;   // E2-INTEG: the class had 2 B left; the existing line is true here
+    return false;
+  }
+  io_.sync(t.sp.project, t.sp.name);
   FileStore& s = io_.index();
   const FileEntry* cur = s.find(t.sp.project, t.sp.name);
   if (!s.writeAllowed(t.sp.project, t.sp.name, who.ns, who.owner)) {
@@ -640,6 +685,20 @@ bool FileTools::writePart(const Target& t, const std::string& bytes) {
   return ok;
 }
 
+namespace {
+// The change a commit hold makes, for the binding's journal (FileToolsIo::journal).
+FileToolsIo::Change changeOf(char op, const StorePath& sp, const Principal& who, const FileEntry* cur, uint64_t bytes) {
+  FileToolsIo::Change c;
+  c.op = op;
+  c.person = who.ns;
+  c.project = sp.project;
+  c.name = sp.name;
+  c.before = cur ? int64_t(cur->bytes) : -1;
+  c.bytes = bytes;
+  return c;
+}
+}  // namespace
+
 // The index rewrite, alone in its hold. "" when saved.
 std::string FileTools::persisted() {
   bool saved = false;
@@ -675,7 +734,7 @@ ToolResult FileTools::writeBytes(Target& t, const std::string& bytes, const Prin
     if (!ok) return;
     FileStore& s = io_.index();
     const FileEntry* cur = s.find(t.sp.project, t.sp.name);
-    if (!io_.partSwap(t.sp.project, t.sp.name)) {
+    if (!io_.journal(changeOf('w', t.sp, who, cur, bytes.size())) || !io_.partSwap(t.sp.project, t.sp.name)) {
       err = R::kCardWrite;
       ok = false;
       return;
@@ -713,10 +772,24 @@ bool writeTarget(const Principal& who, const PathRule& rule, const std::string& 
   return false;
 }
 
+// A stub line as content (E2-VERB): refused, so a model that copied one from its history is told
+// to send the text it meant.
+bool notStub(const char* key, const std::string& text, std::string& err) {
+  if (!tx::looksLikeStub(text)) return true;
+  err = fill(R::kStubText, {key});
+  return false;
+}
+
 bool withinCap(const char* key, size_t size, size_t cap, std::string& err, bool more = false) {
   if (size <= cap) return true;
   err = fill(R::kTooLong, {key, num(size), num(cap)}) + (more ? R::kTooLongMore : "");
   return false;
+}
+
+// edit_file's old and new within the cap, and new not a stub line.
+bool editTextsOk(const aids::EditRequest& e, size_t cap, std::string& err) {
+  return withinCap("old", e.oldText.size(), cap, err) && withinCap("new", e.newText.size(), cap, err) &&
+         notStub("new", e.newText, err);
 }
 
 }  // namespace
@@ -731,7 +804,7 @@ ToolResult FileTools::write(JsonObjectConst args, const Principal& who) {
     return ToolResult::fail(in.err);
   if (ifExists != "fail" && ifExists != "replace") return ToolResult::fail(fill(R::kIfExists, {shown(ifExists)}));
   if (!resolve(args, t, err) || !withinCap("content", content.size(), cfg_.contentCap, err, true) ||
-      !writeTarget(who, t.rule, t.path(), err))
+      !notStub("content", content, err) || !writeTarget(who, t.rule, t.path(), err))
     return ToolResult::fail(err);
   WriteMode m;
   m.replace = ifExists == "replace";
@@ -747,13 +820,16 @@ std::string FileTools::linesNote(const Target& t, uint64_t size) {
 
 // Step 1 of an append, one hold: the checks and room for `add` more bytes; before is the
 // stored size. False with err (no card is kNoCard).
-bool FileTools::appendRoom(Target& t, const Principal& who, uint64_t add, uint64_t& before, std::string& err) {
+bool FileTools::appendRoom(Target& t, const Principal& who, uint64_t add, uint64_t& before, Stamp& seen,
+                           std::string& err) {
   WriteMode m;
   m.replace = true;
   bool ok = false;
   const bool card = io_.locked([&] {
+    io_.sync(t.sp.project, t.sp.name);
     const FileEntry* cur = io_.index().find(t.sp.project, t.sp.name);
     before = cur ? cur->bytes : 0;
+    seen = Stamp::of(cur);
     std::string why;
     ok = writeCheck(t, who, m, before + add, err);
     if (ok && !io_.roomFor(t.sp.project, t.sp.name, before + add, why)) ok = (err = fill(R::kRoom, {why})).empty();
@@ -762,21 +838,34 @@ bool FileTools::appendRoom(Target& t, const Principal& who, uint64_t add, uint64
   return card && ok;
 }
 
-// Step 3, one hold: the checks again, the append, the index entry. size is the new size.
-bool FileTools::appendBytes(Target& t, const Principal& who, const std::string& bytes, bool& fresh, uint64_t& size,
-                            std::string& err) {
+// Step 3, one hold: the checks again, the append, the index entry. size is the new size. When the
+// entry is no longer what step 1 saw (another writer changed the file in between), nothing is
+// written and moved is set: the fence and the tail are decided again.
+bool FileTools::appendBytes(Target& t, const Principal& who, AppendPlan& a, std::string& err) {
   WriteMode m;
   m.replace = true;
   bool ok = false;
+  a.moved = false;
+  const std::string& bytes = a.bytes;
   io_.locked([&] {
+    io_.sync(t.sp.project, t.sp.name);
     FileStore& s = io_.index();
     const FileEntry* cur = s.find(t.sp.project, t.sp.name);
-    size = uint64_t(cur ? cur->bytes : 0) + bytes.size();
-    if (!writeCheck(t, who, m, size, err)) return;
-    if (!io_.append(t.sp.project, t.sp.name, bytes)) return void(err = R::kCardWrite);
-    fresh = cur == nullptr;
+    if (!a.seen.same(cur)) return void(a.moved = true);
+    a.size = uint64_t(cur ? cur->bytes : 0) + bytes.size();
+    if (!writeCheck(t, who, m, a.size, err)) return;
+    uint64_t landed = 0;
+    if (!io_.journal(changeOf('a', t.sp, who, cur, bytes.size()))) return void(err = R::kCardWrite);
+    if (!io_.appendCounted(t.sp.project, t.sp.name, bytes, landed)) {
+      // the bytes this call left at the end when the card refused the cut back, never "nothing changed":
+      // an error that names what landed and the file's size now (E2-INTEG: kAppended, no new text)
+      const uint64_t now = uint64_t(cur ? cur->bytes : 0) + landed;
+      err = landed ? fill(R::kAppended, {num(landed), t.path(), num(now)}) : std::string(R::kCardWrite);
+      return;
+    }
+    a.fresh = cur == nullptr;
     const uint64_t hash = cur ? (cur->hash ? fnvContinue(cur->hash, bytes) : 0) : hashOf(bytes);
-    const FileEntry e = entryAfter(cur, t.sp, who, size, hash, io_.now());
+    const FileEntry e = entryAfter(cur, t.sp, who, a.size, hash, io_.now());
     t.sp.project = plainCopy(e.project);
     t.sp.name = plainCopy(e.name);
     std::string addErr;
@@ -788,15 +877,24 @@ bool FileTools::appendBytes(Target& t, const Principal& who, const std::string& 
 
 ToolResult FileTools::appendText(Target& t, const std::string& text, const Principal& who) {
   std::string err, tail;
-  uint64_t before = 0, size = 0;
-  bool fresh = false;
-  if (!appendRoom(t, who, text.size(), before, err)) return ToolResult::fail(err);   // the commit checks the fence too
-  // Step 2, one hold: the file's last bytes, for the newline fence and the identical-line fact.
-  const uint64_t from = before - std::min<uint64_t>(before, aids::kAppendTailBytes);
-  if (before && !readSpan(t, from, before, tail)) return ToolResult::fail(R::kCardRead);
-  const bool fence = aids::endsTorn(before, tail.empty() ? '\n' : tail.back());
-  const std::string bytes = fence ? "\n" + text : text;
-  if (!appendBytes(t, who, bytes, fresh, size, err)) return ToolResult::fail(err);
+  uint64_t before = 0, from = 0;
+  AppendPlan a;
+  // Steps 1 to 3 again when another writer moved the entry between them (S7); three tries.
+  for (int attempt = 0;; ++attempt) {
+    tail.clear();
+    if (!appendRoom(t, who, text.size(), before, a.seen, err)) return ToolResult::fail(err);
+    // Step 2, one hold: the file's last bytes, for the newline fence and the identical-line fact.
+    from = before - std::min<uint64_t>(before, aids::kAppendTailBytes);
+    if (before && !readSpan(t, from, before, tail)) return ToolResult::fail(R::kCardRead);
+    const bool fence = aids::endsTorn(before, tail.empty() ? '\n' : tail.back());
+    a.bytes = fence ? "\n" + text : text;
+    if (appendBytes(t, who, a, err)) break;
+    if (!a.moved) return ToolResult::fail(err);
+    if (attempt == 2) return ToolResult::fail(fill(R::kChanged, {t.path()}));
+  }
+  const std::string& bytes = a.bytes;
+  const uint64_t size = a.size;
+  const bool fresh = a.fresh;
   const std::string index = persisted();
   const std::string lines = linesNote(t, size);
   std::string out = fill(R::kAppended, {num(bytes.size()), t.path(), num(size)});
@@ -819,7 +917,8 @@ ToolResult FileTools::append(JsonObjectConst args, const Principal& who) {
   if (!in.str("path", true, path) || !in.str("text", true, text)) return ToolResult::fail(in.err);
   if (!resolve(args, t, err)) return ToolResult::fail(err);
   if (text.empty()) return ToolResult::fail(R::kEmptyText);
-  if (!withinCap("text", text.size(), cfg_.contentCap, err) || !writeTarget(who, t.rule, t.path(), err))
+  if (!withinCap("text", text.size(), cfg_.contentCap, err) || !notStub("text", text, err) ||
+      !writeTarget(who, t.rule, t.path(), err))
     return ToolResult::fail(err);
   return appendText(t, text, who);
 }
@@ -889,8 +988,10 @@ ToolResult FileTools::editText(Target& t, const aids::EditRequest& e, const Prin
     if (!writeCheck(t, who, m, bytes, why)) return false;
     std::string room;
     if (!io_.roomFor(t.sp.project, t.sp.name, bytes, room)) return (why = fill(R::kRoom, {room})).empty();
-    if (!io_.partSwap(t.sp.project, t.sp.name)) return false;
     FileStore& s = io_.index();
+    if (!io_.journal(changeOf('w', t.sp, who, s.find(t.sp.project, t.sp.name), bytes)) ||
+        !io_.partSwap(t.sp.project, t.sp.name))
+      return false;
     const FileEntry next = entryAfter(s.find(t.sp.project, t.sp.name), t.sp, who, bytes, hash, io_.now());
     std::string addErr;
     s.add(next, addErr);   // cannot refuse: writeCheck ran wouldExceed in this same hold
@@ -918,9 +1019,7 @@ ToolResult FileTools::edit(JsonObjectConst args, const Principal& who) {
   if (!resolve(args, t, err)) return ToolResult::fail(err);
   err = aids::checkEdit(e);
   if (!err.empty()) return ToolResult::fail(err);
-  if (!withinCap("old", e.oldText.size(), cfg_.contentCap, err) ||
-      !withinCap("new", e.newText.size(), cfg_.contentCap, err) || !writeTarget(who, t.rule, t.path(), err))
-    return ToolResult::fail(err);
+  if (!editTextsOk(e, cfg_.contentCap, err) || !writeTarget(who, t.rule, t.path(), err)) return ToolResult::fail(err);
   return editText(t, e, who);
 }
 
@@ -974,6 +1073,39 @@ ToolResult FileTools::list(JsonObjectConst args, const Principal& who) {
   return ToolResult::ok(out);
 }
 
+// ---- delete ----------------------------------------------------------------------------
+
+ToolResult FileTools::remove(JsonObjectConst args, const Principal& who) {
+  std::string err, path;
+  Target t;
+  t.tool = "delete_file";
+  if (!onlyKnown(args, t.tool, kDeleteArgs, err)) return ToolResult::fail(err);
+  ArgReader in{args, t.tool, kDeleteArgs, ""};
+  if (!in.str("path", true, path)) return ToolResult::fail(in.err);
+  if (!resolve(args, t, err) || !writeTarget(who, t.rule, t.path(), err)) return ToolResult::fail(err);
+  // One hold: whose file, then the card and the index entry together.
+  uint64_t bytes = 0;
+  bool ok = false;
+  const bool card = io_.locked([&] {
+    io_.sync(t.sp.project, t.sp.name);
+    FileStore& s = io_.index();
+    const FileEntry* e = s.find(t.sp.project, t.sp.name);
+    if (!e || !s.readableBy(*e, who.ns, who.owner, mayReadShared(who))) return void(err = fill(R::kNoFile, {t.path()}));
+    if (io_.writeBusy()) return void(err = R::kCardWrite);   // a web upload holds the store
+    if (!s.writeAllowed(t.sp.project, t.sp.name, who.ns, who.owner)) return void(err = fill(R::kOthers, {t.path()}));
+    t.sp.project = plainCopy(e->project);   // the stored letter case
+    t.sp.name = plainCopy(e->name);
+    bytes = e->bytes;
+    if (!io_.journal(changeOf('d', t.sp, who, e, 0)) || !io_.remove(t.sp.project, t.sp.name))
+      return void(err = R::kCardWrite);
+    s.remove(t.sp.project, t.sp.name);
+    ok = true;
+  });
+  if (!card) return ToolResult::fail(R::kNoCard);
+  if (!ok) return ToolResult::fail(err);
+  return ToolResult::ok(fill(R::kDeleted, {t.path(), num(bytes)}) + persisted());
+}
+
 // ---- registration ----------------------------------------------------------------------
 
 const std::vector<const char*>& fileToolArgs(const char* tool) {
@@ -984,6 +1116,7 @@ const std::vector<const char*>& fileToolArgs(const char* tool) {
   if (t == "append_file") return kAppendArgs;
   if (t == "edit_file") return kEditArgs;
   if (t == "list_files") return kListArgs;
+  if (t == "delete_file") return kDeleteArgs;
   return none;
 }
 
@@ -999,6 +1132,8 @@ void FileTools::registerInto(ToolRegistry& reg, const FileToolDeclFn& decl) {
   reg.add("edit_file", d.description, [this](A a, const Principal& w) { return edit(a, w); }, d.schema);
   d = decl("list_files");
   reg.add("list_files", d.description, [this](A a, const Principal& w) { return list(a, w); }, d.schema);
+  d = decl("delete_file");
+  reg.add("delete_file", d.description, [this](A a, const Principal& w) { return remove(a, w); }, d.schema);
 }
 
 }  // namespace nimbus::orch

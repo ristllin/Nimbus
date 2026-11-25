@@ -1,0 +1,4 @@
+synthetic: https://community.openai.com/t/your-input-exceeds-the-context-window-of-this-model/1314149, read 2026-11-24
+status: 400
+expect: class=context retry=no
+{"error":{"message":"Your input exceeds the context window of this model. Please adjust your input and try again.","type":"invalid_request_error","param":"input","code":"context_length_exceeded"}}

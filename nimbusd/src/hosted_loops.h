@@ -1,7 +1,9 @@
 #pragma once
 #include <ArduinoJson.h>
 
+#include <cerrno>
 #include <cstdio>
+#include <unistd.h>   // access: a missing loops2.json is an empty sidecar
 #include <ctime>
 #include <functional>
 #include <random>
@@ -15,6 +17,10 @@
 #include "nimbus/orch/owner_prefs.h"   // standingBlocksFire - a rule binds a routine (lane POL2)
 #include "nimbus/orch/spend_ceiling.h"   // isSpendFrozenError
 #include "nimbus/orch/tool_registry.h"
+#include "nimbus/harness/plain/request.h"   // toolDecl, declSchema (engine 2's schedule)
+#include "nimbus/harness/schedule_fire.h"     // its fires (RB-U1b)
+#include "nimbus/orch/schedule_tool.h"        // engine 2's schedule tool and loops2.json (RB-U1b)
+#include "hosted_notes.h"                     // originOf: the note tool's origin rule
 #include "hosted_settings.h"             // tzMutex: every local-time read here takes it
 #include "posix_fs.h"
 
@@ -56,6 +62,7 @@ class HostedLoops {
 
   void begin(const std::string& dir, HostedLoopHooks hooks) {
     path_ = dir + "/loops.json";
+    sidecarPath_ = dir + "/loops2.json";   // engine 2's fields, by loop id (RB-U1b)
     modePath_ = dir + "/wakeup_mode";
     h_ = std::move(hooks);
     std::string blob;
@@ -221,7 +228,110 @@ class HostedLoops {
   // wakeup.set and loop.* : the device's four tools, in its words (memory_subsystem.cpp).
   void registerTools(nimbus::orch::ToolRegistry& reg);
 
+  // ---- engine 2 (lane RB-U1b) -------------------------------------------------------------------
+  // `schedule` (plain::toolDecl) over this table, its new fields in loops2.json beside loops.json.
+  // Register on PlainRig::registry() before boot; the registry must not outlive this object.
+  void attachSchedule(nimbus::orch::ToolRegistry& reg) {
+    scheduleReg_ = &reg;
+    const auto* decl = agent::plain::toolDecl("schedule");
+    reg.add(
+        "schedule", decl ? decl->description : "",
+        [this](ArduinoJson::JsonObjectConst args, const nimbus::orch::Principal&) {
+          static const nimbus::orch::schedule::CallCtx kNoTurn;   // no turn recorded: unattended
+          ScheduleHost h(*this);
+          return nimbus::orch::schedule::call(h, args, scheduleCall() ? *scheduleCall() : kNoTurn);
+        },
+        decl ? agent::plain::declSchema(*decl, false) : "{}");
+  }
+  // The PlainRigBindings::dispatch binding: records the turn's origin and chat on this thread for
+  // the call, then runs `inner` (null: the attached registry's own dispatch).
+  agent::plain::ToolDispatchFn scheduleDispatch(agent::plain::ToolDispatchFn inner = nullptr) {
+    return [this, inner](const agent::plain::ToolCall& c, const agent::plain::TurnCtx& t) {
+      nimbus::orch::schedule::CallCtx ctx;
+      ctx.origin = originOf(t);
+      ctx.chatId = t.chatId;
+      struct Scope {
+        const nimbus::orch::schedule::CallCtx* prev;
+        explicit Scope(const nimbus::orch::schedule::CallCtx* now) : prev(scheduleCall()) { scheduleCall() = now; }
+        ~Scope() { scheduleCall() = prev; }
+      } scope(&ctx);
+      return inner ? inner(c, t) : registryDispatch(c, t);
+    };
+  }
+  // The loops fire hook on engine 2: a reminder's fixed text with no model call, or a routine
+  // through b.run (plain::runRoutine). The binding (RB-I1/RB-I2) passes it as HostedLoopHooks::fire.
+  nimbus::orch::FireOutcome fireE2(const nimbus::orch::LoopFireRequest& req, const nimbus::orch::schedule::FireBinding& b) {
+    ScheduleHost h(*this);
+    return nimbus::orch::schedule::fire(h, req, b, epoch());
+  }
+  // Lane E2-FIX7: does entry `id` fire as a routine (a model call)? An entry that cannot be read counts as one,
+  // so the money guard fails closed.
+  bool firesAsRoutine(const std::string& id) {
+    ScheduleHost h(*this);
+    nimbus::orch::schedule::Kind k = nimbus::orch::schedule::Kind::Routine;
+    return !nimbus::orch::schedule::entryKind(h, id, k) || k != nimbus::orch::schedule::Kind::Reminder;
+  }
+  std::string sidecarPath() const { return sidecarPath_; }
+  // Where routine state files live (the instance's transcript storage, FireBinding::files): a
+  // deleted routine's state goes with it. Null: nothing is removed.
+  void setStateFiles(nimbus::orch::tx::TxFiles* files) { stateFiles_ = files; }
+
  private:
+  // Engine 2's view of this table for the schedule tool (single engine thread: no lock of its own).
+  class ScheduleHost : public nimbus::orch::schedule::Host {
+   public:
+    explicit ScheduleHost(HostedLoops& o) : o_(o) {}
+    void withTable(const std::function<void(std::vector<nimbus::orch::LoopRecord>&)>& fn) override { fn(o_.loops_); }
+    bool saveLoops(const std::vector<nimbus::orch::LoopRecord>& v) override {
+      return fsutil::writeFileAtomic(o_.path_, nimbus::orch::dumpLoops(v));
+    }
+    bool readSidecar(std::string& out) override {
+      out.clear();
+      if (access(o_.sidecarPath_.c_str(), F_OK) != 0) return errno == ENOENT;   // missing: an empty sidecar
+      return fsutil::readFile(o_.sidecarPath_, out);
+    }
+    bool writeSidecar(const std::string& json) override { return fsutil::writeFileAtomic(o_.sidecarPath_, json); }
+    nimbus::orch::schedule::Clock clock() override { return {true, epoch()}; }
+    bool localToEpoch(const nimbus::orch::CivilTime& c, uint64_t& out) override {
+      out = civilEpoch(c);
+      return out > 0;
+    }
+    nimbus::orch::CivilTime epochToLocal(uint64_t e) override { return civilLocal(e); }
+    uint64_t nextRun(const nimbus::orch::LoopRecord& l, uint64_t now) override { return nextRunFor(l, now); }
+    std::string newId(const std::vector<nimbus::orch::LoopRecord>&) override { return o_.genId(); }
+    bool askFirst() override { return o_.askFirst_; }
+    bool reserved(const std::string&) override { return false; }
+    int maxCount() override { return o_.caps_.maxCount; }
+    uint32_t minIntervalSec() override { return o_.caps_.minIntervalSec; }
+    void forgetState(const std::string& id) override {
+      if (!o_.stateFiles_) return;
+      const std::string path = nimbus::orch::schedule::statePath(id);
+      (void)o_.stateFiles_->remove(path);
+      (void)o_.stateFiles_->remove(path + nimbus::orch::schedule::store::kTmpExt);
+    }
+
+   private:
+    HostedLoops& o_;
+  };
+  static const nimbus::orch::schedule::CallCtx*& scheduleCall() {
+    static thread_local const nimbus::orch::schedule::CallCtx* now = nullptr;
+    return now;
+  }
+  agent::plain::ToolOutput registryDispatch(const agent::plain::ToolCall& c, const agent::plain::TurnCtx& t) const {
+    agent::plain::ToolOutput o;
+    o.id = c.id;
+    o.name = c.name;
+    static const nimbus::orch::ToolRegistry kNone;
+    static const nimbus::orch::Principal kNobody;
+    JsonDocument args;
+    (void)deserializeJson(args, c.argsJson, DeserializationOption::NestingLimit(64));
+    const nimbus::orch::ToolResult r =
+        (scheduleReg_ ? *scheduleReg_ : kNone).dispatch(c.name, args.as<JsonObjectConst>(), t.who ? *t.who : kNobody);
+    o.isError = !r.success;
+    o.text = r.success ? r.output : r.error;
+    return o;
+  }
+
   // Why this routine may not be created ("" = it may).
   std::string createRefusal(const nimbus::orch::SchedSpec& spec, const std::string& prompt, bool agentInScheduled) const {
     const bool once = spec.kind == nimbus::orch::SchedKind::Once;
@@ -454,7 +564,9 @@ class HostedLoops {
   nimbus::orch::LoopCaps caps_;
   std::function<uint32_t()> idSource_;
   HostedLoopHooks h_;
-  std::string path_, modePath_;
+  std::string path_, modePath_, sidecarPath_;
+  nimbus::orch::ToolRegistry* scheduleReg_ = nullptr;
+  nimbus::orch::tx::TxFiles* stateFiles_ = nullptr;
   bool askFirst_ = false;
   bool routineGrants_ = false;
   void persistMode() { fsutil::writeFileAtomic(modePath_, std::string(askFirst_ ? "1" : "0") + (routineGrants_ ? "1" : "0")); }

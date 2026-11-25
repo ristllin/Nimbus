@@ -190,7 +190,7 @@ static void test_no_override_is_direct() {
 }
 
 // ---- a router refusal on the device's cumulo head (CUM-539 parity, CUM-530) ----
-// The device cumulo head (src/agent/orchestrator.cpp cumuloAttempt/cumuloTurn)
+// The device cumulo head (src/agent/orchestrator_e1.cpp cumuloAttempt/cumuloTurn)
 // runs each attempt over the router with every request through the refusal tap,
 // and the turn through the shared ladder. This rig is that head on the fake.
 namespace rf = agent::router_refusal;

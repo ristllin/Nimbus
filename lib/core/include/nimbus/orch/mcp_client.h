@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+#include "nimbus/orch/tool_registry.h"   // registerServerTools
+
 // mcp_client - the PORTABLE half of the OUTBOUND MCP client (host-tested via
 // pio test -e native). The device is already an MCP SERVER (tool_registry's
 // handleRpc, reachable over the LAN); this is the missing CLIENT half: the
@@ -322,6 +324,23 @@ bool isNamespaced(const std::string& registryName);
 // The server slug embedded in a namespaced tool name (mcp.<slug>.<tool> ->
 // <slug>); "" if the name is not namespaced. Used by per-server approval.
 std::string serverOf(const std::string& registryName);
+
+// ---- registration (both engines, lane E2-P-CONN1) ----------------------------
+
+// Register one discovered server's tools on `reg` as mcp.<slug>.<tool>, each handler a call of
+// `call(slug, tool, args, who)` with the server's own tool name, described as `tools` says. No class
+// is declared: a remote tool reads as the connectors group, outside, effect (tool_groups.h). A
+// template, so each engine's handler calls its own function directly (the tg_poll stack gate
+// follows a direct call, not one through a second std::function).
+template <class Call>
+void registerServerTools(ToolRegistry& reg, const std::string& slug, const std::vector<ToolDef>& tools, Call call) {
+  for (const auto& t : tools) {
+    const std::string tn = t.name;
+    reg.add(namespacedTool(slug, t.name), t.description,
+            [slug, tn, call](ArduinoJson::JsonObjectConst a, const Principal& who) { return call(slug, tn, a, who); },
+            t.inputSchemaJson);
+  }
+}
 
 }  // namespace mcp
 }  // namespace orch

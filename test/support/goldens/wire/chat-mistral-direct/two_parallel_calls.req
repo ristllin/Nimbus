@@ -1,0 +1,8 @@
+# route golden request chat-mistral-direct/two_parallel_calls
+preflight dropped 0
+POST https://api.mistral.ai:443/v1/chat/completions
+header content-type: application/json
+header authorization: Bearer fixture-key-not-a-secret
+splices 0
+body 1335
+{"model":"mistral-large-4-0","max_tokens":4096,"reasoning_effort":"medium","prompt_cache_key":"nimbus-8fefae20ef9b4bcb","tools":[{"type":"function","function":{"name":"read_note","description":"Read one note by its path.","parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}},{"type":"function","function":{"name":"view","description":"Show an earlier result or photo again by its id.","parameters":{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}}}],"tool_choice":"auto","messages":[{"role":"system","content":"You are a test assistant for the route goldens. Answer briefly.\n\nA reply never starts with the time a message was sent.\n\nPinned: the test garden has three beds.\n\nMon 16 Nov: planned the spring beds."},{"role":"user","content":"[2026-11-17 Tue 13:02] Compare notes/beds.md with notes/seeds.md."},{"role":"assistant","content":"Reading both notes.","tool_calls":[{"id":"u0mejsb9v","type":"function","function":{"name":"read_note","arguments":"{\"path\":\"notes/beds.md\"}"}},{"id":"rlcfboi6w","type":"function","function":{"name":"read_note","arguments":"{\"path\":\"notes/seeds.md\"}"}}]},{"role":"tool","tool_call_id":"rlcfboi6w","content":"seeds: beans, leeks, chard"},{"role":"tool","tool_call_id":"u0mejsb9v","content":"bed 1: beans\nbed 2: leeks"}]}

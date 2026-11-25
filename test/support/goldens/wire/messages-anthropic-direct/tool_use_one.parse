@@ -1,0 +1,20 @@
+# route golden parse messages-anthropic-direct/tool_use_one.json served at HTTP 200
+parse ok
+parse stop tool
+parse text 0 B fnv64=14650fb0739d0383 head=""
+parse refusal ""
+parse calls 1
+parse   call 0 id="toolu_01Hd6WeNTkgkNyB8SKob3Rpx" name="calc" complete=1 args="{\"expression\":\"17 * 23\"}"
+parse meta 0
+parse usage prompt=4 completion=51 cacheRead=8226 cacheWrite=50 cacheWrite1h=0 responses=1 maxRequestIn=8280 served="claude-haiku-5-5"
+exchange err=ok http=200 requests=1 retries=0 climbs=0 cutRetried=0 failOver=0 parkHost=0 maxTokens=6664 requestBytes=917 ms=0 waitedMs=0 statusLine=0
+exchange line ""
+exchange line stored ""
+exchange request 0 917 B fnv64=0a672e6e0a2d09ce
+exchange step stop tool
+exchange step text 0 B fnv64=14650fb0739d0383 head=""
+exchange step refusal ""
+exchange step calls 1
+exchange step   call 0 id="toolu_01Hd6WeNTkgkNyB8SKob3Rpx" name="calc" complete=1 args="{\"expression\":\"17 * 23\"}"
+exchange step meta 0
+exchange step usage prompt=4 completion=51 cacheRead=8226 cacheWrite=50 cacheWrite1h=0 responses=1 maxRequestIn=8280 served="claude-haiku-5-5"

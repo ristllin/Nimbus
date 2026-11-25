@@ -1017,7 +1017,7 @@ static void test_device_wiring() {
   TEST_ASSERT_TRUE(contains(dev, "computeDegraded("));
   TEST_ASSERT_TRUE(contains(dev, "DegradedDebounce"));
   TEST_ASSERT_TRUE(contains(dev, "alogf(\"degraded: shown=%s gen=%u\""));   // every change leaves a durable line
-  const std::string orch = readFile("src/agent/orchestrator.cpp");
+  const std::string orch = readFile("src/agent/orchestrator_e1.cpp");
   TEST_ASSERT_EQUAL_size_t(1, count(orch, "degraded::noteTurn("));   // the turn-end hook feeds the tracker
   const std::string main = readFile("src/main.cpp");
   TEST_ASSERT_TRUE(contains(main, "agent::degraded::begin();"));    // setup allocates the state (the mutex is a FreeRTOS object)
@@ -1057,7 +1057,7 @@ static void test_device_wiring() {
 // std::mutex on ESP-IDF is a pthread mutex whose FreeRTOS semaphore is created at its FIRST
 // lock (pthread_mutex_init_if_static), from internal RAM, and a failed allocation there
 // aborts. Allocating the State object does not create it. The repo's pattern (main.cpp
-// g_webChatMx, orchestrator.cpp g_turnOwnerMx) is to lock and unlock once in setup(), while
+// g_webChatMx, orchestrator_e1.cpp g_turnOwnerMx) is to lock and unlock once in setup(), while
 // memory is plentiful. The first lock of these two would otherwise be the main-loop tick at
 // about 15 s uptime, or the turn task's noteTurn, or an /api/state on the AsyncTCP task.
 // The class: EVERY mutex the module owns is locked once in begin().

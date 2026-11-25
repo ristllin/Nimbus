@@ -1,0 +1,14 @@
+{
+  "about": "Lane E2-P-CONN1: engine 2 binds engine 1's remote tool servers (src/agent/tools_plain_connectors.cpp). Discovery (connectors::mcp::sync) runs on tg_poll before a person's turn, measured here. A call (connectors::mcp::callTool) runs on tg_poll inside the turn through more; the gate does not follow engine 2's tool dispatch (TurnRun::runCall to the registry is an unresolved indirect call, so no engine-2 tool handler is reached), so that path is estimated by hand in the lane's PR_BODY.md. Both open their TLS session under the one work slot (arbiter::WorkSlot), between the head's requests.",
+  "paths": [
+    {
+      "name": "engine 2: a tool server's discovery before a turn",
+      "engine": 2,
+      "through": [
+        "^agent::tools::connectorsdev::beforeTurn\\(",
+        "^agent::connectors::mcp::sync\\("
+      ],
+      "_why": "runOne -> connectorsdev::beforeTurn -> mcp::sync: initialize, initialized and tools/list of at most one approved server not yet discovered"
+    }
+  ]
+}

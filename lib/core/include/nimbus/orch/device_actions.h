@@ -178,5 +178,10 @@ ValidatedAction validateAction(ArduinoJson::JsonVariantConst el);
 // passed action in place and returns the same verdict as an ActionResult.
 ActionResult validateAction(ValidatedAction& a);
 
+// The keys of a config action (its typed element, or the keyed shape's "config" object)
+// that no knob reads, comma separated; "" when every key is one ("type" is the
+// discriminator). E2-BFIX4: engine 2's device_control names them instead of "no change".
+std::string unknownConfigKeys(ArduinoJson::JsonVariantConst action);
+
 }  // namespace orch
 }  // namespace nimbus

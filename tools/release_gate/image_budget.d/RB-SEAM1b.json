@@ -1,0 +1,11 @@
+{
+  "lane": "RB-SEAM1b",
+  "allowance_bytes": 3584,
+  "envs": {
+    "esp32s3": 3584,
+    "esp32s3-cyd": 3584,
+    "test": 3584,
+    "test-cyd": 3584
+  },
+  "why": "Ruling 101 item 2: RB-SEAM1b's allowance is 3,584 B on esp32s3-cyd, stated same-tree. Same-tree builds on rb-main 6f8322f22 (lanes/RB-SEAM1b/scratch/base) against the lane tip: esp32s3-cyd 6,335,264 -> 6,337,744 B (+2,480), esp32s3 +2,480, test +2,352, test-cyd +2,352 (lanes/RB-SEAM1b/evidence/image-delta.txt); docs pack unchanged. No behavior change: orchestrator.cpp renamed orchestrator_e1.cpp (+0), engine_api.h and the header split (+0), the tenant table to orchestrator_common.cpp (+800: per-file std::string helper clones, the TenantStore destructor, a static-init function), the session snapshot, staged terminates, journal, jobs summary, results ring and test reboot seam (+176), the reply sinks behind two seam calls (-64), sessionsJson (+1,584: the ArduinoJson serializer instantiations a second object file pays), unused includes dropped from orchestrator_e1.cpp (-16)."
+}

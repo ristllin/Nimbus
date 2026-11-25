@@ -1,0 +1,4 @@
+recorded: lane E2-R10 tools/harness-lab r10 (15-S7-wrong-key), read 2026-11-24
+status: 401
+expect: class=key_auth retry=no
+{"error":{"code":"401","message":"token expired or incorrect"}}

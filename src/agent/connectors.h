@@ -2,9 +2,12 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 
+#include <string>
+#include <vector>
+
 // Forward declaration so the outbound-MCP sync() can take the registry by
 // reference without this widely-included header pulling the whole registry TU.
-namespace nimbus { namespace orch { class ToolRegistry; struct ConnectorInfo; struct PdfRoute; } }
+namespace nimbus { namespace orch { class ToolRegistry; struct ConnectorInfo; struct PdfRoute; struct ToolResult; struct Principal; } }
 
 // connectors - per-provider external-tool wiring (Phase C). The OWNER configures
 // connectors once (web UI -> one NVS JSON blob, store::connectorsJson); the
@@ -154,6 +157,10 @@ const char* pdfRouteSlug();
 void attachOpenAI(JsonDocument& d);
 void attachMistral(JsonDocument& d);
 void attachAnthropic(JsonDocument& agentBody);
+// Lane E2-P-CONN2: what those three read, for engine 2's codecs (HeadEndpoint::connectors and
+// ::bearer): the parsed list with the Code sandbox switch applied, and each entry's bearer.
+std::vector<nimbus::orch::ConnectorInfo> attachList();
+std::string attachBearer(const nimbus::orch::ConnectorInfo& c);
 
 // "[PROVIDERS & CONNECTORS]" - the honest, provider-aware capability catalog for
 // the model's context: key present/verified, native tool surface, enabled
@@ -192,6 +199,19 @@ void sync(nimbus::orch::ToolRegistry& reg);
 // are ready (with a tool count), pending owner approval, or cooling down after
 // failures - appended to catalog() so the model plans around real state.
 std::string catalogSection();
+// The enabled, device-dialed servers the owner has not approved yet (engine 2 names them in his tools index).
+std::vector<std::string> pendingServers();
+
+// One call of a discovered tool on its server (registered as mcp.<slug>.<tool>): write access, an
+// enabled, device-dialed, approved server, the per-server breaker, then one tools/call exchange
+// under the work slot. The turn task only.
+nimbus::orch::ToolResult callTool(const std::string& slug, const std::string& toolName,
+                                  ArduinoJson::JsonObjectConst args, const nimbus::orch::Principal& who);
+
+// The owner's /mcp approve|deny <name> (CUM-33): flips the `appr` bit of the named mcp entry in
+// the connectors blob (the same NVS rail as the /api/connectors write) and answers the owner's
+// line, written only after the change landed. Enforcement is sync()'s. Both engines' /mcp.
+std::string approvalCommand(const std::string& args);
 
 // ---- OAuth 2.1 acquisition (CUM-256) -----------------------------------------
 // The FRONT half of OAuth: getting a refresh token for a hosted, OAuth-only MCP

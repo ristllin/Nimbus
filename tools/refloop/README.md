@@ -31,6 +31,7 @@ ends with a scan of the evidence for key material that must find nothing.
 | `--reps N` | repetitions of every scenario (default 3) |
 | `--only id,id` | only these scenario ids |
 | `--arms A,B` | one arm alone, for a rerun |
+| `--engine 2` | arm A's nimbusd runs the owner chat on engine 2 (`NIMBUSD_ENGINE=2`); default `1` |
 | `--parallel N` | runs at once, each on its own daemon and port (default 4) |
 | `--max-usd N` | the spend ceiling for the evidence dir's ledger |
 | `--no-judge` | deterministic checks only |
@@ -45,6 +46,9 @@ compare.py show   --run <dir>/<model>/<scenario>/rep1/A --turn 4 [--system] [--r
                                                          # what the model was shown on that turn
 mechanisms.py --evidence <dir>                           # count known harness behaviors in arm A's captures;
                                                          # writes MECHANISMS.md and LOSSES.md (one line per lost repetition)
+habits.py --evidence <dir> [--arm A]                     # per run: writes in turns that asked for nothing, calc on
+                                                         # one-step sums, a calc result restated as another figure,
+                                                         # and the failed checks (no model call)
 python3 tests/evals/refloop/test_refloop_offline.py      # the free self-test: no keys, no network
 refloop.py --mcp http://127.0.0.1:8787 --token <web token> --model claude-sonnet-5-5
                                                          # chat with the reference loop by hand
@@ -185,6 +189,12 @@ failed`. `meal-log-day` seeds one file so that defect is not what it measures.
   second time with X and Y swapped, and scored on the mean of the two passes. The judge sees
   owner messages, tool calls with results, replies, the daemon's own notices (labelled as the
   system's), and the memories the harness's automatic recall put in front of the model.
+- **Engine 2 on arm A** (`--engine 2`): its file tools count under the old engine's names in
+  `tool_called` checks (`read_file` as `files_read`, `grade.ENGINE2_NAMES`), and its notes
+  (`<data>/mem/notes/*.md`, the state's `notes`) are read as memory by `memory_regex`, and its pinned
+  notes block is shown to the judge as recalled memory. At a `new_conversation` step the rig sends
+  engine 2's own `/clear yes` on the web chat and requires its done line: engine 2 starts the new
+  conversation empty, with notes and files kept, as engine 1 and the loop do (lanes E2-H2H, E2-H2H2).
 - **composite** = half the share of checks passed + half the judge mean scaled to 0..1.
   The harness wins a repetition when its composite is more than 0.05 above the loop's,
   loses when more than 0.05 below, ties otherwise.

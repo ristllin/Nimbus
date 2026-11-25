@@ -119,6 +119,14 @@ ToolClass callClass(const ToolRegistry& reg, const std::string& name, ArduinoJso
 // line. Empty when nothing is behind more for this caller.
 std::string toolsIndex(const ToolRegistry& reg, const Principal& who);
 
+// The groups index (E2-BFIX4): one line per group with a tool this caller may call, "<group>:
+// <words>", where words(group) gives the group's few words (null or "": the table's own), at most
+// kToolsIndexMax bytes. It names what a group holds without listing each tool, so a model that
+// needs a tool not in its array knows which group to list (engine 2's system text; more with no
+// arguments still answers toolsIndex). The connectors group, the owner's own servers, lists its
+// tools as toolsIndex does.
+std::string groupsIndex(const ToolRegistry& reg, const Principal& who, const char* (*words)(const char* group));
+
 // One group's listing (at most kMoreListMax bytes): "name(req, opt?): description" per
 // tool this caller may call; "" when the group has none for this caller.
 std::string groupListing(const ToolRegistry& reg, const std::string& group, const Principal& who);

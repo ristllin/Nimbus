@@ -1,11 +1,16 @@
 #include <unity.h>
 
+#include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <vector>
 
+#include "../test_tx_budget/budget_table.h"   // RB-T4's head classes at full, their rates and cost a turn
 #include "nimbus/harness/fabric.h"   // kDeviceBackends - every provider a helper can bill
+#include "nimbus/harness/plain/guards.h"   // guardCostFor: a head's warm and cold request at full
 #include "nimbus/orch/model_price_defaults.h"
 #include "nimbus/orch/provider_slots.h"
 #include "nimbus/orch/spend_ceiling.h"
@@ -544,6 +549,187 @@ static void test_verify_probe_policy_and_its_metering() {
   TEST_ASSERT_TRUE(has(run, "verifyProbeAllowed(g_ownerAsked"));
 }
 
+// ---- breakers (lane RB-X3; PRD section 7, ruling 84 item 10) ------------------------------------
+// Every head class of RB-T4's table at full: its blended cost per turn and the spend-rate cap.
+struct BreakerHead {
+  const char* name;
+  uint64_t blended;   // micro-USD a turn at full (RB-T4's derived row; Sonnet's is measured)
+  uint64_t cap;
+};
+static std::vector<BreakerHead> breakerHeads() {
+  std::vector<BreakerHead> out;
+  for (const budgettable::Head& h : budgettable::heads()) {
+    const uint64_t blended = (uint64_t)(budgettable::costOf(h).turnUsd() * 1e6);
+    out.push_back(BreakerHead{h.name, blended, spendRateCapMicro(20000000, blended)});
+  }
+  return out;
+}
+
+static void test_the_spend_rate_cap_scales_with_the_head_at_full() {
+  for (const BreakerHead& h : breakerHeads()) {
+    const uint64_t want = std::max<uint64_t>({kSpendRateFloorMicro, 2000000, 15 * h.blended});
+    TEST_ASSERT_EQUAL_UINT64_MESSAGE(want, h.cap, h.name);
+    TEST_ASSERT_TRUE_MESSAGE(h.blended > 0, h.name);
+    char row[200];
+    std::snprintf(row, sizeof row, "| %s | %.4f | %.2f |", h.name, h.blended / 1e6, h.cap / 1e6);
+    TEST_MESSAGE(row);
+  }
+  // The floor and the ceiling term on their own.
+  TEST_ASSERT_EQUAL_UINT64(kSpendRateFloorMicro, spendRateCapMicro(0, 0));
+  TEST_ASSERT_EQUAL_UINT64(5000000, spendRateCapMicro(50000000, 1000));   // 10% of 50 USD
+  // The blended formula from one warm and one cold request at the due mark, against the measured
+  // Sonnet row: never under 90% of it, never more than 25% over it.
+  const budgettable::Head& sonnet = budgettable::heads()[0];
+  const budgettable::Rates r = budgettable::ratesOf(sonnet);
+  const agent::plain::HeadCost c = agent::plain::guardCostFor(
+      budgettable::budgetOf(sonnet), agent::plain::HeadRates{(uint64_t)r.in, (uint64_t)r.out, (uint64_t)r.read, (uint64_t)r.write});
+  const uint64_t blended = blendedTurnMicro(c.warmRequestMicroUsd, c.coldRequestMicroUsd);
+  const uint64_t measured = breakerHeads()[0].blended;
+  char msg[120];
+  std::snprintf(msg, sizeof msg, "blended %llu micro-USD against the measured %llu", (unsigned long long)blended,
+                (unsigned long long)measured);
+  TEST_MESSAGE(msg);
+  TEST_ASSERT_TRUE_MESSAGE(blended >= measured * 9 / 10, msg);
+  TEST_ASSERT_TRUE_MESSAGE(blended <= measured * 5 / 4, msg);
+}
+
+// Ruling 84 item 10: an owner's own messages never pause his chat. 200 messages in ten minutes,
+// each spending 1 USD: every one runs, nothing is counted, and a routine after them still runs.
+static void test_an_owners_own_messages_never_trip_a_breaker() {
+  for (const BreakerHead& h : breakerHeads()) {
+    ChatBreaker b;
+    b.setSpendCap(h.cap);
+    uint32_t now = 1000;
+    for (int i = 0; i < 200; ++i, now += 3000) {
+      const BreakerVerdict v = b.admit(true, now);
+      TEST_ASSERT_TRUE_MESSAGE(v.run && !v.lineDue, h.name);
+      b.spent(true, 1000000, now);
+    }
+    TEST_ASSERT_FALSE_MESSAGE(b.paused(), h.name);
+    TEST_ASSERT_EQUAL_MESSAGE(0, b.windowTurns(now), h.name);
+    TEST_ASSERT_EQUAL_UINT64_MESSAGE(0, b.windowSpendMicro(now), h.name);
+    TEST_ASSERT_TRUE_MESSAGE(b.admit(false, now).run, h.name);
+  }
+}
+
+// 15 ordinary unattended turns in an hour at the head's blended cost do not pause; 20 in ten
+// minutes do not either; the 21st pauses with one line, later ones are refused silently, the owner
+// is still admitted, and /resume lifts it.
+static void test_15_ordinary_turns_in_an_hour_do_not_pause_and_more_than_20_in_10_minutes_do() {
+  for (const BreakerHead& h : breakerHeads()) {
+    ChatBreaker b;
+    b.setSpendCap(h.cap);
+    uint32_t now = 5000;
+    for (int i = 0; i < 15; ++i, now += 4 * 60 * 1000) {
+      TEST_ASSERT_TRUE_MESSAGE(b.admit(false, now).run, h.name);
+      b.spent(false, h.blended, now);
+    }
+    TEST_ASSERT_FALSE_MESSAGE(b.paused(), h.name);
+    // Person messages in between are never counted: 20 unattended turns and 10 owner messages in ten
+    // minutes, and the 21st unattended turn pauses (the 20 alone count).
+    ChatBreaker mix;
+    uint32_t t = 7000;
+    for (int i = 0; i < kTurnRateMaxTurns; ++i, t += 10000) {
+      TEST_ASSERT_TRUE(mix.admit(false, t).run);
+      if (i % 2) TEST_ASSERT_TRUE(mix.admit(true, t + 5000).run);
+    }
+    TEST_ASSERT_EQUAL(kTurnRateMaxTurns, mix.windowTurns(t));
+    TEST_ASSERT_FALSE(mix.admit(false, t).run);
+    ChatBreaker r;
+    r.setSpendCap(h.cap);
+    now = 5000;
+    for (int i = 0; i < kTurnRateMaxTurns; ++i, now += 20000) TEST_ASSERT_TRUE_MESSAGE(r.admit(false, now).run, h.name);
+    const BreakerVerdict v = r.admit(false, now);
+    TEST_ASSERT_FALSE_MESSAGE(v.run, h.name);
+    TEST_ASSERT_TRUE_MESSAGE(v.lineDue, h.name);
+    TEST_ASSERT_TRUE_MESSAGE(v.why == BreakerTrip::TurnRate, h.name);
+    const BreakerVerdict again = r.admit(false, now + 1000);
+    TEST_ASSERT_TRUE_MESSAGE(!again.run && !again.lineDue, "one line a pause");
+    TEST_ASSERT_TRUE_MESSAGE(r.admit(true, now + 2000).run, "the owner is admitted while paused");
+    TEST_ASSERT_TRUE_MESSAGE(!r.admit(false, now + 20 * 60 * 1000).run, "a pause stays until /resume");
+    TEST_ASSERT_TRUE(r.resume());
+    TEST_ASSERT_FALSE(r.paused());
+    TEST_ASSERT_FALSE(r.resume());
+    for (int i = 0; i < kTurnRateMaxTurns; ++i)   // /resume clears the window: 20 more at once run
+      TEST_ASSERT_TRUE_MESSAGE(r.admit(false, now + 20 * 60 * 1000 + 1 + i).run, "after /resume the turns run");
+    TEST_ASSERT_FALSE(r.admit(false, now + 20 * 60 * 1000 + 100).run);
+    // /resume right after a pause clears the window at once: 20 more inside the same ten minutes run.
+    ChatBreaker q;
+    uint32_t t2 = 9000;
+    for (int i = 0; i < kTurnRateMaxTurns; ++i, t2 += 1000) TEST_ASSERT_TRUE(q.admit(false, t2).run);
+    TEST_ASSERT_FALSE(q.admit(false, t2).run);
+    TEST_ASSERT_TRUE(q.resume());
+    for (int i = 0; i < kTurnRateMaxTurns; ++i) TEST_ASSERT_TRUE_MESSAGE(q.admit(false, t2 + 1 + i).run, "/resume left the window full");
+  }
+  // Counter: turns spread so that no ten minutes hold more than 20 never pause (the window rolls).
+  ChatBreaker s;
+  uint32_t now = 0;
+  for (int i = 0; i < 100; ++i, now += 31000) TEST_ASSERT_TRUE(s.admit(false, now).run);
+  // The uptime clock wraps: the window is measured by differences.
+  ChatBreaker w;
+  now = UINT32_MAX - 5 * 60 * 1000;
+  for (int i = 0; i < kTurnRateMaxTurns; ++i, now += 20000) TEST_ASSERT_TRUE(w.admit(false, now).run);
+  TEST_ASSERT_FALSE(w.admit(false, now).run);
+}
+
+// Unattended spend above the cap in the rolling hour pauses with one line; spend at the cap does
+// not; an hour later the window is empty but the pause holds until /resume.
+static void test_unattended_spend_above_the_cap_pauses_with_one_line() {
+  for (const BreakerHead& h : breakerHeads()) {
+    ChatBreaker b;
+    b.setSpendCap(h.cap);
+    const uint32_t now = 1000;
+    TEST_ASSERT_TRUE(b.admit(false, now).run);
+    b.spent(false, h.cap, now);
+    TEST_ASSERT_TRUE_MESSAGE(b.admit(false, now + 1000).run, "spend at the cap is not above it");
+    b.spent(false, 1, now + 1000);
+    const BreakerVerdict v = b.admit(false, now + 2000);
+    TEST_ASSERT_FALSE_MESSAGE(v.run, h.name);
+    TEST_ASSERT_TRUE_MESSAGE(v.lineDue && v.why == BreakerTrip::SpendRate, h.name);
+    TEST_ASSERT_EQUAL_UINT64(0, b.windowSpendMicro(now + kSpendRateWindowMs + 61000));
+    TEST_ASSERT_FALSE(b.admit(false, now + kSpendRateWindowMs + 61000).run);
+    TEST_ASSERT_TRUE(b.resume());
+    TEST_ASSERT_TRUE(b.admit(false, now + kSpendRateWindowMs + 62000).run);
+  }
+  // The rolling hour: spend older than an hour leaves it.
+  ChatBreaker r;
+  r.setSpendCap(2000000);
+  r.spent(false, 1500000, 0);
+  r.spent(false, 400000, 30 * 60 * 1000);
+  TEST_ASSERT_EQUAL_UINT64(1900000, r.windowSpendMicro(59 * 60 * 1000));
+  TEST_ASSERT_EQUAL_UINT64(400000, r.windowSpendMicro(61 * 60 * 1000 + 59000));
+  r.spent(false, 1500000, 62 * 60 * 1000);
+  TEST_ASSERT_TRUE(r.admit(false, 62 * 60 * 1000 + 1).run);   // 1.90 USD, under 2.00
+}
+
+// The pause's line and the /resume answer: plain ASCII, the next step named, no first person.
+static void test_the_pause_line_names_what_happened_and_the_way_out() {
+  for (BreakerTrip t : {BreakerTrip::TurnRate, BreakerTrip::SpendRate}) {
+    const std::string l = breakerPausedText(t, 2500000);
+    TEST_ASSERT_TRUE_MESSAGE(has(l, "/resume"), l.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(l.size() < 240, l.c_str());
+    for (unsigned char ch : l) TEST_ASSERT_TRUE_MESSAGE(ch >= 0x20 && ch < 0x7f, l.c_str());
+    TEST_ASSERT_FALSE(has(l, "I ") || has(l, " my "));
+  }
+  TEST_ASSERT_TRUE(has(breakerPausedText(BreakerTrip::SpendRate, 2500000), formatUsd(2500000)));
+  TEST_ASSERT_TRUE(has(breakerPausedText(BreakerTrip::TurnRate, 0), "20"));
+  TEST_ASSERT_FALSE(breakerResumedText(true).empty());
+  TEST_ASSERT_FALSE(breakerResumedText(false).empty());
+  TEST_ASSERT_TRUE(breakerResumedText(true) != breakerResumedText(false));
+  TEST_ASSERT_EQUAL_STRING("turn-rate", breakerTripSlug(BreakerTrip::TurnRate));
+  TEST_ASSERT_EQUAL_STRING("spend-rate", breakerTripSlug(BreakerTrip::SpendRate));
+  TEST_ASSERT_EQUAL_STRING("none", breakerTripSlug(BreakerTrip::None));
+}
+
+// No breaker changes a profile or the window: the breaker code names neither.
+static void test_no_breaker_changes_a_profile_or_the_window() {
+  const std::string src = slurp("lib/core/src/orch_spend_guard.cpp");
+  const size_t at = src.find("// ---- breakers");
+  TEST_ASSERT_TRUE(at != std::string::npos);
+  const std::string code = src.substr(at);
+  for (const char* w : {"rofile", "budgetFor", "chooseProfile", "marks", "HeadBudget"}) TEST_ASSERT_FALSE_MESSAGE(has(code, w), w);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_custom_endpoint_local_is_only_the_devices_own_network);
@@ -568,5 +754,11 @@ int main(int, char**) {
   RUN_TEST(test_a_count_read_back_is_floored_at_the_ledger);
   RUN_TEST(test_reports_land_in_state_order_and_park_checks_ask_the_ceiling_first);
   RUN_TEST(test_verify_probe_policy_and_its_metering);
+  RUN_TEST(test_the_spend_rate_cap_scales_with_the_head_at_full);
+  RUN_TEST(test_an_owners_own_messages_never_trip_a_breaker);
+  RUN_TEST(test_15_ordinary_turns_in_an_hour_do_not_pause_and_more_than_20_in_10_minutes_do);
+  RUN_TEST(test_unattended_spend_above_the_cap_pauses_with_one_line);
+  RUN_TEST(test_the_pause_line_names_what_happened_and_the_way_out);
+  RUN_TEST(test_no_breaker_changes_a_profile_or_the_window);
   return UNITY_END();
 }

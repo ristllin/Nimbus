@@ -934,7 +934,7 @@ static void test_the_device_notice_path_calls_no_model() {
   for (const char* banned : {"injectScheduledTurn", "injectBoundedTurn", "stageSystemTurn", "handleMessage",
                              "injectMessage", "ownerChat()", "telegram::send("})
     TEST_ASSERT_TRUE_MESSAGE(onValidated.find(banned) == std::string::npos, banned);
-  const std::string orch = readSource("src/agent/orchestrator.cpp");
+  const std::string orch = readSource("src/agent/orchestrator_e1.cpp");
   const std::string drain = between(orch, "static void drainUpdateNotice()", "\n}\n");
   for (const char* needed : {"agent::telegram::ownerChat()", "telegram::send(chat, text", "g_engine->recordNotice(",
                              "loops::hasRoutines()", "/loop grants on"})
@@ -942,6 +942,7 @@ static void test_the_device_notice_path_calls_no_model() {
   for (const char* banned : {"injectScheduledTurn", "injectBoundedTurn", "handleMessage", "runTurn", "systemTurnMayStart"})
     TEST_ASSERT_TRUE_MESSAGE(drain.find(banned) == std::string::npos, banned);
   TEST_ASSERT_TRUE(orch.find("stageSystemTurn") == std::string::npos);
+  TEST_ASSERT_TRUE(readSource("src/agent/orchestrator_common.cpp").find("stageSystemTurn") == std::string::npos);
   // Both registries consult the policy at the access seam, the LAN endpoint excepted.
   const std::string mem = readSource("src/agent/memory_subsystem.cpp");
   TEST_ASSERT_TRUE(mem.find("unattendedRefusal(orchestrator::unattendedFacts(), name, args)") != std::string::npos);

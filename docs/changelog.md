@@ -6,6 +6,10 @@ ships as a signed image on the public
 repository; a device in Orchestrator mode sees it on its daily check and
 installs it when you approve ([how updates work](ota.md)).
 
+## Unreleased (draft)
+
+A draft of the notes for the release after v5.2.0; the release lane completes it.
+
 ## v5.2.0 (release candidate, not released) - Every log is a plain file, and unattended turns stay in their lane
 
 The release candidate (rb-main 5639d4dc9 and the version commit) with the Mistral wire fix (lane RB-Q4b) and the Large 4 default. Figures are in tokens as the provider counts them,

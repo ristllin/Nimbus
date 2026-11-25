@@ -20,12 +20,16 @@ BIN       := $(BUILD)/nimbus-lab
 AJ_SRC    := $(firstword $(wildcard $(REPO)/.pio/libdeps/native/ArduinoJson/src) \
                          $(wildcard $(REPO)/.pio/libdeps/esp32s3/ArduinoJson/src))
 
+# Unity's header only (lab_plain reads test/support/tx_battery/stub_wire.h, which includes pending.h).
+UNITY_SRC := $(firstword $(wildcard $(REPO)/.pio/libdeps/native/Unity/src))
+
 INCLUDES  := -I$(CURDIR)/src \
              -I$(REPO)/lib/harness/include \
              -I$(REPO)/lib/core/include \
              -I$(REPO)/include \
              -I$(REPO)/../solide-drivers/include \
-             -I$(AJ_SRC)
+             -I$(AJ_SRC) \
+             $(if $(UNITY_SRC),-I$(UNITY_SRC))
 
 # -MMD -MP is load-bearing, not hygiene: LabRig is header-only, so without header
 # dependency tracking an edit to lab_rig.h rebuilds only the .cpp files that
@@ -56,6 +60,7 @@ SRCS      := $(wildcard $(CURDIR)/src/*.cpp) \
              $(REPO)/lib/core/src/fallback_rules.cpp \
              $(REPO)/lib/core/src/model_catalog.cpp \
              $(REPO)/lib/core/src/tg_html.cpp \
+             $(REPO)/lib/core/src/tg_inbox.cpp \
              $(wildcard $(REPO)/../solide-drivers/src/portable/ring.cpp)
 
 OBJS      := $(patsubst %,$(BUILD)/%.o,$(notdir $(basename $(SRCS))))

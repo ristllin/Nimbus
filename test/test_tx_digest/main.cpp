@@ -1008,7 +1008,542 @@ void test_a_refused_allocation_is_a_status_and_loses_nothing() {
       });
 }
 
+
+// ---- the cumulative summary (owner rulings 105 and 106; lane RB-C3) ------------------------
+
+tx::Summary sampleSummary() {
+  tx::Summary s;
+  s.lines = {{tx::SummarySection::Facts, 1, "The person sails a boat named Tern."},
+             {tx::SummarySection::Facts, 2, "Prefers short replies."},
+             {tx::SummarySection::Decisions, 3, "Chose blue paint for the hull."},
+             {tx::SummarySection::Quantities, 4, "Paint: 3 liters bought on Tue 17 Nov 2026."},
+             {tx::SummarySection::Open, 5, "Call the marina about the berth by Fri 27 Nov 2026."},
+             {tx::SummarySection::Files, 6, "notes/boat.md (Tue 17 Nov 2026 13:02)"}};
+  return s;
+}
+
+// Is the line with this id present, and with exactly this text?
+const tx::SummaryLine* lineOf(const tx::Summary& s, uint32_t id) {
+  for (const tx::SummaryLine& l : s.lines)
+    if (l.id == id) return &l;
+  return nullptr;
+}
+
+void test_summary_round_trips_and_is_told_from_a_day_digest() {
+  tx::Summary s = sampleSummary();
+  s.archived = true;
+  std::string text;
+  TXB_OK(tx::encodeSummary(s, text));
+  TEST_ASSERT_TRUE(tx::isSummaryText(text));
+  TEST_ASSERT_EQUAL('\n', text.back());
+  TEST_ASSERT_TRUE(text.find(std::string(tx::digest_text::kFacts) + "\nF1 The person sails") == 0);
+  TEST_ASSERT_TRUE(text.find("\nP6 notes/boat.md") != std::string::npos);
+  tx::Summary back;
+  TXB_OK(tx::parseSummary(text, back));
+  TEST_ASSERT_TRUE(back.archived);
+  TEST_ASSERT_EQUAL(s.lines.size(), back.lines.size());
+  for (size_t i = 0; i < s.lines.size(); ++i) {
+    TEST_ASSERT_EQUAL(s.lines[i].id, back.lines[i].id);
+    TEST_ASSERT_EQUAL((int)s.lines[i].section, (int)back.lines[i].section);
+    TEST_ASSERT_TRUE(s.lines[i].text == back.lines[i].text);
+  }
+  TEST_ASSERT_EQUAL(7u, back.nextId());
+  // An empty summary still has a line; a day digest is never a summary.
+  std::string empty;
+  TXB_OK(tx::encodeSummary(tx::Summary{}, empty));
+  TEST_ASSERT_TRUE(tx::isSummaryText(empty));
+  TXB_OK(tx::parseSummary(empty, back));
+  TEST_ASSERT_TRUE(back.lines.empty());
+  const tx::DigestEntry day = makeDigest(1, 300, 9, 8);
+  TEST_ASSERT_FALSE(tx::isSummaryText(day.text));
+  TEST_ASSERT_TRUE(tx::parseSummary(day.text, back).err == tx::Err::InvalidArgument);
+  // Counter-tests: a line out of its section, an id used twice, a broken line.
+  tx::Summary bad = sampleSummary();
+  bad.lines[1].id = 1;
+  TEST_ASSERT_TRUE(tx::encodeSummary(bad, text).err == tx::Err::InvalidArgument);
+  bad = sampleSummary();
+  std::swap(bad.lines[0], bad.lines[2]);
+  TEST_ASSERT_TRUE(tx::encodeSummary(bad, text).err == tx::Err::InvalidArgument);
+  bad = sampleSummary();
+  bad.lines[0].text = "two\nlines";
+  TEST_ASSERT_TRUE(tx::encodeSummary(bad, text).err == tx::Err::InvalidArgument);
+  TEST_ASSERT_TRUE(tx::parseSummary(std::string(tx::digest_text::kFacts) + "\nQ1 wrong letter\n", back).err ==
+                   tx::Err::InvalidArgument);
+}
+
+void test_summary_edits_are_applied_by_code_and_an_untouched_line_stays_byte_for_byte() {
+  tx::Summary s = sampleSummary();
+  const tx::SummaryEdits e = tx::parseSummaryEdits(
+      "+F Has a dog named Pip.\n"
+      "  * =Q4 Paint: 4 liters, one more bought on Wed 18 Nov 2026.\n"
+      "-o5\n"
+      "Here is the updated summary:\n"
+      "-P6\n"
+      "+P notes/other.md\n"
+      "+d Will repaint in spring.\n");
+  TEST_ASSERT_EQUAL(5u, e.edits.size());   // the Files edits parse; apply refuses them
+  TEST_ASSERT_EQUAL(2u, e.unread);         // the prose line and "+P"
+  TEST_ASSERT_FALSE(e.none);
+  std::vector<tx::SummaryLine> left;
+  size_t unread = 0;
+  TXB_OK(tx::applySummaryEdits(s, e.edits, nullptr, left, unread));
+  TEST_ASSERT_EQUAL(1u, unread);           // -P6: the device's own line
+  TEST_ASSERT_TRUE(lineOf(s, 1)->text == "The person sails a boat named Tern.");
+  TEST_ASSERT_TRUE(lineOf(s, 2)->text == "Prefers short replies.");
+  TEST_ASSERT_TRUE(lineOf(s, 4)->text == "Paint: 4 liters, one more bought on Wed 18 Nov 2026.");
+  TEST_ASSERT_NULL(lineOf(s, 5));
+  TEST_ASSERT_NOT_NULL(lineOf(s, 6));
+  TEST_ASSERT_EQUAL(2u, left.size());      // the old Q4 and the dropped O5, to the archive
+  TEST_ASSERT_TRUE(left[0].text == "Paint: 3 liters bought on Tue 17 Nov 2026.");
+  TEST_ASSERT_EQUAL(5u, left[1].id);
+  std::string text;
+  TXB_OK(tx::encodeSummary(s, text));
+  TEST_ASSERT_TRUE(text.find("F7 Has a dog named Pip.") != std::string::npos);
+  TEST_ASSERT_TRUE(text.find("D8 Will repaint in spring.") != std::string::npos);
+  // "=" is an answer that changes nothing; a whole rewritten summary is no change at all.
+  TEST_ASSERT_TRUE(tx::parseSummaryEdits(" =\n").none);
+  const tx::SummaryEdits rewrite = tx::parseSummaryEdits(text);
+  TEST_ASSERT_TRUE(rewrite.edits.empty());
+  TEST_ASSERT_FALSE(rewrite.none);
+  TEST_ASSERT_TRUE(rewrite.unread > 0);
+  // An add already in its section is not added twice; an unknown id is unread.
+  left.clear();
+  TXB_OK(tx::applySummaryEdits(s, tx::parseSummaryEdits("+F Prefers short replies.\n=F99 nope\n").edits, nullptr, left,
+                               unread));
+  TEST_ASSERT_EQUAL(1u, unread);
+  std::string again;
+  TXB_OK(tx::encodeSummary(s, again));
+  TEST_ASSERT_TRUE(again == text);
+}
+
+std::string framed(const std::string& clean) { return "<data>" + clean + "</data>"; }
+
+void test_lines_from_a_slice_that_read_outside_content_are_framed() {
+  tx::Summary s;
+  std::vector<tx::SummaryLine> left;
+  size_t unread = 0;
+  TXB_OK(tx::applySummaryEdits(s, tx::parseSummaryEdits("+F The article said the tide is at 6.\n").edits, framed,
+                               left, unread));
+  TEST_ASSERT_TRUE(s.lines[0].text == "<data>The article said the tide is at 6.</data>");
+  TEST_ASSERT_TRUE(s.lines[0].text.size() <= tx::kSummaryLineMaxBytes);
+}
+
+// The class rule (ruling 106 item 2): over any set of changes that does not name a line, the
+// line stays byte for byte, through any number of updates.
+void test_a_line_no_change_names_survives_every_update() {
+  std::mt19937 rng(106);
+  tx::Summary s = sampleSummary();
+  const std::string keep = lineOf(s, 1)->text;
+  const char letters[] = "FDQO";
+  for (int round = 0; round < 300; ++round) {
+    std::string answer;
+    for (int k = 0; k < 6; ++k) {
+      const int kind = (int)(rng() % 3);
+      uint32_t id = 2 + (uint32_t)(rng() % (s.nextId() + 3));   // never 1
+      if (kind == 0) answer += std::string("+") + letters[rng() % 4] + " fact " + std::to_string(rng() % 1000) + "\n";
+      if (kind == 1) answer += std::string("=") + letters[rng() % 4] + std::to_string(id) + " changed " + std::to_string(round) + "\n";
+      if (kind == 2) answer += std::string("-") + letters[rng() % 4] + std::to_string(id) + "\n";
+    }
+    std::vector<tx::SummaryLine> left;
+    size_t unread = 0;
+    TXB_OK(tx::applySummaryEdits(s, tx::parseSummaryEdits(answer).edits, nullptr, left, unread));
+    TXB_OK(tx::fitSummary(s, tx::kSummaryMaxBytes, left));
+    std::string text;
+    TXB_OK(tx::encodeSummary(s, text));
+    tx::Summary back;
+    TXB_OK(tx::parseSummary(text, back));
+    s = back;
+    TEST_ASSERT_NOT_NULL_MESSAGE(lineOf(s, 1), std::to_string(round).c_str());
+    TEST_ASSERT_TRUE(lineOf(s, 1)->text == keep);
+  }
+}
+
+size_t encodedSize(const tx::Summary& s) {
+  std::string t;
+  TXB_OK(tx::encodeSummary(s, t));
+  return t.size();
+}
+
+void test_over_its_budget_the_section_furthest_over_its_share_loses_its_oldest_line() {
+  tx::Summary s;
+  uint32_t id = 1;
+  for (int i = 0; i < 40; ++i)   // decisions far over their 20% share
+    s.lines.push_back({tx::SummarySection::Decisions, id++, "Decision number " + std::to_string(i) + " was made."});
+  for (int i = 0; i < 3; ++i) s.lines.push_back({tx::SummarySection::Open, id++, "Open item " + std::to_string(i) + "."});
+  const size_t cap = encodedSize(s) / 2;
+  std::vector<tx::SummaryLine> left;
+  TXB_OK(tx::fitSummary(s, cap, left));
+  TEST_ASSERT_TRUE(encodedSize(s) <= cap);
+  TEST_ASSERT_TRUE(s.archived);
+  TEST_ASSERT_FALSE(left.empty());
+  for (size_t i = 0; i < left.size(); ++i) {   // the oldest decisions, in order; no open item
+    TEST_ASSERT_EQUAL((int)tx::SummarySection::Decisions, (int)left[i].section);
+    TEST_ASSERT_EQUAL(i + 1, left[i].id);
+  }
+  // Counter-test: under its budget nothing leaves and nothing is marked.
+  tx::Summary small = sampleSummary();
+  left.clear();
+  TXB_OK(tx::fitSummary(small, tx::kSummaryMaxBytes, left));
+  TEST_ASSERT_TRUE(left.empty());
+  TEST_ASSERT_FALSE(small.archived);
+}
+
+void test_the_device_writes_the_files_lines() {
+  tx::Summary s = sampleSummary();
+  std::vector<tx::SummaryLine> left;
+  tx::noteSummaryFile(s, "notes/boat.md", "Wed 18 Nov 2026 09:00", false, left);
+  TEST_ASSERT_EQUAL(1u, left.size());
+  TEST_ASSERT_TRUE(s.lines.back().text == "notes/boat.md (Wed 18 Nov 2026 09:00)");
+  TEST_ASSERT_EQUAL(6u, s.lines.back().id);
+  tx::noteSummaryFile(s, "logs/fuel.csv", "", false, left);
+  TEST_ASSERT_TRUE(s.lines.back().text == "logs/fuel.csv");
+  tx::noteSummaryFile(s, "notes/boat.md", "", true, left);
+  TEST_ASSERT_EQUAL(2u, left.size());
+  for (const tx::SummaryLine& l : s.lines) TEST_ASSERT_TRUE(l.text.find("boat.md") == std::string::npos);
+  tx::noteSummaryFile(s, "bad\npath", "", false, left);
+  TEST_ASSERT_EQUAL(2u, left.size());
+  TEST_ASSERT_TRUE(s.lines.back().text == "logs/fuel.csv");
+}
+
+void test_lines_that_leave_are_archived_with_their_day() {
+  Chat c;
+  std::vector<tx::SummaryLine> left = {{tx::SummarySection::Quantities, 4, "Paint: 3 liters."},
+                                       {tx::SummarySection::Open, 5, "Call the marina."}};
+  TXB_OK(tx::archiveSummaryLines(c.files, kChat, "2026-11-18", left));
+  TXB_OK(tx::archiveSummaryLines(c.files, kChat, "2026-11-18", left));   // once
+  const std::vector<std::string> arch = archivedLines(c.files);
+  TEST_ASSERT_EQUAL(2u, arch.size());
+  TEST_ASSERT_TRUE(arch[0] == "Wed 18 Nov 2026: Q4 Paint: 3 liters.");
+  TEST_ASSERT_TRUE(arch[1] == "Wed 18 Nov 2026: O5 Call the marina.");
+  c.files.refuseAll = true;
+  TEST_ASSERT_TRUE(tx::archiveSummaryLines(c.files, kChat, "2026-12-01", left).err == tx::Err::Io);
+}
+
+tx::DigestEntry summaryEntry(const tx::Summary& s, int dayN, uint64_t q, uint64_t thru) {
+  tx::DigestEntry d;
+  d.day = dayAt(dayN);
+  TXB_OK(tx::encodeSummary(s, d.text));
+  d.q = q;
+  d.thru = thru;
+  return d;
+}
+
+void test_the_block_is_the_newest_summary_and_settle_archives_the_day_digests_before_it() {
+  Chat c;
+  std::vector<tx::DigestEntry> live = digestRun(4, 300);
+  tx::Summary s1 = sampleSummary(), s2 = sampleSummary();
+  s2.lines.insert(s2.lines.end() - 1, {tx::SummarySection::Open, 9, "Book the haul-out."});   // before Files
+  live.push_back(summaryEntry(s1, 10, live.back().q + 2, live.back().q + 1));
+  live.push_back(summaryEntry(s2, 11, live.back().q + 2, live.back().q + 1));
+  std::string block;
+  std::vector<tx::DigestEntry> archive;
+  TXB_OK(tx::digestBlock(live, tx::Profile::Full, block, archive));
+  TEST_ASSERT_TRUE(block + "\n" == live.back().text);   // the newest summary alone, no line end
+  TEST_ASSERT_EQUAL(4u, archive.size());               // the day digests; the older summary is superseded
+  // A tight profile never cuts the summary: its budget is its own.
+  TXB_OK(tx::digestBlock(live, tx::Profile::Tight, block, archive));
+  TEST_ASSERT_TRUE(block + "\n" == live.back().text);
+  // A refused archive keeps the day digests live (they move later); never lost.
+  tx::SettleReport rep;
+  c.files.refuseAll = true;
+  std::vector<tx::DigestEntry> kept = live;
+  TXB_OK(tx::settleDigests(c.files, kChat, tx::Profile::Full, kept, block, rep));
+  TEST_ASSERT_EQUAL(4u, rep.pending);
+  c.files.refuseAll = false;
+  TXB_OK(tx::settleDigests(c.files, kChat, tx::Profile::Full, live, block, rep));
+  TEST_ASSERT_EQUAL(0u, rep.pending);
+  TEST_ASSERT_EQUAL(1u, live.size());
+  TEST_ASSERT_TRUE(live[0].text == summaryEntry(s2, 11, 0, 0).text);
+  TEST_ASSERT_EQUAL(4u, archivedLines(c.files).size());
+}
+
+void test_a_summary_is_valid_up_to_its_hard_cap_only() {
+  tx::Summary s;
+  uint32_t id = 1;
+  std::string text;
+  while (tx::encodeSummary(s, text).ok())
+    s.lines.push_back({tx::SummarySection::Facts, id++, std::string(300, 'a' + (char)(id % 26))});
+  TEST_ASSERT_TRUE(tx::encodeSummary(s, text).err == tx::Err::InvalidArgument);
+  s.lines.pop_back();
+  TXB_OK(tx::encodeSummary(s, text));
+  tx::DigestEntry d{dayAt(3), text, 20, 19};
+  tx::Item it;
+  TXB_OK(tx::digestItem(d, 0, txb::kT0, it));
+  tx::DigestEntry back;
+  TXB_OK(tx::digestOf(it, back));
+  TEST_ASSERT_TRUE(back.text == text);
+  d.text = text + std::string(tx::kSummaryMaxBytes, 'x') + "\n";
+  TEST_ASSERT_TRUE(tx::digestItem(d, 0, txb::kT0, it).err == tx::Err::InvalidArgument);
+}
+
+void test_a_restart_stops_at_the_newest_summary() {
+  Chat c;
+  {
+    tx::TxLog log(c.files, kChat);
+    tx::HeadState head;
+    TXB_OK(log.open(head));
+    std::vector<tx::DigestEntry> live;
+    std::string block;
+    tx::SettleReport rep;
+    for (int n = 0; n < 30; ++n) {
+      for (int k = 0; k < 2; ++k) {   // segments roll: the summaries sit in later segments
+        tx::Item big;
+        big.kind = tx::ItemKind::User;
+        big.q = c.nextQ++;
+        big.x = std::string(55000, 'a' + n % 26);
+        tx::StoreState st;
+        TXB_OK(log.append(big, st));
+      }
+      appendDay(c, log, n, sizeOf(n), live);
+    }
+    TXB_OK(tx::settleDigests(c.files, kChat, tx::Profile::Full, live, block, rep));
+    for (int k = 0; k < 2; ++k) {
+      tx::Summary s = sampleSummary();
+      s.lines.insert(s.lines.end() - 1, {tx::SummarySection::Open, 20u + (uint32_t)k, "Version " + std::to_string(k) + "."});
+      tx::DigestEntry d = summaryEntry(s, 31 + k, c.nextQ + 1, c.nextQ);
+      c.nextQ += 2;
+      tx::Item it;
+      TXB_OK(tx::digestItem(d, 0, txb::kT0, it));
+      tx::StoreState st;
+      TXB_OK(log.append(it, st));
+      live.push_back(d);
+    }
+    TXB_OK(tx::settleDigests(c.files, kChat, tx::Profile::Full, live, block, rep));
+    TEST_ASSERT_EQUAL(1u, live.size());
+    head.thru = c.nextQ - 2;
+    head.nextQ = c.nextQ;
+    TXB_OK(log.writeHead(head));
+  }
+  tx::TxLog log(c.files, kChat);
+  tx::HeadState head;
+  TXB_OK(log.open(head));
+  std::vector<tx::DigestEntry> live;
+  tx::DigestScan scan;
+  TXB_OK(tx::loadDigests(c.files, kChat, head, live, &scan));
+  TEST_ASSERT_EQUAL(1u, live.size());
+  TEST_ASSERT_TRUE(live[0].text.find("O21 Version 1.") != std::string::npos);
+  TEST_ASSERT_EQUAL(1u, scan.segments);   // the newest summary is in the newest segment
+}
+
+void test_the_mirror_carries_the_summary_in_whole_lines() {
+  tx::Summary s;
+  for (uint32_t i = 1; i <= 60; ++i)
+    s.lines.push_back({tx::SummarySection::Facts, i, "Fact " + std::to_string(i) + std::string(100, '.')});
+  std::vector<tx::DigestEntry> v = digestRun(2, 300);
+  v.push_back(summaryEntry(s, 5, v.back().q + 2, v.back().q + 1));
+  std::string m;
+  TXB_OK(tx::chatsumMirror(v, v.back().thru, m));
+  TEST_ASSERT_TRUE(m.size() <= tx::kChatsumMirrorMaxBytes && m.size() > tx::kChatsumMirrorMaxBytes / 2);
+  TEST_ASSERT_TRUE(v.back().text.compare(0, m.size(), m) == 0);
+  TEST_ASSERT_EQUAL('\n', v.back().text[m.size()]);
+  // Before the summary's thru the day digests are the mirror, as before.
+  TXB_OK(tx::chatsumMirror(v, v[1].thru, m));
+  TEST_ASSERT_TRUE(linesOf(m).back() == v[1].text);
+}
+
+
+// Review fixes (lane RB-C3): an id dropped in a pass is never lent to an add of the same pass, and a
+// Files line matches its own path only, never a longer path that starts the same way.
+void test_ids_are_not_reused_in_a_pass_and_files_match_exactly() {
+  tx::Summary s = sampleSummary();
+  s.lines.pop_back();   // no Files line: O5 holds the highest id
+  std::vector<tx::SummaryLine> left;
+  size_t unread = 0;
+  TXB_OK(tx::applySummaryEdits(s, tx::parseSummaryEdits("-P6\n-O5\n+O A new item.\n=O5 Should not land.\n").edits, nullptr,
+                               left, unread));
+  TEST_ASSERT_EQUAL(2u, unread);   // -P6 (no such line) and =O5 (dropped in this pass)
+  const tx::SummaryLine* added = lineOf(s, 6);
+  TEST_ASSERT_NOT_NULL(added);
+  TEST_ASSERT_TRUE(added->text == "A new item.");
+  TEST_ASSERT_NULL(lineOf(s, 5));
+  tx::Summary f;
+  left.clear();
+  tx::noteSummaryFile(f, "notes/a (copy)", "", false, left);
+  tx::noteSummaryFile(f, "notes/a", "Tue 17 Nov 2026 13:02", false, left);
+  TEST_ASSERT_EQUAL(2u, f.lines.size());
+  TEST_ASSERT_TRUE(left.empty());
+  tx::noteSummaryFile(f, "notes/a", "", true, left);
+  TEST_ASSERT_EQUAL(1u, f.lines.size());
+  TEST_ASSERT_TRUE(f.lines[0].text == "notes/a (copy)");
+}
+
 }  // namespace
+
+
+// Lane E2-FIX7 (M2, red on 88bfbe826): digits right after an add's letter are the text's own (a quantity, a
+// date) unless the answer numbers all its adds from 1, the shape E2-CMP's probes saw ("+F1 ...", "+F2 ...",
+// "+D1 ..."); then the numbers are ids and left out. A number never finds or replaces a line.
+void test_digits_after_an_adds_letter_are_kept_unless_the_answer_numbers_its_adds() {
+  auto texts = [](const std::string& answer) {
+    std::vector<std::string> out;
+    for (const tx::SummaryEdit& e : tx::parseSummaryEdits(answer).edits) out.push_back(tx::summaryLineText(e.text, 400));
+    return out;
+  };
+  std::vector<std::string> t = texts("+Q12 eggs bought on 22 Nov\n+F2026-11-04 the boiler was serviced\n+F The boat is Tern.\n");
+  TEST_ASSERT_EQUAL(3u, t.size());
+  TEST_ASSERT_EQUAL_STRING("12 eggs bought on 22 Nov", t[0].c_str());
+  TEST_ASSERT_EQUAL_STRING("2026-11-04 the boiler was serviced", t[1].c_str());
+  t = texts("+Q3 kg of flour on 21 Nov\n+Q12 eggs\n");   // numbers, but not a run from 1: quantities
+  TEST_ASSERT_EQUAL_STRING("3 kg of flour on 21 Nov", t[0].c_str());
+  TEST_ASSERT_EQUAL_STRING("12 eggs", t[1].c_str());
+  t = texts("+Q07:30 alarm on weekdays\n");
+  TEST_ASSERT_EQUAL_STRING("07:30 alarm on weekdays", t[0].c_str());
+  const tx::SummaryEdits bare = tx::parseSummaryEdits("+Q7\n+F12:\n");   // digits alone say no fact: unread
+  TEST_ASSERT_EQUAL(0u, bare.edits.size());
+  TEST_ASSERT_EQUAL(2u, bare.unread);
+  // The numbered shape: per section from 1, or across the answer from 1.
+  tx::SummaryEdits e = tx::parseSummaryEdits("+F1 The water meter read 3,412.7 m3.\n+F2 Talbot quoted 4,870 GBP.\n+D1 Go by train.\n");
+  TEST_ASSERT_EQUAL(3u, e.numbered);
+  TEST_ASSERT_EQUAL_STRING("The water meter read 3,412.7 m3.", tx::summaryLineText(e.edits[0].text, 400).c_str());
+  TEST_ASSERT_EQUAL_STRING("Go by train.", tx::summaryLineText(e.edits[2].text, 400).c_str());
+  e = tx::parseSummaryEdits("+F1: a\n+D2 b\n+Q3 12 eggs\n");
+  TEST_ASSERT_EQUAL(3u, e.numbered);
+  TEST_ASSERT_EQUAL_STRING("12 eggs", tx::summaryLineText(e.edits[2].text, 400).c_str());
+  // One numbered add among plain ones: the digits stay.
+  t = texts("+F1 The water meter read 3,412.7 m3.\n+D Go by train.\n");
+  TEST_ASSERT_EQUAL_STRING("1 The water meter read 3,412.7 m3.", t[0].c_str());
+  // Applied: a number never reaches an existing line.
+  tx::Summary s = sampleSummary();
+  const std::string first = lineOf(s, 1)->text;
+  std::vector<tx::SummaryLine> left;
+  size_t unread = 0;
+  TXB_OK(tx::applySummaryEdits(s, tx::parseSummaryEdits("+F1 a fact\n+F2 another\n").edits, nullptr, left, unread));
+  TEST_ASSERT_TRUE(left.empty());
+  TEST_ASSERT_TRUE(lineOf(s, 1)->text == first);
+}
+
+// The class rule for M2: for generated add lines in answers that are not numbered from 1, every character of the
+// text after the section letter reaches the stored line (as one clean line); in numbered answers, every
+// character after the number and its separator does.
+void test_every_character_of_an_add_after_its_letter_is_stored() {
+  std::mt19937 rng(2026);
+  const char letters[] = "FDQO";
+  const char* words[] = {"eggs", "kg", "2026-11-04", "07:30", "12", "1,250.5", "m3", "the", "boat", "x"};
+  for (int round = 0; round < 2000; ++round) {
+    const int n = 1 + (int)(rng() % 4);
+    const bool numbered = n >= 2 && rng() % 3 == 0;
+    std::vector<std::string> body(n);
+    std::string answer;
+    for (int i = 0; i < n; ++i) {
+      std::string text;
+      for (int w = 0, k = 1 + (int)(rng() % 5); w < k; ++w) text += (w ? " " : "") + std::string(words[rng() % 10]);
+      std::string head;
+      if (numbered) head = std::to_string(i + 1) + (rng() % 2 ? ": " : " ");
+      else if (rng() % 2) head = std::to_string(rng() % 100) + (rng() % 2 ? "" : " ");
+      else head = " ";
+      text += " x";   // every add says something besides digits (digits alone are unread by design)
+      body[i] = numbered ? text : head + text;
+      answer += std::string("+") + letters[rng() % 4] + head + text + "\n";
+    }
+    tx::Summary s;
+    std::vector<tx::SummaryLine> left;
+    size_t unread = 0;
+    TXB_OK(tx::applySummaryEdits(s, tx::parseSummaryEdits(answer).edits, nullptr, left, unread));
+    for (int i = 0; i < n; ++i) {
+      const std::string want = tx::summaryLineText(body[i], tx::kSummaryLineMaxBytes);
+      bool found = false;
+      for (const tx::SummaryLine& l : s.lines) found |= l.text == want;
+      TEST_ASSERT_TRUE_MESSAGE(found, ("round " + std::to_string(round) + ": lost text of " + answer).c_str());
+    }
+  }
+}
+
+// The class rule for every path (lane E2-CMP, D5): over random answers (adds, replaces, drops of known and
+// unknown ids, Files lines, empty texts, prose, rewrites), the device's file notes and budget fits, every line
+// the summary held before a pass is, after it, either in the summary with the same id and the same text or in
+// `left` (what goes to the archive) with its id and text. Nothing leaves silently.
+// One random answer: prose, a rewrite's first line, heads with no id or text, adds (with and without an id),
+// replaces and drops of known and unknown ids.
+std::string randomAnswer(std::mt19937& rng, const tx::Summary& s, int round) {
+  const char ops[] = "+=-";
+  const char letters[] = "FDQOPx";
+  const char* fixed[] = {"Nothing to change.\n", "=Facts and standing preferences:\n", "Decisions:\n",
+                         "+Open items\n", "* -Files changed:\n", "=quantities and dates as stated:\n"};
+  std::string answer;
+  for (int k = (int)(rng() % 9); k > 0; --k) {
+    const int form = (int)(rng() % 10);
+    const uint32_t id = 1 + (uint32_t)(rng() % (s.nextId() + 4));
+    const char op = ops[rng() % 3], letter = letters[rng() % 6];
+    if (form < 2) answer += fixed[form == 1 ? 1 + rng() % 5 : 0];
+    else if (form == 2) answer += std::string(1, op) + letter + "\n";
+    else answer += std::string(1, op) + letter + (op == '+' && rng() % 2 ? "" : std::to_string(id)) +
+                   (op == '-' ? "" : " r" + std::to_string(round) + " " + std::string(rng() % 300, 'w')) + "\n";
+  }
+  return answer;
+}
+
+// Every line of `before` is in `now` with its id, section and text, or in `left` with its id and text.
+void expectKeptOrArchived(const tx::Summary& before, const tx::Summary& now, const std::vector<tx::SummaryLine>& left, int round) {
+  for (const tx::SummaryLine& was : before.lines) {
+    const tx::SummaryLine* is = lineOf(now, was.id);
+    bool ok = is && is->text == was.text && is->section == was.section;
+    for (const tx::SummaryLine& l : left) ok |= l.id == was.id && l.text == was.text;
+    TEST_ASSERT_TRUE_MESSAGE(ok, ("round " + std::to_string(round) + ": line " + std::to_string(was.id) + " left without the archive").c_str());
+  }
+}
+
+// Lane E2-FIX9: a line of the summary's own frame (a title or a device line, alone, after at most one change sign,
+// with or without ':', any case) is no change and names no line; with nothing else it is a whole answer, beside
+// changes it is ignored, beside a rewrite's lines the answer is still not taken. The bench's answer, red before.
+void test_a_frame_line_is_no_change_and_never_a_line() {
+  for (const char* a : {"=Facts and standing preferences:", "=Facts and standing preferences", "Decisions:", "+Open items",
+                        "* -Files changed:", "=QUANTITIES AND DATES AS STATED:", "  =Decisions:  ",
+                        "=Older lines of this summary were archived; search finds what was said.", "Nothing to keep yet."}) {
+    const tx::SummaryEdits e = tx::parseSummaryEdits(a);
+    TEST_ASSERT_TRUE_MESSAGE(e.taken(), a);
+    TEST_ASSERT_EQUAL_MESSAGE(0, (int)e.edits.size(), a);
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)e.frame, a);
+    TEST_ASSERT_EQUAL_MESSAGE(0, (int)e.unread, a);
+  }
+  const tx::SummaryEdits both = tx::parseSummaryEdits("=Facts and standing preferences:\n+F The boat is named Tern.\nDecisions:");
+  TEST_ASSERT_TRUE(both.taken());
+  TEST_ASSERT_EQUAL(1, (int)both.edits.size());
+  TEST_ASSERT_EQUAL(2, (int)both.frame);
+  TEST_ASSERT_EQUAL(0, (int)both.unread);
+  // A rewrite that opens with a title is still never taken: its other lines are unread.
+  const tx::SummaryEdits rewrite = tx::parseSummaryEdits("=Facts and standing preferences:\nF1 The boat is named Tern.");
+  TEST_ASSERT_FALSE(rewrite.taken());
+  // Not a frame line: a title with text after it, a title cut short, or an unknown title.
+  for (const char* a : {"=Facts and standing preferences: the boat is red", "=Facts", "Notes:", "==Decisions:"}) {
+    const tx::SummaryEdits e = tx::parseSummaryEdits(a);
+    TEST_ASSERT_EQUAL_MESSAGE(0, (int)e.frame, a);
+    TEST_ASSERT_FALSE_MESSAGE(e.taken(), a);
+  }
+  // Applied, a title-only answer changes nothing: every line byte for byte, nothing to the archive.
+  tx::Summary s = sampleSummary();
+  std::string before, after;
+  TXB_OK(tx::encodeSummary(s, before));
+  std::vector<tx::SummaryLine> left;
+  size_t unread = 0;
+  TXB_OK(tx::applySummaryEdits(s, tx::parseSummaryEdits("=Facts and standing preferences:").edits, nullptr, left, unread));
+  TXB_OK(tx::encodeSummary(s, after));
+  TEST_ASSERT_EQUAL_STRING(before.c_str(), after.c_str());
+  TEST_ASSERT_TRUE(left.empty());
+}
+
+void test_no_line_leaves_a_summary_without_going_to_the_archive() {
+  std::mt19937 rng(2401);
+  tx::Summary s = sampleSummary();
+  for (int round = 0; round < 1500; ++round) {
+    const tx::Summary before = s;
+    std::vector<tx::SummaryLine> left;
+    size_t unread = 0;
+    const tx::SummaryEdits edits = tx::parseSummaryEdits(randomAnswer(rng, s, round));
+    TXB_OK(tx::applySummaryEdits(s, edits.edits, rng() % 2 ? framed : nullptr, left, unread));
+    // Lane E2-FIX9: an answer taken with no change (titles alone, "=") leaves every line where it was.
+    if (edits.taken() && edits.edits.empty()) TEST_ASSERT_TRUE(left.empty() && s.lines.size() == before.lines.size());
+    if (rng() % 3 == 0)
+      tx::noteSummaryFile(s, "notes/f" + std::to_string(rng() % 4) + ".md", "Mon 23 Nov 2026 10:0" + std::to_string(rng() % 10),
+                          rng() % 4 == 0, left);
+    TXB_OK(tx::fitSummary(s, 600 + rng() % 6000, left));
+    expectKeptOrArchived(before, s, left, round);
+    std::string text;
+    TXB_OK(tx::encodeSummary(s, text));
+    tx::Summary back;
+    TXB_OK(tx::parseSummary(text, back));
+    s = back.lines.size() < 3 ? sampleSummary() : back;
+  }
+}
 
 int main(int, char**) {
   UNITY_BEGIN();
@@ -1034,5 +1569,21 @@ int main(int, char**) {
   RUN_TEST(test_mirror_limits_and_refusals);
   RUN_TEST(test_row_thru);
   RUN_TEST(test_a_refused_allocation_is_a_status_and_loses_nothing);
+  RUN_TEST(test_summary_round_trips_and_is_told_from_a_day_digest);
+  RUN_TEST(test_summary_edits_are_applied_by_code_and_an_untouched_line_stays_byte_for_byte);
+  RUN_TEST(test_lines_from_a_slice_that_read_outside_content_are_framed);
+  RUN_TEST(test_a_line_no_change_names_survives_every_update);
+  RUN_TEST(test_over_its_budget_the_section_furthest_over_its_share_loses_its_oldest_line);
+  RUN_TEST(test_the_device_writes_the_files_lines);
+  RUN_TEST(test_lines_that_leave_are_archived_with_their_day);
+  RUN_TEST(test_the_block_is_the_newest_summary_and_settle_archives_the_day_digests_before_it);
+  RUN_TEST(test_a_summary_is_valid_up_to_its_hard_cap_only);
+  RUN_TEST(test_a_restart_stops_at_the_newest_summary);
+  RUN_TEST(test_the_mirror_carries_the_summary_in_whole_lines);
+  RUN_TEST(test_ids_are_not_reused_in_a_pass_and_files_match_exactly);
+  RUN_TEST(test_digits_after_an_adds_letter_are_kept_unless_the_answer_numbers_its_adds);
+  RUN_TEST(test_every_character_of_an_add_after_its_letter_is_stored);
+  RUN_TEST(test_a_frame_line_is_no_change_and_never_a_line);
+  RUN_TEST(test_no_line_leaves_a_summary_without_going_to_the_archive);
   return UNITY_END();
 }

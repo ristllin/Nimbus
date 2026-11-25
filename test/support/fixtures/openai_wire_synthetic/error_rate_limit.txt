@@ -1,0 +1,4 @@
+synthetic: https://developers.openai.com/api/docs/guides/error-codes, read 2026-11-24
+status: 429
+expect: class=rate_limited retry=yes
+{"error":{"message":"Rate limit reached for requests.","type":"requests","param":null,"code":"rate_limit_exceeded"}}

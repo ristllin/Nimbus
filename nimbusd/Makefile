@@ -21,13 +21,18 @@ BUILD     := $(CURDIR)/build
 AJ_SRC    := $(firstword $(wildcard $(REPO)/.pio/libdeps/native/ArduinoJson/src) \
                          $(wildcard $(REPO)/.pio/libdeps/esp32s3/ArduinoJson/src))
 
+# Unity's header only (test/support/tx_battery/pending.h names it; no Unity function is linked):
+# the native libdeps tree, or the copy the Dockerfile clones beside ArduinoJson.
+UNITY_SRC := $(firstword $(wildcard $(REPO)/.pio/libdeps/native/Unity/src))
+
 INCLUDES  := -I$(CURDIR)/src \
              -I$(CURDIR)/tests \
              -I$(REPO)/lib/harness/include \
              -I$(REPO)/lib/core/include \
              -I$(REPO)/include \
              -I$(REPO)/../solide-drivers/include \
-             -I$(AJ_SRC)
+             -I$(AJ_SRC) \
+             $(if $(UNITY_SRC),-I$(UNITY_SRC))
 
 # curl: system default on macOS; miniconda/homebrew otherwise. curl-config, when
 # present, supplies the right -I/-L for a non-system libcurl.
@@ -60,6 +65,7 @@ CORE_SRCS := $(wildcard $(REPO)/lib/harness/src/*.cpp) \
              $(REPO)/lib/core/src/docs_pack.cpp \
              $(REPO)/lib/core/src/tg_updates.cpp \
              $(REPO)/lib/core/src/tg_html.cpp \
+             $(REPO)/lib/core/src/tg_inbox.cpp \
              $(wildcard $(REPO)/../solide-drivers/src/portable/ring.cpp)
 
 CORE_OBJS := $(patsubst %,$(BUILD)/core/%.o,$(notdir $(basename $(CORE_SRCS))))

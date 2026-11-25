@@ -28,6 +28,8 @@ std::string pdfName(std::string name) {
   return name;
 }
 
+}  // namespace
+
 nimbus::orch::ToolResult writeTool(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) {
   using nimbus::orch::ToolResult;
   // The store keys a file by project and name and a write replaces: only the owner
@@ -55,8 +57,7 @@ nimbus::orch::ToolResult writeTool(ArduinoJson::JsonObjectConst a, const nimbus:
                         " page" + (r.pages == 1 ? "" : "s") + ")");
 }
 
-}  // namespace
-
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: no old-engine tool registers on engine 2 (RB-I0)
 void registerTool(nimbus::orch::ToolRegistry& reg) {
   reg.add("files.pdf",
           "Write a PDF into the file store with the device's own PDF writer: a title plus "
@@ -70,6 +71,7 @@ void registerTool(nimbus::orch::ToolRegistry& reg) {
   reg.setGate("files.pdf", [] { return files::available(); },
               "no SD card: the device cannot keep a PDF");
 }
+#endif
 
 bool available() { return files::available(); }
 

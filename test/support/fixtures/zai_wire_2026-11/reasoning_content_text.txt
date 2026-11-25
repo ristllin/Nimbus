@@ -1,0 +1,4 @@
+recorded: lane E2-R10 tools/harness-lab r10 (04-S3-second), read 2026-11-24
+status: 200
+expect: stop=end complete=true calls=0
+{"choices":[{"finish_reason":"stop","index":0,"message":{"content":"The second seed in the list is rainbow chard.","reasoning_content":"From the earlier read: rainbow chard.","role":"assistant"}}],"created":1795548546,"id":"scrubbed","model":"glm-5.3","object":"chat.completion","request_id":"scrubbed","usage":{"completion_tokens":21,"completion_tokens_details":{"reasoning_tokens":9},"prompt_tokens":2009,"prompt_tokens_details":{"cached_tokens":1792},"total_tokens":2030}}

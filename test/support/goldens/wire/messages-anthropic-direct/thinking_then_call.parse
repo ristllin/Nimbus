@@ -1,0 +1,22 @@
+# route golden parse messages-anthropic-direct/thinking_then_call.json served at HTTP 200
+parse ok
+parse stop tool
+parse text 0 B fnv64=14650fb0739d0383 head=""
+parse refusal ""
+parse calls 1
+parse   call 0 id="toolu_015bxfAibiJtsrDjgWxtAKZq" name="read_file" complete=1 args="{\"path\":\"notes/alpha.md\"}"
+parse meta 1
+parse   meta 0 beforeCall=0 1356 B fnv64=fd25300000aa01fc head="{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"CA"
+parse usage prompt=4 completion=164 cacheRead=7741 cacheWrite=3656 cacheWrite1h=0 responses=1 maxRequestIn=11401 served="claude-haiku-5-5"
+exchange err=ok http=200 requests=1 retries=0 climbs=0 cutRetried=0 failOver=0 parkHost=0 maxTokens=6664 requestBytes=917 ms=0 waitedMs=0 statusLine=0
+exchange line ""
+exchange line stored ""
+exchange request 0 917 B fnv64=0a672e6e0a2d09ce
+exchange step stop tool
+exchange step text 0 B fnv64=14650fb0739d0383 head=""
+exchange step refusal ""
+exchange step calls 1
+exchange step   call 0 id="toolu_015bxfAibiJtsrDjgWxtAKZq" name="read_file" complete=1 args="{\"path\":\"notes/alpha.md\"}"
+exchange step meta 1
+exchange step   meta 0 beforeCall=0 1356 B fnv64=fd25300000aa01fc head="{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"CA"
+exchange step usage prompt=4 completion=164 cacheRead=7741 cacheWrite=3656 cacheWrite1h=0 responses=1 maxRequestIn=11401 served="claude-haiku-5-5"

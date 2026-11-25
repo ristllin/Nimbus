@@ -1,0 +1,4 @@
+recorded: lane E2-R10 tools/harness-lab r10 (01-S1-text), read 2026-11-24
+status: 200
+expect: stop=end complete=true calls=0
+{"id":"scrubbed","created":1795548434,"model":"mistral-large-4-0","usage":{"prompt_tokens":1916,"total_tokens":1961,"completion_tokens":45,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":36},"service_tier":"standard"},"object":"chat.completion","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","tool_calls":null,"content":[{"type":"thinking","thinking":[{"type":"text","text":"The user is asking a simple math question: what is two plus two? They want it in one short sentence. This is straightforward - I can answer directly without needing any tools."}],"closed":true},{"type":"text","text":"Two plus two is four."}]}}]}

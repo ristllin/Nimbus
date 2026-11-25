@@ -4,6 +4,10 @@
 
 #include <FS.h>                            // fs::FS - the streaming save source
 #include "nimbus/orch/tool_registry.h"   // Principal - the per-caller data boundary
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+#include "nimbus/orch/file_tools.h"      // FileToolsIo - engine 2's file tools seam (E2-TOOLS)
+#include "nimbus/orch/tx/digest.h"       // tx::RecentFile - the recent-files source
+#endif
 
 #include <string>
 #include <vector>
@@ -167,6 +171,13 @@ bool saveText(const std::string& project, const std::string& name,
 // or quarantine+scan+promote under policy scan). Mutex-guarded queue - the web
 // approve/deny runs on the AsyncTCP task.
 void tickFetch();
+// The handlers of files.stat, files.share, files.fetch and image.generate with engine 1's arguments
+// ({project, name, ...}): engine 1 registers them, engine 2 reaches them through its own names
+// (lane E2-P-OUT2, tools_plain_files.cpp). One copy for both engines.
+nimbus::orch::ToolResult statTool(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who);
+nimbus::orch::ToolResult shareTool(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who);
+nimbus::orch::ToolResult fetchTool(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who);
+nimbus::orch::ToolResult imageTool(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who);
 std::string fetchQueueJson();     // [{id,url,project,name,state,by,err,bytes}]
 bool fetchApprove(uint32_t id);
 bool fetchDeny(uint32_t id);
@@ -178,6 +189,12 @@ bool saveBytes(const std::string& project, const std::string& name,
 // Absolute SD path for an indexed file ("" if unknown/absent) - for downloads
 // and Telegram sends. Callers stream it under memory::Lock per chunk.
 std::string absPath(const std::string& project, const std::string& name);
+// files.send's delivery, shared by engine 1's files.send and engine 2's send (lane E2-P-OUT1):
+// the file as `who` may read it, to an allowlisted Telegram chat, queued on the media lane (an
+// image as a photo, else a document). photoOnly: a file that is not an image is NotImage.
+enum class StoredSend : uint8_t { Queued, NotFound, NotImage, NoTarget, Busy };
+StoredSend sendStored(const std::string& project, const std::string& name, const String& chatId,
+                      const nimbus::orch::Principal& who, bool photoOnly, const String& caption);
 
 // ---- v4.0.0 fan-out plumbing ------------------------------------------------
 // Read a TEXT doc's content for attach splicing ("" on miss / non-text /
@@ -225,5 +242,41 @@ struct ListPage {
 };
 String listJson(const String& project, const std::string& ns = "", bool owner = true,
                 bool mayReadShared = true, const ListPage& page = {});
+
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+// ---- engine 2 (lane E2-TOOLS): the plain file tools' card over this store ----
+// The FileToolsIo (nimbus/orch/file_card_io.h CardFilesIo) over g_store and the SD card, under memory::Lock: the
+// old engine's append (at the size on the card), its swap and boot recovery, its index write. A lagging index
+// entry is brought to the card's size; nothing stored is ever cut. file_tools_device.cpp binds the library to it.
+nimbus::orch::FileToolsIo& toolsIo();
+// The file tools' card lock holds since the last reset: count, longest and total (microseconds), for the
+// bench's per-tool figures. Turn task only.
+struct ToolsHolds {
+  uint32_t n = 0, maxUs = 0, totalUs = 0;
+};
+ToolsHolds toolsHolds(bool reset);
+// EngineDeps::recentFiles for one person (tx::RecentFilesBlock::Source): the files `who` may read, with
+// their last write times. False with no card.
+bool recentFiles(const nimbus::orch::Principal& who, std::vector<nimbus::orch::tx::RecentFile>& out);
+// Lane E2-FSAFE: is the stored file at `path` (project/name as the tools read it) another person's than
+// `who` (a member's file the owner reads), or (lane E2-REP4) one fetch_url downloaded (FileEntry::outside)?
+// False with no card or no such file.
+bool readsOthersFile(const nimbus::orch::Principal& who, const std::string& path);
+#endif
+
+// files.search's scan (engine 1's tool, and engine 2's search scope files, lane E2-P-MEM): the newest
+// 512 text docs `who` may read (under `project` when not empty), the ones holding a word of `query`,
+// best first, each with a one-line snippet around its first matching word. False: no store.
+struct TextHit {
+  std::string project, name, snippet;
+  int score = 0;
+};
+struct TextSearch {
+  std::vector<TextHit> hits;
+  size_t scanned = 0, candidates = 0;
+  uint32_t oldestAt = 0;   // the oldest doc scanned, epoch seconds (0: unknown)
+};
+bool searchText(const std::string& query, const std::string& project, const nimbus::orch::Principal& who,
+                TextSearch& out);
 
 }  // namespace agent::files

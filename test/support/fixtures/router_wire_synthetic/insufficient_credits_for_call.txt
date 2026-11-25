@@ -1,0 +1,4 @@
+synthetic: cumulo-nimbus docs/llm-router.md and packages/shared/src/router-refusals.ts (the cloud repo; no public page), read 2026-11-24
+status: 402
+expect: class=clamp retry=capped
+{"error":"insufficient_credits_for_call","reason":"insufficient_credits_for_call","message":"This request could cost up to 525 credits and 309 are available. Lower the output cap or add credits.","charged":false,"retryable":false,"balanceCredits":309,"availableCredits":309,"heldCredits":0,"estimatedCredits":525,"maxAffordableOutputTokens":74904,"retryHint":"lower_max_output"}

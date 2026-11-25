@@ -23,10 +23,15 @@
 //   NIMBUSD_WEB_TOKEN, NIMBUSD_DEVICE_NAME, NIMBUSD_PRIORITY,
 //   NIMBUSD_SUB_PRIORITY, NIMBUSD_ORCH_HOST, NIMBUSD_TOOL_LOOP (1),
 //   TELEGRAM_BOT_TOKEN, OPENAI_API_KEY / ANTHROPIC_API_KEY / MISTRAL_API_KEY,
-//   TAVILY_API_KEY, TZ. NIMBUSD_TG_CHAT_ID is LEGACY: an optional one-time seed of
+//   TAVILY_API_KEY, TZ, NIMBUSD_ENGINE (1; 2 runs every approved chat on engine 2, Claude heads
+//   only; <data>/mem/engine.json, written by POST /api/engine, wins when it holds 1 or 2), NIMBUSD_E2_PROFILE (the owner's pinned engine-2 profile, "" = full), NIMBUSD_E2_BODY_CAP
+//   (with NIMBUSD_TEST_CLOCK=1 only: a smaller request body cap in bytes, so a test reaches the overflow
+//   ladder at a small cost).
+//   NIMBUSD_TG_CHAT_ID is LEGACY: an optional one-time seed of
 //   the Telegram allowlist, which the owner manages in the web app (CUM-459).
 #include <atomic>
 #include <csignal>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -35,6 +40,8 @@
 
 #include "daemon_config.h"
 #include "daemon_http.h"
+#include "engine2_host.h"
+#include "engine2_route.h"   // lane E2-P-HOST2: what engine 2 takes, the commands, the reports
 #include "engine_thread.h"
 #include "http_control.h"
 #include "reply_buffer.h"
@@ -79,6 +86,7 @@ nimbusd::NimbusdRig::Options buildOptions(const nimbusd::Config& cfg) {
   opt.embedModel = cfg.get("NIMBUSD_EMBED_MODEL", "mistral-embed");
   opt.embedDims = cfg.getInt("NIMBUSD_EMBED_DIMS", 1024);
   opt.maxVectors = cfg.getInt("NIMBUSD_MAX_VECTORS", 5000);
+  opt.engine = nimbusd::engineChoice(cfg, opt.dataDir).engine;   // lane E2-P-HOST2: mem/engine.json, else the env
   return opt;
 }
 
@@ -97,20 +105,24 @@ int cmdGetMe(nimbusd::Config& cfg) {
   return 0;
 }
 
-// Wire the engine's reply delivery: record every reply in the ring that backs
-// the web chat page, and forward it to Telegram when a bot sender is configured.
-// `sender` is a pointer-to-pointer so the daemon can fill it in after the bot is
-// validated, without re-installing the hook.
-void installReplyDelivery(nimbusd::NimbusdRig& rig, nimbusd::ReplyBuffer& replies,
-                          nimbusd::EngineThread& eng,
-                          std::atomic<nimbusd::TelegramChannel*>* sender) {
-  // Runs on the engine thread. `sender` is atomic because the main thread fills
-  // it in (below) after the bot is validated, concurrently with the first turns.
-  // Lane PROG: the running turn's round-boundary signals (engine thread, the
-  // same transport the delivery hook uses): a typing keep-alive between every
-  // provider request and the turn's ONE plain progress line, so a long turn
-  // never looks frozen on the chat it is answering.
-  rig.setTurnProgress([sender](const std::string& chat, bool keepAlive, const std::string& line) {
+// One reply out (on the engine thread, inside a turn), whichever engine wrote it.
+std::function<void(const std::string&, const std::string&)> replyDelivery(
+    nimbusd::ReplyBuffer& replies, nimbusd::EngineThread& eng, std::atomic<nimbusd::TelegramChannel*>* sender) {
+  return [&replies, &eng, sender](const std::string& chat, const std::string& text) {
+    // Tag the channel (so web matches only its own) AND the web turn this reply
+    // answers (currentWebTurn, 0 for Telegram/non-web) so the web chat surface
+    // pairs each turn to its own reply by id, not ring position (CUM-293).
+    replies.push("assistant", text, chat, eng.currentWebTurn());
+    // The web chat has no Telegram side: only a real chat id goes to the bot.
+    nimbusd::TelegramChannel* s = sender->load(std::memory_order_acquire);
+    if (s && chat != nimbusd::kWebChatId) { std::string e; s->sendMessage(chat, text, e); }
+  };
+}
+
+// A running turn's round signals to its Telegram chat (engine 1 and, lane E2-P-HOST1, engine 2).
+std::function<void(const std::string&, bool, const std::string&)> turnProgressTo(
+    std::atomic<nimbusd::TelegramChannel*>* sender) {
+  return [sender](const std::string& chat, bool keepAlive, const std::string& line) {
     nimbusd::TelegramChannel* s = sender->load(std::memory_order_acquire);
     if (!s || chat == nimbusd::kWebChatId) return;
     std::string e;
@@ -124,16 +136,153 @@ void installReplyDelivery(nimbusd::NimbusdRig& rig, nimbusd::ReplyBuffer& replie
       s->sendMessage(chat, line, e);
       agent::hlog::logf("turnprog: line to %s: %s", chat.c_str(), line.c_str());
     }
-  });
-  rig.setDeliver([&replies, &eng, sender](const std::string& chat, const std::string& text) {
-    // Tag the channel (so web matches only its own) AND the web turn this reply
-    // answers (currentWebTurn, 0 for Telegram/non-web) so the web chat surface
-    // pairs each turn to its own reply by id, not ring position (CUM-293).
-    replies.push("assistant", text, chat, eng.currentWebTurn());
-    // The web chat has no Telegram side: only a real chat id goes to the bot.
+  };
+}
+
+// Wire the engine's reply delivery: record every reply in the ring that backs
+// the web chat page, and forward it to Telegram when a bot sender is configured.
+// `sender` is a pointer-to-pointer so the daemon can fill it in after the bot is
+// validated, without re-installing the hook.
+void installReplyDelivery(nimbusd::NimbusdRig& rig, nimbusd::ReplyBuffer& replies,
+                          nimbusd::EngineThread& eng,
+                          std::atomic<nimbusd::TelegramChannel*>* sender) {
+  // Runs on the engine thread. `sender` is atomic because the main thread fills
+  // it in (below) after the bot is validated, concurrently with the first turns.
+  // Lane PROG: the running turn's round-boundary signals (engine thread, the
+  // same transport the delivery hook uses): a typing keep-alive between every
+  // provider request and the turn's ONE plain progress line, so a long turn
+  // never looks frozen on the chat it is answering.
+  rig.setTurnProgress(turnProgressTo(sender));
+  rig.setDeliver(replyDelivery(replies, eng, sender));
+}
+
+// The startup switch NIMBUSD_ENGINE=2 (lane E2-HOST): the owner's chats (the web chat and every
+// Telegram chat whose person is the owner) run on engine 2 through the device's ChatBinding, photo turns included
+// (lanes E2-P-PHOTO, E2-P-HOST1); lane E2-P-HOST2: members, the slash commands and sub-agent reports too
+// (engine2_route.h); the engine comes from <data>/mem/engine.json, else NIMBUSD_ENGINE.
+// "" when engine 2 is off or started, else the
+// one plain line the daemon exits on.
+// Lane E2-FIX9: a smaller request body cap for test rigs only, behind the test clock's own gate (the flag, a web token
+// and a loopback bind), so a test reaches the overflow ladder at a small cost; 0 (none) otherwise.
+uint32_t testBodyCap(const nimbusd::Config& cfg) {
+  if (!nimbusd::vclock::testClockEnabled() || cfg.get("NIMBUSD_WEB_TOKEN").empty() ||
+      cfg.get("NIMBUSD_CONTROL_ADDR", "127.0.0.1") != "127.0.0.1")
+    return 0;
+  const unsigned long long cap = std::strtoull(cfg.get("NIMBUSD_E2_BODY_CAP").c_str(), nullptr, 10);
+  return cap <= 0xFFFFFFFFull ? (uint32_t)cap : 0;
+}
+
+// Lane E2-P-HOST1: the earlier engine's owner conversation (the web chat and every owner Telegram chat,
+// never a member's) for the import, its fold record, web search and the device name.
+void bindEngine2Parts(nimbusd::NimbusdRig& rig, nimbusd::Engine2Options& o) {
+  o.oldRows = [&rig](const nimbus::orch::MsgQuery& q, nimbus::orch::EpiQueryInfo& info) {
+    nimbus::orch::MsgQuery owner = q;
+    owner.sessionId.clear();
+    owner.sessionAllow = {nimbusd::kWebChatId};
+    for (const auto& m : rig.telegramAccess().members())
+      if (m.owner) owner.sessionAllow.push_back(m.id);
+    return rig.episodic().query(owner, &info);
+  };
+  o.oldFold = [&rig] { return rig.foldState(nimbusd::kWebChatId); };
+  o.webSearch = rig.webSearchDeps();
+  o.webSearchOpen = [&rig] { return rig.webSearchOpen(); };
+  o.deviceName = rig.settings().devName;
+  // Lane E2-P-HOST2: members on their own conversation and role, engine 1's rows of their chat for the import,
+  // the rows of each engine-2 turn in engine 1's day stream (the way back), scope memories, the sub-agents.
+  o.roleOf = [&rig](const std::string& chat) { return rig.telegramAccess().roleOf(chat); };
+  o.memberRows = [&rig](const std::string& chat, const nimbus::orch::MsgQuery& q, nimbus::orch::EpiQueryInfo& info) {
+    nimbus::orch::MsgQuery own = q;
+    own.sessionId.clear();
+    own.sessionAllow = {chat};
+    return rig.episodic().query(own, &info);
+  };
+  o.captureRow = [&rig](const std::string& chat, const char* role, const std::string& text, const std::string& tags) {
+    rig.captureEngine2Row(chat, role, text, tags);
+  };
+  o.memories = [&rig](const nimbus::orch::Principal& who, const std::string& q, std::string& out) {
+    return rig.searchMemoriesFor(who, q, out);
+  };
+  o.jobs = &rig.jobs();
+  // Lane E2-REP3: the instance's connectors on a direct head, send's chats, the docs group, device_status, and
+  // each answered request of a turn as pending spend of the monthly ceiling.
+  o.connectors = [&rig] { return rig.connectorsView(); };
+  o.bearer = [&rig](const nimbus::orch::ConnectorInfo& c) { return rig.connectors().bearerForName(c.name); };
+  o.send.allowed = [&rig](const std::string& chat) {
+    return rig.telegramAccess().roleOf(chat) != nimbus::orch::Role::Unknown;
+  };
+  o.send.ownerChat = [&rig] {
+    for (const auto& m : rig.telegramAccess().members())
+      if (m.owner) return m.id;
+    return std::string();
+  };
+  o.e1Tools = &rig.registry();
+  o.status = [&rig](const std::string& provider, const std::string& model) {
+    return nimbusd::engine2StatusJson(rig, provider, model);
+  };
+  o.pendingSpend = [&rig](const nimbus::orch::TurnSpend& s) {
+    rig.spendCeiling().addPending(rig.spendCeiling().price(s));
+  };
+}
+
+std::string startEngine2(const nimbusd::Config& cfg, nimbusd::NimbusdRig& rig, nimbusd::EngineThread& eng,
+                         std::function<void(const std::string&, const std::string&)> deliver,
+                         std::atomic<nimbusd::TelegramChannel*>* sender, std::unique_ptr<nimbusd::Engine2Host>& out) {
+  if (rig.engineNumber() != 2) return std::string();   // lane E2-P-HOST2: mem/engine.json, else NIMBUSD_ENGINE
+  nimbusd::Engine2Options o;
+  o.dataDir = cfg.get("NIMBUSD_DATA_DIR", "/data");
+  o.files = &rig.files();
+  // Lane E2-R8b: the instance's head slot as engine 1 resolves it (a keyed provider, else the Cumulo router),
+  // read on every turn so a change in the settings reaches the next turn; its model, sub-agent pick and key.
+  o.head = [&rig] { return rig.hostBadge(); };
+  o.model = [&rig] {
+    const std::string h = rig.hostBadge();
+    return h == nimbusd::kCumuloSlug ? rig.cumuloModel() : rig.modelFor(h);
+  };
+  o.summarizerModel = [&rig] { return rig.subModelFor(rig.hostBadge()); };
+  o.key = [&rig] { return rig.engineKey(rig.hostBadge()); };
+  o.keyFor = [&rig](const std::string& slot) { return rig.engineKey(slot); };   // lane E2-REP3
+  o.routerHost = nimbusd::kCumuloHost;
+  o.utcOffsetMin = [](uint32_t t) {
+    std::lock_guard<std::mutex> lk(nimbusd::hosted::tzMutex());
+    return agent::utcOffsetAtUnix(t);
+  };
+  o.dayStartMin = [&rig] { return nimbus::orch::day::startOrDefault(rig.settings().dayStarts.c_str()); };
+  const std::string tz = rig.settings().devTz;
+  o.timeZone = tz.empty() ? cfg.get("TZ") : tz;
+  o.profile = cfg.get("NIMBUSD_E2_PROFILE").empty() ? nimbus::orch::tx::kDefaultProfile
+                                                      : nimbus::orch::tx::profileOf(cfg.get("NIMBUSD_E2_PROFILE"));
+  o.bodyCapLimit = testBodyCap(cfg);
+  o.photoDir = rig.photoDir();   // E2-P-PHOTO: an earlier photo's stored copy (hosted_photos.h)
+  o.deliver = std::move(deliver);
+  o.chatId = nimbusd::kWebChatId;
+  o.loops = &rig.routines();   // lane E2-SCHED: the schedule tool and the routines' fires
+  // Lane E2-CMP: engine 2's turns and its summarizer requests count toward the monthly ceiling, as engine 1's do.
+  o.spend = [&rig](const nimbus::orch::TurnSpend& spend, const std::string& tag) {
+    rig.spendCeiling().commit(spend, tag != "compact");
+  };
+  o.paused = [] { return nimbus::orch::spendFrozen(); };   // lane E2-FIX7: engine 2 fails closed at the ceiling
+  bindEngine2Parts(rig, o);
+  o.send.media = [sender](const std::string& chat, const std::string& kind, const std::string& name,
+                          const std::string& bytes, const std::string& caption) {
     nimbusd::TelegramChannel* s = sender->load(std::memory_order_acquire);
-    if (s && chat != nimbusd::kWebChatId) { std::string e; s->sendMessage(chat, text, e); }
-  });
+    std::string e;
+    if (s && s->sendMedia(chat, kind, name, bytes, caption, e)) return true;
+    agent::hlog::logf("engine2: send %s to %s failed: %s", kind.c_str(), chat.c_str(), s ? e.c_str() : "no bot");
+    return false;
+  };
+  o.turnProgress = turnProgressTo(sender);
+  static nimbusd::Engine2Stats stats;   // lane E2-P-HOST2: /api/state's engine-2 counters
+  o.stats = &stats;
+  rig.setEngine2Stats(&stats);
+  out.reset(new nimbusd::Engine2Host(o));
+  const std::string why = out->start();
+  if (!why.empty()) return why;
+  nimbusd::Engine2Host* host = out.get();
+  rig.setEngine2Fire([host](const nimbus::orch::LoopFireRequest& r) { return host->fire(r); });
+  eng.setEngine2(nimbusd::engine2Route(rig, *host, o.deliver));   // lane E2-P-HOST2: every approved chat, the commands
+  logLine("engine 2: every approved chat runs on engine 2 (" + host->head().slot.provider + " " + host->head().slot.model +
+          ", transcript " + o.dataDir + "/mem/tx/owner)");
+  return std::string();
 }
 
 // Run one turn and print the reply (a keyed smoke check).
@@ -193,8 +342,6 @@ int runDaemon(nimbusd::Config& cfg) {
 
   nimbusd::NimbusdRig rig(cfg, opt);
   nimbusd::EngineThread eng(&rig);
-  eng.start();
-  queueStartupChecks(rig, eng);
 
   // The reply ring that backs the web chat page (GET /api/replies). Every reply
   // the engine produces is recorded here and, when a bot is configured, also
@@ -203,6 +350,14 @@ int runDaemon(nimbusd::Config& cfg) {
   nimbusd::ReplyBuffer replies(/*cap=*/50);
   std::atomic<nimbusd::TelegramChannel*> sender{nullptr};
   installReplyDelivery(rig, replies, eng, &sender);
+  std::unique_ptr<nimbusd::Engine2Host> engine2;
+  const std::string e2Refused = startEngine2(cfg, rig, eng, replyDelivery(replies, eng, &sender), &sender, engine2);
+  if (!e2Refused.empty()) {
+    logLine(e2Refused);
+    return 2;
+  }
+  eng.start();
+  queueStartupChecks(rig, eng);
 
   // Control surface (loopback), token-gated.
   const std::string webToken = cfg.get("NIMBUSD_WEB_TOKEN");

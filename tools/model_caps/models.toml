@@ -1,0 +1,1046 @@
+# models.toml - the wire-shape facts of every model the firmware names (lane E2-R1; design:
+# program-2026-10-18/analysis-2026-11-24/ROUTER-DESIGN.md sections 3 and 9).
+#
+# Hand-curated. tools/model_caps/gen_caps.py lints it and writes
+# lib/core/include/nimbus/orch/model_caps_data.h (never edit that file by hand).
+#
+# NOT here, on purpose: context windows, output caps, read windows, decode rates and prices.
+# They live in the shared functions both engines read (headWindowTokens, outputCapFor,
+# readWindowMsFor, builtinModelPrice); test/test_model_caps proves every row below resolves
+# there to a non-default window and a non-fallback price.
+#
+# Every value is an inline table: v (the value), src (a [sources] id, optionally "#detail", or a
+# repo path with lines, "lib/...cpp:12-20"), read (the date it was read, YYYY-MM-DD) and ver:
+#   docs      the provider's official documentation says so
+#   code      the project's code does so today (recorded behaviour behind it, cited in the code)
+#   probe     a live probe the project ran and recorded
+#   recorded  a recorded live run or fixture shows it
+#   none      sourced, but not verified (a community page, an inference); the battery report lists it
+#   default   no source for this model: the fail-safe default of design section 3.2
+# Where the provider's documents and the project's recorded behaviour disagree, the project's
+# recorded behaviour is entered and the disagreement is named in `note` (and in the PR body).
+#
+# Web facts were read on 2026-11-24 (07:01 UTC) for P/analysis-2026-11-24/
+# research-provider-wire-facts.md from the URLs below; code facts were read in this tree.
+
+schema = 1
+
+[sources]
+ant-models = "https://platform.claude.com/docs/en/about-claude/models/overview"
+ant-vision = "https://platform.claude.com/docs/en/build-with-claude/vision"
+ant-tools = "https://platform.claude.com/docs/en/agents-and-tools/tool-use/define-tools"
+ant-handle = "https://platform.claude.com/docs/en/agents-and-tools/tool-use/handle-tool-calls"
+ant-errors = "https://platform.claude.com/docs/en/api/errors"
+ant-effort = "https://platform.claude.com/docs/en/build-with-claude/effort"
+ant-structured = "https://platform.claude.com/docs/en/build-with-claude/structured-outputs"
+ant-cache = "https://platform.claude.com/docs/en/build-with-claude/prompt-caching"
+ant-versioning = "https://platform.claude.com/docs/en/api/versioning"
+ant-stops = "https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons"
+oai-index = "https://developers.openai.com/api/docs/models"
+oai-gpt-6-luna = "https://developers.openai.com/api/docs/models/gpt-6-luna"
+oai-gpt-6-sol = "https://developers.openai.com/api/docs/models/gpt-6-sol"
+oai-gpt-6-1-sol = "https://developers.openai.com/api/docs/models/gpt-6.1-sol"
+oai-gpt-6-astra = "https://developers.openai.com/api/docs/models/gpt-6-astra"
+oai-gpt-5-6-sol = "https://developers.openai.com/api/docs/models/gpt-5.6-sol"
+oai-gpt-5-6-terra = "https://developers.openai.com/api/docs/models/gpt-5.6-terra"
+oai-gpt-5-6-luna = "https://developers.openai.com/api/docs/models/gpt-5.6-luna"
+oai-gpt-4o-mini = "https://developers.openai.com/api/docs/models/gpt-4o-mini"
+oai-responses = "https://developers.openai.com/api/reference/resources/responses/methods/create"
+oai-vision = "https://developers.openai.com/api/docs/guides/images-vision"
+oai-fc = "https://developers.openai.com/api/docs/guides/function-calling"
+oai-reasoning = "https://developers.openai.com/api/docs/guides/reasoning"
+oai-cache = "https://developers.openai.com/api/docs/guides/prompt-caching"
+oai-errors = "https://developers.openai.com/api/docs/guides/error-codes"
+oai-ctx-community = "https://community.openai.com/t/your-input-exceeds-the-context-window-of-this-model/1314149"
+mis-large4 = "https://docs.mistral.ai/models/mistral-large-4-0"
+mis-small4 = "https://docs.mistral.ai/models/mistral-small-4-0-26-03"
+mis-chat = "https://docs.mistral.ai/api/endpoint/chat"
+mis-limits = "https://docs.mistral.ai/resources/known-limitations"
+mis-fc = "https://docs.mistral.ai/capabilities/function_calling/"
+mis-reasoning = "https://docs.mistral.ai/studio-api/conversations/reasoning"
+mis-cache = "https://docs.mistral.ai/studio-api/conversations/advanced/prompt-caching"
+mis-overview = "https://docs.mistral.ai/getting-started/models/models_overview/"
+zai-chat = "https://docs.z.ai/api-reference/llm/chat-completion"
+zai-glm-5-3 = "https://docs.z.ai/guides/llm/glm-5.3"
+zai-glm-5-3-flash = "https://docs.z.ai/guides/vlm/glm-5.3-flash"
+zai-thinking = "https://docs.z.ai/guides/capabilities/thinking-mode"
+zai-fc = "https://docs.z.ai/guides/capabilities/function-calling"
+zai-cache = "https://docs.z.ai/guides/capabilities/cache"
+zai-codes = "https://docs.z.ai/api-reference/api-code"
+router-images = "cumulo-nimbus/packages/shared/src/router-images.ts:31-84 (the router's limits, measured 16 Nov 2026 where the docs give none)"
+design = "program-2026-10-18/analysis-2026-11-24/ROUTER-DESIGN.md (the fail-safe defaults of section 3.2 and the decisions of section 15)"
+rbw1b = "program-2026-10-18 RB-W1b evidence/LIVE-CONFORMANCE.md (claude-haiku-5-5, 19 Nov 2026), cited at lib/harness/src/providers/plain_wire_anthropic.cpp:314-322"
+
+# Compiled ids that are not heads, summarizers or routine models: the router never serves them,
+# so they need no row (model_id_lint.py still holds them to its own rules).
+[[not_a_head]]
+id = "o4-mini-deep-research"
+why = "an OpenAI background sub-agent backend (src/agent/adapters/openai_adapter.cpp), out of the router's head, summarizer and routine scope (design section 2, 'Left alone on purpose')"
+
+# ================================================================================================
+# Provider rows (one per endpoint family). Their order is the marker-set order.
+# ================================================================================================
+
+[[provider]]
+slot = "anthropic"
+dialect = { v = "messages", src = "ant-tools", read = "2026-11-24", ver = "docs" }
+hosts = { v = ["api.anthropic.com"], src = "ant-versioning", read = "2026-11-24", ver = "docs" }
+base_path = { v = "/v1", src = "ant-versioning", read = "2026-11-24", ver = "docs" }
+auth = { v = "x_api_key", src = "ant-versioning", read = "2026-11-24", ver = "docs" }
+version_header = { v = "2023-06-01", src = "lib/harness/src/providers/anthropic.cpp:46", read = "2026-11-24", ver = "code", note = "the docs name 2026-10-21 as current and still list 2023-06-01; the project sends 2023-06-01 (engine-1 parity, design section 15)" }
+cache_key = { v = "none", src = "ant-cache", read = "2026-11-24", ver = "docs" }
+empty_text = { v = "", src = "design", read = "2026-11-24", ver = "default" }
+tool_frame_bytes = { v = 0, src = "design", read = "2026-11-24", ver = "default", note = "the Anthropic tool shape is the reference the other figures are measured against" }
+routed_images_max = { v = 100, src = "router-images", read = "2026-11-24", ver = "code" }
+
+[[provider]]
+slot = "openai"
+dialect = { v = "responses", src = "oai-reasoning", read = "2026-11-24", ver = "docs", note = "Chat Completions refuses function calling with reasoning on the project's models; engine 1 uses Responses (lib/harness/src/providers/openai.cpp)" }
+hosts = { v = ["api.openai.com"], src = "oai-responses", read = "2026-11-24", ver = "docs" }
+base_path = { v = "/v1", src = "oai-responses", read = "2026-11-24", ver = "docs" }
+auth = { v = "bearer", src = "oai-responses", read = "2026-11-24", ver = "docs" }
+version_header = { v = "", src = "oai-responses", read = "2026-11-24", ver = "docs" }
+cache_key = { v = "prompt_cache_key", src = "oai-cache", read = "2026-11-24", ver = "docs" }
+empty_text = { v = "", src = "design", read = "2026-11-24", ver = "default" }
+tool_frame_bytes = { v = 25, src = "design", read = "2026-11-24", ver = "default", note = "the design estimates 15 to 25 B; the high end until the battery measures it" }
+routed_images_max = { v = 1500, src = "router-images", read = "2026-11-24", ver = "code" }
+
+[[provider]]
+slot = "mistral"
+dialect = { v = "chat", src = "mis-chat", read = "2026-11-24", ver = "docs" }
+hosts = { v = ["api.mistral.ai"], src = "mis-chat", read = "2026-11-24", ver = "docs" }
+base_path = { v = "/v1", src = "mis-chat", read = "2026-11-24", ver = "docs" }
+auth = { v = "bearer", src = "mis-chat", read = "2026-11-24", ver = "docs" }
+version_header = { v = "", src = "mis-chat", read = "2026-11-24", ver = "docs" }
+cache_key = { v = "prompt_cache_key", src = "mis-cache", read = "2026-11-24", ver = "docs" }
+empty_text = { v = "(empty)", src = "lib/harness/src/providers/mistral.cpp:305-312", read = "2026-11-24", ver = "code" }
+tool_frame_bytes = { v = 25, src = "design", read = "2026-11-24", ver = "default" }
+routed_images_max = { v = 100, src = "router-images", read = "2026-11-24", ver = "code" }
+
+[[provider]]
+slot = "zai"
+dialect = { v = "chat", src = "zai-chat", read = "2026-11-24", ver = "docs" }
+hosts = { v = ["api.z.ai", "open.bigmodel.cn"], src = "zai-chat", read = "2026-11-24", ver = "docs", note = "the device dials both, the second for China-region keys (lib/core/include/nimbus/fault.h)" }
+base_path = { v = "/api/paas/v4", src = "zai-chat", read = "2026-11-24", ver = "docs" }
+auth = { v = "bearer", src = "zai-chat", read = "2026-11-24", ver = "docs" }
+version_header = { v = "", src = "zai-chat", read = "2026-11-24", ver = "docs" }
+cache_key = { v = "none", src = "zai-cache", read = "2026-11-24", ver = "docs" }
+empty_text = { v = "", src = "design", read = "2026-11-24", ver = "default" }
+tool_frame_bytes = { v = 25, src = "design", read = "2026-11-24", ver = "default" }
+routed_images_max = { v = 100, src = "router-images", read = "2026-11-24", ver = "code" }
+
+[[provider]]
+slot = "custom_chat"
+dialect = { v = "chat", src = "lib/harness/src/providers/custom.cpp:24-30", read = "2026-11-24", ver = "code" }
+hosts = { v = [], src = "design", read = "2026-11-24", ver = "default", note = "the owner's endpoint" }
+base_path = { v = "/v1", src = "lib/harness/src/providers/custom.cpp:110-113", read = "2026-11-24", ver = "code", note = "a path prefix in the owner's URL replaces it" }
+auth = { v = "bearer", src = "lib/harness/src/providers/custom.cpp:83-107", read = "2026-11-24", ver = "code", note = "an empty key sends no auth header" }
+version_header = { v = "", src = "design", read = "2026-11-24", ver = "default" }
+cache_key = { v = "none", src = "design", read = "2026-11-24", ver = "default" }
+empty_text = { v = "", src = "design", read = "2026-11-24", ver = "default" }
+tool_frame_bytes = { v = 25, src = "design", read = "2026-11-24", ver = "default" }
+routed_images_max = { v = 0, src = "design", read = "2026-11-24", ver = "default", note = "a custom endpoint is never routed" }
+
+[[provider]]
+slot = "custom_messages"
+dialect = { v = "messages", src = "lib/harness/src/providers/custom.cpp:24-30", read = "2026-11-24", ver = "code" }
+hosts = { v = [], src = "design", read = "2026-11-24", ver = "default", note = "the owner's endpoint" }
+base_path = { v = "/v1", src = "lib/harness/src/providers/custom.cpp:110-113", read = "2026-11-24", ver = "code" }
+auth = { v = "x_api_key", src = "lib/harness/src/providers/openai_compat.cpp:147", read = "2026-11-24", ver = "code" }
+version_header = { v = "2023-06-01", src = "lib/harness/src/providers/openai_compat.cpp:147", read = "2026-11-24", ver = "code" }
+cache_key = { v = "none", src = "design", read = "2026-11-24", ver = "default" }
+empty_text = { v = "", src = "design", read = "2026-11-24", ver = "default" }
+tool_frame_bytes = { v = 0, src = "design", read = "2026-11-24", ver = "default" }
+routed_images_max = { v = 0, src = "design", read = "2026-11-24", ver = "default" }
+
+# ================================================================================================
+# Templates (rows inherit one and override). The fail-safe template is design section 3.2's
+# "default for unknown" column: assume less input capability and send nothing a model might refuse.
+# ================================================================================================
+
+[template.failsafe]
+cap_mode = { v = "send_always", src = "design", read = "2026-11-24", ver = "default" }
+input = { v = ["text"], src = "design", read = "2026-11-24", ver = "default" }
+image_formats = { v = ["jpeg", "png"], src = "design", read = "2026-11-24", ver = "default" }
+image_max_kib = { v = 3072, src = "design", read = "2026-11-24", ver = "default" }
+images_max = { v = 4, src = "design", read = "2026-11-24", ver = "default" }
+image_in_tool_result = { v = false, src = "design", read = "2026-11-24", ver = "default" }
+file_ref = { v = false, src = "design", read = "2026-11-24", ver = "default" }
+tools = { v = true, src = "design", read = "2026-11-24", ver = "default" }
+tool_choice = { v = ["auto"], src = "design", read = "2026-11-24", ver = "default" }
+id_rule = { v = "passthrough", src = "design", read = "2026-11-24", ver = "default" }
+structured = { v = "none", src = "design", read = "2026-11-24", ver = "default" }
+summarizer_structured = { v = "none", src = "design", read = "2026-11-24", ver = "default" }
+thinking = { v = "off", src = "design", read = "2026-11-24", ver = "default" }
+effort = { v = [], src = "design", read = "2026-11-24", ver = "default" }
+replay = { v = "none", src = "design", read = "2026-11-24", ver = "default" }
+replay_scope = { v = "open_turn", src = "design", read = "2026-11-24", ver = "default" }
+drop_under_rung = { v = true, src = "design", read = "2026-11-24", ver = "default" }
+cache_style = { v = "automatic", src = "design", read = "2026-11-24", ver = "default" }
+cache_min_tok = { v = 1024, src = "design", read = "2026-11-24", ver = "default" }
+long_cache_ok = { v = false, src = "design", read = "2026-11-24", ver = "default" }
+usage_mode = { v = "input_includes_cache", src = "design", read = "2026-11-24", ver = "default" }
+order_rules = { v = ["ends_on_user", "results_first_in_user", "no_empty_text", "merge_users", "not_only_system"], src = "design", read = "2026-11-24", ver = "default" }
+
+# ---- Anthropic: the Claude 5 line on Messages ------------------------------------------------
+[template.claude5]
+inherit = "failsafe"
+cap_mode = { v = "required", src = "ant-models", read = "2026-11-24", ver = "docs" }
+cap_param = { v = "max_tokens", src = "ant-models", read = "2026-11-24", ver = "docs" }
+input = { v = ["text", "image"], src = "ant-vision", read = "2026-11-24", ver = "docs" }
+image_formats = { v = ["jpeg", "png", "gif", "webp"], src = "ant-vision", read = "2026-11-24", ver = "docs" }
+image_max_kib = { v = 7324, src = "ant-vision", read = "2026-11-24", ver = "docs", note = "10 MB of base64 per image, as decoded KiB" }
+images_max = { v = 600, src = "ant-vision", read = "2026-11-24", ver = "docs" }
+image_in_tool_result = { v = true, src = "lib/harness/src/providers/image_parts.cpp:205-211", read = "2026-11-24", ver = "code" }
+file_ref = { v = true, src = "lib/harness/src/providers/image_parts.cpp:55-61", read = "2026-11-24", ver = "code", note = "direct key only, and only with an uploader bound (design section 5 item 3)" }
+tools = { v = true, src = "ant-tools", read = "2026-11-24", ver = "docs" }
+tool_choice = { v = ["auto", "none"], src = "lib/harness/src/providers/anthropic.cpp:962-965", read = "2026-11-24", ver = "code", note = "the engine never forces a choice on Anthropic (verified live 18 Oct); none is documented" }
+id_rule = { v = "anthropic_pattern", src = "lib/harness/src/providers/plain_wire_anthropic.cpp:117-125", read = "2026-11-24", ver = "code" }
+structured = { v = "anthropic_output_config", src = "ant-structured", read = "2026-11-24", ver = "docs" }
+summarizer_structured = { v = "anthropic_output_config", src = "lib/harness/src/plain_compact.cpp:1401-1403", read = "2026-11-24", ver = "code", note = "in use today (the Changes form)" }
+thinking = { v = "adaptive", src = "ant-effort", read = "2026-11-24", ver = "docs" }
+effort = { v = ["low", "medium", "high", "xhigh", "max"], src = "ant-effort", read = "2026-11-24", ver = "docs" }
+replay = { v = "signed_blocks", src = "ant-handle", read = "2026-11-24", ver = "docs" }
+replay_scope = { v = "open_turn", src = "rbw1b", read = "2026-11-24", ver = "recorded" }
+drop_under_rung = { v = true, src = "lib/harness/src/providers/plain_wire_anthropic.cpp:314-326", read = "2026-11-24", ver = "recorded" }
+cache_style = { v = "explicit4", src = "ant-cache", read = "2026-11-24", ver = "docs" }
+cache_min_tok = { v = 512, src = "ant-cache", read = "2026-11-24", ver = "docs" }
+long_cache_ok = { v = true, src = "ant-cache", read = "2026-11-24", ver = "docs" }
+usage_mode = { v = "input_excludes_cache", src = "lib/core/src/orch_usage_ledger.cpp:106-109", read = "2026-11-24", ver = "code" }
+order_rules = { v = ["ends_on_user", "results_first_in_user", "no_empty_text", "merge_users", "not_only_system"], src = "ant-errors", read = "2026-11-24", ver = "docs", note = "ends on a user turn and results first are documented; the other bits are the fail-safe ones" }
+
+# ---- OpenAI: the gpt-5.6 and gpt-6 lines on Responses ---------------------------------------
+[template.gpt]
+inherit = "failsafe"
+cap_mode = { v = "omit_direct_ceil_routed", src = "lib/harness/src/providers/openai.cpp:628-630", read = "2026-11-24", ver = "code", note = "no cap direct (engine-1 parity, O6); a 25,000-token ceiling when routed (design section 6.3)" }
+cap_param = { v = "max_output_tokens", src = "oai-responses", read = "2026-11-24", ver = "docs" }
+input = { v = ["text", "image"], src = "oai-index", read = "2026-11-24", ver = "docs" }
+image_formats = { v = ["jpeg", "png", "gif", "webp"], src = "oai-vision", read = "2026-11-24", ver = "docs" }
+image_max_kib = { v = 3072, src = "design", read = "2026-11-24", ver = "default", note = "OpenAI documents no per-image size" }
+images_max = { v = 1500, src = "oai-vision", read = "2026-11-24", ver = "docs" }
+image_in_tool_result = { v = false, src = "lib/harness/src/providers/image_parts.cpp:213-224", read = "2026-11-24", ver = "code", note = "engine 1 sends a looked photo in one user message after the outputs (O13)" }
+tools = { v = true, src = "oai-fc", read = "2026-11-24", ver = "docs" }
+tool_choice = { v = ["auto", "none", "required", "named"], src = "test/support/fixtures/openai_wire_2026-11/guard_round_none.txt:4", read = "2026-11-24", ver = "recorded", note = "none recorded on the guard round (R10 S4: text, no call); the rest from oai-responses" }
+id_rule = { v = "anthropic_pattern", src = "oai-fc", read = "2026-11-24", ver = "default", note = "the docs name no call_id pattern; a foreign id outside [A-Za-z0-9_-] (another engine's dotted id) is sent by the one-to-one hex rule, never as is (lane E2-R7)" }
+structured = { v = "responses_text_format", src = "oai-responses", read = "2026-11-24", ver = "docs" }
+summarizer_structured = { v = "responses_text_format", src = "test/support/fixtures/openai_wire_2026-11/summarizer_structured.txt:4", read = "2026-11-24", ver = "recorded", note = "R10 S8: text.format json_schema answered the changes object on gpt-5.6-luna" }
+thinking = { v = "off", src = "oai-reasoning", read = "2026-11-24", ver = "docs", note = "OpenAI has no thinking field; reasoning is set by effort" }
+effort = { v = ["none", "minimal", "low", "medium", "high", "xhigh", "max"], src = "oai-reasoning", read = "2026-11-24", ver = "docs" }
+replay = { v = "encrypted_items", src = "test/support/fixtures/openai_wire_2026-11/function_call_two_ids.txt:4", read = "2026-11-24", ver = "recorded", note = "R10 S2: the reasoning item replayed under store:false with the function_call carrying no item id, 200" }
+replay_scope = { v = "all_turns", src = "test/support/fixtures/openai_wire_2026-11/reasoning_encrypted_then_text.txt:4", read = "2026-11-24", ver = "recorded", note = "chosen for byte stability; R10 S3: closed-turn items replayed, 200, 1,362 of 1,406 prompt tokens read from the cache" }
+drop_under_rung = { v = false, src = "design", read = "2026-11-24", ver = "none", note = "no binding documented; a refusal takes the refused-field resend" }
+cache_style = { v = "openai_breakpoints", src = "oai-cache", read = "2026-11-24", ver = "docs" }
+cache_min_tok = { v = 1024, src = "oai-cache", read = "2026-11-24", ver = "docs" }
+long_cache_ok = { v = false, src = "design", read = "2026-11-24", ver = "default", note = "the 12-hour cache is left out (design section 15)" }
+usage_mode = { v = "input_includes_cache", src = "lib/core/src/orch_usage_ledger.cpp:106-111", read = "2026-11-24", ver = "code" }
+order_rules = { v = ["ends_on_user", "results_first_in_user", "no_empty_text", "merge_users", "user_after_tool_ok", "not_only_system"], src = "lib/harness/src/providers/image_parts.cpp:213-224", read = "2026-11-24", ver = "recorded", note = "a user message after the outputs is what engine 1 sends today; R10 S10 recorded it (a photo after each view result, 200)" }
+
+# ---- Mistral on chat completions ------------------------------------------------------------
+[template.mistral]
+inherit = "failsafe"
+cap_mode = { v = "send_always", src = "lib/harness/src/providers/mistral.cpp:511", read = "2026-11-24", ver = "code" }
+cap_param = { v = "max_tokens", src = "mis-chat", read = "2026-11-24", ver = "docs" }
+input = { v = ["text", "image"], src = "lib/core/include/nimbus/orch/model_catalog.h:99-105", read = "2026-11-24", ver = "recorded", note = "vision by name; small-latest and large-latest read pixels (recorded 26 Oct)" }
+image_formats = { v = ["jpeg", "png", "gif", "webp"], src = "mis-limits", read = "2026-11-24", ver = "docs" }
+image_max_kib = { v = 20480, src = "mis-limits", read = "2026-11-24", ver = "docs" }
+images_max = { v = 8, src = "router-images", read = "2026-11-24", ver = "probe", note = "measured by the router: small, medium and ministral answer 400 above 8" }
+image_in_tool_result = { v = false, src = "lib/harness/src/providers/mistral.cpp:292-296", read = "2026-11-24", ver = "probe", note = "a user message after the tool messages is accepted (M12)" }
+tools = { v = true, src = "mis-fc", read = "2026-11-24", ver = "docs" }
+tool_choice = { v = ["auto", "none", "any", "required", "named"], src = "test/support/fixtures/mistral_wire_2026-11/guard_round_none.txt:4", read = "2026-11-24", ver = "recorded", note = "none recorded on the guard round (R10 S4: text, no call); the rest from mis-chat" }
+id_rule = { v = "mistral9", src = "lib/harness/src/providers/mistral.cpp:252-270", read = "2026-11-24", ver = "code", note = "the docs give no id rule; the project maps foreign ids to 9 alphanumerics" }
+structured = { v = "chat_json_schema", src = "mis-chat", read = "2026-11-24", ver = "docs" }
+summarizer_structured = { v = "none", src = "lib/harness/src/providers/mistral.cpp:963-967", read = "2026-11-24", ver = "recorded", note = "the strict schema left the reply empty (CUM-890, M19); R10 S8 got one good answer on a one-line slice (test/support/fixtures/mistral_wire_2026-11/summarizer_structured.txt), not enough against the recorded empty replies, so Lines stays" }
+thinking = { v = "off", src = "mis-reasoning", read = "2026-11-24", ver = "docs", note = "Mistral has no thinking field; reasoning is set by effort" }
+effort = { v = ["none"], src = "lib/harness/src/providers/output_caps.cpp:173-180", read = "2026-11-24", ver = "recorded", note = "the reference lists none to xhigh; the project recorded (1 Nov) that every reasoning model but the forced ones refuses low, so only none is entered" }
+replay = { v = "think_chunks", src = "test/support/fixtures/mistral_wire_2026-11/tool_calls.txt:4", read = "2026-11-24", ver = "recorded", note = "R10: a call round is served as a thinking chunk beside tool_calls with no text, and taken back so; the served chunk carries closed:true" }
+replay_scope = { v = "all_turns", src = "test/support/fixtures/mistral_wire_2026-11/thinking_chunks.txt:4", read = "2026-11-24", ver = "recorded", note = "R10 S3: closed-turn chunks replayed, 200, 2,048 of 2,155 prompt tokens read from the cache" }
+drop_under_rung = { v = false, src = "design", read = "2026-11-24", ver = "none" }
+cache_style = { v = "key_hint", src = "mis-cache", read = "2026-11-24", ver = "docs" }
+cache_min_tok = { v = 64, src = "mis-cache", read = "2026-11-24", ver = "docs" }
+long_cache_ok = { v = false, src = "design", read = "2026-11-24", ver = "default" }
+usage_mode = { v = "input_includes_cache", src = "lib/core/src/orch_usage_ledger.cpp:106-111", read = "2026-11-24", ver = "code" }
+order_rules = { v = ["ends_on_user", "results_first_in_user", "no_empty_text", "merge_users", "user_after_tool_ok", "not_only_system"], src = "lib/harness/src/providers/mistral.cpp:292-296", read = "2026-11-24", ver = "probe" }
+
+# ---- Z.ai GLM on chat completions -----------------------------------------------------------
+[template.glm]
+inherit = "failsafe"
+cap_mode = { v = "send_always", src = "lib/harness/src/providers/custom.cpp:393-395", read = "2026-11-24", ver = "code" }
+cap_param = { v = "max_tokens", src = "zai-chat", read = "2026-11-24", ver = "docs" }
+input = { v = ["text"], src = "zai-glm-5-3", read = "2026-11-24", ver = "docs" }
+image_formats = { v = ["jpeg", "png"], src = "zai-chat", read = "2026-11-24", ver = "docs" }
+image_max_kib = { v = 4882, src = "zai-chat", read = "2026-11-24", ver = "docs", note = "under 5 MB" }
+tools = { v = true, src = "zai-fc", read = "2026-11-24", ver = "docs" }
+tool_choice = { v = ["auto", "required"], src = "test/support/fixtures/zai_wire_2026-11/tool_choice_none_ignored.txt:4", read = "2026-11-24", ver = "recorded", note = "the docs list only auto; required was probed working on 1 Nov (custom.cpp:347-351); R10 S4: none is accepted (200) but not honoured (glm-5.3 answered a tool call), so it stays out and the guard round sends auto with its calls never run" }
+id_rule = { v = "passthrough", src = "lib/harness/src/providers/custom.cpp:347-351", read = "2026-11-24", ver = "probe", note = "foreign call ids accepted (probed 1 Nov)" }
+structured = { v = "none", src = "lib/harness/src/providers/custom.cpp:749-750", read = "2026-11-24", ver = "recorded", note = "Z.ai ignores json_schema (CUM-495)" }
+summarizer_structured = { v = "none", src = "lib/harness/src/providers/custom.cpp:749-750", read = "2026-11-24", ver = "recorded" }
+thinking = { v = "always_on", src = "zai-glm-5-3", read = "2026-11-24", ver = "docs" }
+effort = { v = ["low", "high", "max"], src = "zai-thinking", read = "2026-11-24", ver = "docs", note = "the project sends low to every GLM (providers.h:520)" }
+replay = { v = "reasoning_content", src = "zai-thinking", read = "2026-11-24", ver = "docs" }
+replay_scope = { v = "all_turns", src = "zai-thinking", read = "2026-11-24", ver = "docs" }
+drop_under_rung = { v = false, src = "design", read = "2026-11-24", ver = "none" }
+cache_style = { v = "automatic", src = "zai-cache", read = "2026-11-24", ver = "docs" }
+cache_min_tok = { v = 1024, src = "design", read = "2026-11-24", ver = "default", note = "Z.ai states no minimum" }
+long_cache_ok = { v = false, src = "design", read = "2026-11-24", ver = "default" }
+usage_mode = { v = "input_includes_cache", src = "lib/core/src/orch_usage_ledger.cpp:106-111", read = "2026-11-24", ver = "code" }
+order_rules = { v = ["ends_on_user", "results_first_in_user", "no_empty_text", "merge_users", "not_only_system"], src = "zai-chat", read = "2026-11-24", ver = "docs", note = "only-system input is documented as refused; the other bits are the fail-safe ones" }
+
+# ================================================================================================
+# Model rows. kind: exact (the id, or the id plus one version or snapshot suffix), prefix, any
+# (the slot's '*' row: what an unknown model of a known provider gets).
+# refused_choices, deprecated_on and note are lint-only and never reach flash.
+# ================================================================================================
+
+# ---- anthropic ----
+[[model]]
+slot = "anthropic"
+kind = "any"
+match = ""
+inherit = "failsafe"
+cap_mode = { v = "required", src = "ant-models", read = "2026-11-24", ver = "docs" }
+cap_param = { v = "max_tokens", src = "ant-models", read = "2026-11-24", ver = "docs" }
+id_rule = { v = "anthropic_pattern", src = "lib/harness/src/providers/plain_wire_anthropic.cpp:117-125", read = "2026-11-24", ver = "code" }
+usage_mode = { v = "input_excludes_cache", src = "lib/core/src/orch_usage_ledger.cpp:106-109", read = "2026-11-24", ver = "code" }
+
+[[model]]
+slot = "anthropic"
+kind = "exact"
+match = "claude-fable-5-1"
+inherit = "claude5"
+thinking = { v = "always_on", src = "ant-effort", read = "2026-11-24", ver = "docs", note = "disabled is a 400" }
+refused_choices = { v = ["any", "named"], src = "ant-errors", read = "2026-11-24", ver = "docs" }
+
+[[model]]
+slot = "anthropic"
+kind = "exact"
+match = "claude-opus-5-5"
+inherit = "claude5"
+thinking = { v = "always_on", src = "ant-effort", read = "2026-11-24", ver = "docs", note = "disabled is a 400" }
+refused_choices = { v = ["any", "named"], src = "ant-errors", read = "2026-11-24", ver = "docs" }
+
+[[model]]
+slot = "anthropic"
+kind = "exact"
+match = "claude-opus-5"
+inherit = "claude5"
+
+[[model]]
+slot = "anthropic"
+kind = "exact"
+match = "claude-sonnet-5-5"
+inherit = "claude5"
+thinking = { v = "between_tools", src = "ant-effort", read = "2026-11-24", ver = "docs", note = "use between_tools, not disabled" }
+effort = { v = ["low", "medium", "high"], src = "ant-effort", read = "2026-11-24", ver = "docs", note = "between_tools at xhigh or max is a 400" }
+refused_choices = { v = ["any", "named"], src = "ant-errors", read = "2026-11-24", ver = "docs" }
+
+[[model]]
+slot = "anthropic"
+kind = "exact"
+match = "claude-sonnet-5"
+inherit = "claude5"
+cache_min_tok = { v = 1024, src = "ant-cache", read = "2026-11-24", ver = "docs" }
+
+[[model]]
+slot = "anthropic"
+kind = "exact"
+match = "claude-haiku-5-5"
+inherit = "claude5"
+
+[[model]]
+slot = "anthropic"
+kind = "exact"
+match = "claude-haiku-4-5"
+inherit = "claude5"
+images_max = { v = 100, src = "ant-vision", read = "2026-11-24", ver = "docs", note = "100 on 200K-window models" }
+thinking = { v = "off", src = "lib/harness/src/providers/output_caps.cpp:154-160", read = "2026-11-24", ver = "code", note = "adaptive thinking is a Claude 5 feature; the project sends Haiku 4.5 no effort" }
+effort = { v = [], src = "lib/harness/src/providers/output_caps.cpp:154-160", read = "2026-11-24", ver = "code" }
+cache_min_tok = { v = 4096, src = "ant-cache", read = "2026-11-24", ver = "docs" }
+deprecated_on = "retired by policy (tools/model_id_allowlist.json); kept so a device still set to it gets its facts"
+
+# Family prefix rows (lane E2-REP5, review F5): an id no exact row names (a newer snapshot the owner picks
+# from the provider's list) keeps its family's photos, effort set and replay instead of the fail-safe '*'
+# row. Each family row repeats its newest listed sibling; "claude-" alone keeps engine 1's images for every
+# claude-* id and sends no effort, thinking or structured form (an older model may refuse them).
+[[model]]
+slot = "anthropic"
+kind = "prefix"
+match = "claude-"
+inherit = "claude5"
+input = { v = ["text", "image"], src = "lib/core/src/orch_turn_images.cpp:115", read = "2026-11-24", ver = "code", note = "engine 1 shows images to every claude-* model" }
+structured = { v = "none", src = "design", read = "2026-11-24", ver = "default" }
+summarizer_structured = { v = "none", src = "design", read = "2026-11-24", ver = "default" }
+thinking = { v = "off", src = "design", read = "2026-11-24", ver = "default" }
+effort = { v = [], src = "design", read = "2026-11-24", ver = "default" }
+
+[[model]]
+slot = "anthropic"
+kind = "prefix"
+match = "claude-fable-5"
+inherit = "claude5"
+thinking = { v = "always_on", src = "ant-effort", read = "2026-11-24", ver = "docs", note = "as claude-fable-5-1, its newest listed sibling" }
+refused_choices = { v = ["any", "named"], src = "ant-errors", read = "2026-11-24", ver = "docs" }
+
+[[model]]
+slot = "anthropic"
+kind = "prefix"
+match = "claude-opus-5"
+inherit = "claude5"
+thinking = { v = "always_on", src = "ant-effort", read = "2026-11-24", ver = "docs", note = "as claude-opus-5-5, its newest listed sibling" }
+refused_choices = { v = ["any", "named"], src = "ant-errors", read = "2026-11-24", ver = "docs" }
+
+[[model]]
+slot = "anthropic"
+kind = "prefix"
+match = "claude-sonnet-5"
+inherit = "claude5"
+thinking = { v = "between_tools", src = "ant-effort", read = "2026-11-24", ver = "docs", note = "as claude-sonnet-5-5, its newest listed sibling" }
+effort = { v = ["low", "medium", "high"], src = "ant-effort", read = "2026-11-24", ver = "docs", note = "between_tools at xhigh or max is a 400" }
+refused_choices = { v = ["any", "named"], src = "ant-errors", read = "2026-11-24", ver = "docs" }
+
+[[model]]
+slot = "anthropic"
+kind = "prefix"
+match = "claude-haiku-5"
+inherit = "claude5"
+
+# ---- openai ----
+[[model]]
+slot = "openai"
+kind = "any"
+match = ""
+inherit = "failsafe"
+cap_mode = { v = "omit_direct_ceil_routed", src = "lib/harness/src/providers/openai.cpp:628-630", read = "2026-11-24", ver = "code" }
+cap_param = { v = "max_output_tokens", src = "oai-responses", read = "2026-11-24", ver = "docs" }
+
+[[model]]
+slot = "openai"
+kind = "exact"
+match = "gpt-6-astra"
+inherit = "gpt"
+effort = { v = ["minimal", "low", "medium", "high", "xhigh", "max"], src = "oai-reasoning", read = "2026-11-24", ver = "docs", note = "none is a 400" }
+
+[[model]]
+slot = "openai"
+kind = "exact"
+match = "gpt-6.1-sol"
+inherit = "gpt"
+effort = { v = ["minimal", "low", "medium", "high", "xhigh", "max"], src = "oai-reasoning", read = "2026-11-24", ver = "docs", note = "none is a 400" }
+
+[[model]]
+slot = "openai"
+kind = "exact"
+match = "gpt-6-sol"
+inherit = "gpt"
+input = { v = ["text", "image"], src = "oai-gpt-6-sol", read = "2026-11-24", ver = "docs" }
+
+[[model]]
+slot = "openai"
+kind = "exact"
+match = "gpt-6-luna"
+inherit = "gpt"
+input = { v = ["text", "image"], src = "oai-gpt-6-luna", read = "2026-11-24", ver = "docs" }
+
+[[model]]
+slot = "openai"
+kind = "exact"
+match = "gpt-5.6-sol"
+inherit = "gpt"
+input = { v = ["text", "image"], src = "oai-gpt-5-6-sol", read = "2026-11-24", ver = "docs" }
+
+[[model]]
+slot = "openai"
+kind = "exact"
+match = "gpt-5.6"
+inherit = "gpt"
+input = { v = ["text", "image"], src = "oai-gpt-5-6-sol", read = "2026-11-24", ver = "docs", note = "gpt-5.6 is an alias served as gpt-5.6-sol (probed 18 Oct, model_selectable.h:42-52); the sol page's facts" }
+
+[[model]]
+slot = "openai"
+kind = "exact"
+match = "gpt-5.6-terra"
+inherit = "gpt"
+input = { v = ["text", "image"], src = "oai-gpt-5-6-terra", read = "2026-11-24", ver = "docs" }
+
+[[model]]
+slot = "openai"
+kind = "exact"
+match = "gpt-5.6-luna"
+inherit = "gpt"
+input = { v = ["text", "image"], src = "oai-gpt-5-6-luna", read = "2026-11-24", ver = "docs" }
+
+[[model]]
+slot = "openai"
+kind = "exact"
+match = "gpt-4o-mini"
+inherit = "gpt"
+input = { v = ["text", "image"], src = "oai-gpt-4o-mini", read = "2026-11-24", ver = "docs" }
+effort = { v = [], src = "lib/harness/src/providers/openai.cpp:66-84", read = "2026-11-24", ver = "code", note = "not a reasoning model: a reasoning parameter is a 400 (O2)" }
+replay = { v = "none", src = "lib/harness/src/providers/openai.cpp:66-84", read = "2026-11-24", ver = "code" }
+replay_scope = { v = "open_turn", src = "design", read = "2026-11-24", ver = "default" }
+cache_style = { v = "openai_implicit", src = "lib/harness/src/prompt_layout.cpp:360-398", read = "2026-11-24", ver = "code", note = "breakpoints only on gpt-5.6 and later (O11)" }
+cache_min_tok = { v = 1024, src = "oai-cache", read = "2026-11-24", ver = "none", note = "the page states 1,024 for gpt-5.6 and later only" }
+deprecated_on = "deprecated by OpenAI; retired by policy (tools/model_id_allowlist.json)"
+
+# Family prefix rows (lane E2-REP5, review F5): an unlisted gpt-6 or gpt-5.6 snapshot (gpt-6.2-sol, the ids
+# OpenAI's index lists as current) keeps the line's images, effort and encrypted reasoning replay.
+[[model]]
+slot = "openai"
+kind = "prefix"
+match = "gpt-6"
+inherit = "gpt"
+
+[[model]]
+slot = "openai"
+kind = "prefix"
+match = "gpt-5.6"
+inherit = "gpt"
+
+# ---- mistral ----
+[[model]]
+slot = "mistral"
+kind = "any"
+match = ""
+inherit = "failsafe"
+cap_param = { v = "max_tokens", src = "mis-chat", read = "2026-11-24", ver = "docs" }
+id_rule = { v = "mistral9", src = "lib/harness/src/providers/mistral.cpp:252-270", read = "2026-11-24", ver = "code" }
+
+[[model]]
+slot = "mistral"
+kind = "exact"
+match = "mistral-large-4-0"
+inherit = "mistral"
+input = { v = ["text", "image"], src = "mis-large4", read = "2026-11-24", ver = "docs" }
+images_max = { v = 100, src = "router-images", read = "2026-11-24", ver = "probe", note = "measured by the router: mistral-large takes 100" }
+effort = { v = ["low", "medium", "high"], src = "mis-large4", read = "2026-11-24", ver = "docs", note = "refuses none, minimal, xhigh and max; the project recorded none refused with code 3051 (output_caps.cpp:173-178)" }
+
+[[model]]
+slot = "mistral"
+kind = "exact"
+match = "mistral-large-4"
+inherit = "mistral"
+input = { v = ["text", "image"], src = "mis-large4", read = "2026-11-24", ver = "docs" }
+images_max = { v = 100, src = "router-images", read = "2026-11-24", ver = "probe" }
+effort = { v = ["low", "medium", "high"], src = "mis-large4", read = "2026-11-24", ver = "docs", note = "the id Mistral lists for Large 4 on 14 Nov (test/support/fixtures/models_2026-11/mistral.json), with mistral-large-4-0 and mistral-large-latest as its aliases; not compiled in, but pickable from the harvested list, and the fail-safe row would drop the effort a forced reasoner needs" }
+
+[[model]]
+slot = "mistral"
+kind = "exact"
+match = "mistral-large-latest"
+inherit = "mistral"
+input = { v = ["text", "image"], src = "mis-large4", read = "2026-11-24", ver = "docs" }
+images_max = { v = 100, src = "router-images", read = "2026-11-24", ver = "probe" }
+effort = { v = ["low", "medium", "high"], src = "lib/core/include/nimbus/orch/model_family.h:10-15", read = "2026-11-24", ver = "recorded", note = "an alias of Large 4 on the 14 Nov list" }
+
+[[model]]
+slot = "mistral"
+kind = "exact"
+match = "mistral-large-2512"
+inherit = "mistral"
+images_max = { v = 100, src = "router-images", read = "2026-11-24", ver = "probe" }
+effort = { v = [], src = "lib/harness/src/providers/output_caps.cpp:163-172", read = "2026-11-24", ver = "code", note = "Large 3 takes no effort field in the project" }
+replay = { v = "none", src = "lib/harness/src/providers/output_caps.cpp:163-172", read = "2026-11-24", ver = "code", note = "not a reasoning model in the project" }
+deprecated_on = "2026-10-31 (retired 2027-04-30, mis-overview); the owner runs Large 4 only"
+
+[[model]]
+slot = "mistral"
+kind = "exact"
+match = "mistral-medium-latest"
+inherit = "mistral"
+
+[[model]]
+slot = "mistral"
+kind = "exact"
+match = "mistral-small-latest"
+inherit = "mistral"
+
+# ---- zai ----
+[[model]]
+slot = "zai"
+kind = "any"
+match = ""
+inherit = "failsafe"
+cap_param = { v = "max_tokens", src = "zai-chat", read = "2026-11-24", ver = "docs" }
+
+[[model]]
+slot = "zai"
+kind = "exact"
+match = "glm-5.3"
+inherit = "glm"
+refused_choices = { v = ["any"], src = "lib/harness/src/providers/custom.cpp:347-351", read = "2026-11-24", ver = "probe" }
+
+[[model]]
+slot = "zai"
+kind = "exact"
+match = "glm-5.3-flash"
+inherit = "glm"
+input = { v = ["text", "image"], src = "test/support/fixtures/zai_wire_2026-11/image_flash_png.txt:4", read = "2026-11-24", ver = "recorded", note = "R10 S6: a PNG in an image_url part was read (the answer named its red circle and checkerboard); engine 1 still treats every GLM as blind (Z11, orch_turn_images.cpp:122-124)" }
+refused_choices = { v = ["any", "named"], src = "lib/harness/src/providers/custom.cpp:347-351", read = "2026-11-24", ver = "probe", note = "named is ignored, any is a 400" }
+
+[[model]]
+slot = "zai"
+kind = "exact"
+match = "glm-5.2"
+inherit = "glm"
+thinking = { v = "off", src = "zai-thinking", read = "2026-11-24", ver = "none", note = "GLM-5.2 may skip thinking; nothing is sent" }
+effort = { v = ["low"], src = "lib/harness/include/nimbus/harness/providers.h:520", read = "2026-11-24", ver = "none", note = "the project sends low to every GLM; not recorded on glm-5.2" }
+refused_choices = { v = ["any"], src = "lib/harness/src/providers/custom.cpp:347-351", read = "2026-11-24", ver = "probe" }
+
+# ---- custom endpoints (the owner's own row is built at run time, design section 3.3) ----
+[[model]]
+slot = "custom_chat"
+kind = "any"
+match = ""
+inherit = "failsafe"
+cap_mode = { v = "omit", src = "lib/harness/src/providers/output_caps.cpp:215-224", read = "2026-11-24", ver = "code", note = "the shared cap is 0 for custom" }
+cap_param = { v = "max_tokens", src = "design", read = "2026-11-24", ver = "default" }
+tools = { v = false, src = "design", read = "2026-11-24", ver = "default", note = "text mode until the verify step accepted a tool call and a window is known" }
+
+[[model]]
+slot = "custom_messages"
+kind = "any"
+match = ""
+inherit = "failsafe"
+cap_mode = { v = "required", src = "ant-models", read = "2026-11-24", ver = "docs" }
+cap_param = { v = "max_tokens", src = "ant-models", read = "2026-11-24", ver = "docs" }
+tools = { v = false, src = "design", read = "2026-11-24", ver = "default" }
+id_rule = { v = "anthropic_pattern", src = "lib/harness/src/providers/plain_wire_anthropic.cpp:117-125", read = "2026-11-24", ver = "code" }
+usage_mode = { v = "input_excludes_cache", src = "ant-cache", read = "2026-11-24", ver = "docs" }
+
+# ================================================================================================
+# Error markers (design section 9). kind: code (the body's code field, exactly), type (its type
+# field, exactly), text (its message, case-insensitive). status 0 = any.
+# ================================================================================================
+
+# anthropic
+[[marker]]
+slot = "anthropic"
+kind = "type"
+text = "authentication_error"
+status = 401
+class = "key_auth"
+src = "test/support/fixtures/anthropic_wire_2026-11/error_authentication.json:1"
+read = "2026-11-24"
+ver = "recorded"
+
+[[marker]]
+slot = "anthropic"
+kind = "type"
+text = "permission_error"
+status = 403
+class = "key_forbidden"
+src = "ant-errors"
+read = "2026-11-24"
+ver = "docs"
+
+[[marker]]
+slot = "anthropic"
+kind = "type"
+text = "billing_error"
+status = 402
+class = "billing"
+src = "ant-errors"
+read = "2026-11-24"
+ver = "docs"
+
+[[marker]]
+slot = "anthropic"
+kind = "text"
+text = "credit balance is too low"
+status = 0
+class = "billing"
+src = "lib/core/include/nimbus/orch/billing_refusal.h:39"
+read = "2026-11-24"
+ver = "recorded"
+
+[[marker]]
+slot = "anthropic"
+kind = "text"
+text = "reached your specified api usage limits"
+status = 400
+class = "billing"
+src = "test/support/fixtures/anthropic_wire_synthetic/errors/cases.json:87"
+read = "2026-11-24"
+ver = "recorded"
+
+[[marker]]
+slot = "anthropic"
+kind = "type"
+text = "rate_limit_error"
+status = 429
+class = "rate_limited"
+src = "ant-errors"
+read = "2026-11-24"
+ver = "docs"
+
+[[marker]]
+slot = "anthropic"
+kind = "type"
+text = "overloaded_error"
+status = 529
+class = "server"
+src = "ant-errors"
+read = "2026-11-24"
+ver = "docs"
+
+[[marker]]
+slot = "anthropic"
+kind = "type"
+text = "api_error"
+status = 500
+class = "server"
+src = "ant-errors"
+read = "2026-11-24"
+ver = "docs"
+
+[[marker]]
+slot = "anthropic"
+kind = "type"
+text = "timeout_error"
+status = 504
+class = "server"
+src = "ant-errors"
+read = "2026-11-24"
+ver = "docs"
+
+[[marker]]
+slot = "anthropic"
+kind = "type"
+text = "request_too_large"
+status = 413
+class = "context"
+src = "ant-errors"
+read = "2026-11-24"
+ver = "docs"
+
+[[marker]]
+slot = "anthropic"
+kind = "text"
+text = "prompt is too long"
+status = 400
+class = "context"
+src = "ant-errors"
+read = "2026-11-24"
+ver = "docs"
+
+[[marker]]
+slot = "anthropic"
+kind = "type"
+text = "not_found_error"
+status = 404
+class = "unknown_model"
+src = "test/support/fixtures/usage_2026-10/errors.json:9"
+read = "2026-11-24"
+ver = "recorded"
+
+[[marker]]
+slot = "anthropic"
+kind = "text"
+text = "not valid json"
+status = 400
+class = "bad_request"
+src = "lib/core/src/orch_head_loop.cpp:105-111"
+read = "2026-11-24"
+ver = "recorded"
+
+# openai
+[[marker]]
+slot = "openai"
+kind = "code"
+text = "insufficient_quota"
+status = 429
+class = "billing"
+src = "oai-errors"
+read = "2026-11-24"
+ver = "docs"
+
+[[marker]]
+slot = "openai"
+kind = "code"
+text = "credit_balance_exhausted"
+status = 429
+class = "billing"
+src = "oai-errors"
+read = "2026-11-24"
+ver = "docs"
+
+[[marker]]
+slot = "openai"
+kind = "code"
+text = "organization_spend_limit_exceeded"
+status = 429
+class = "billing"
+src = "oai-errors"
+read = "2026-11-24"
+ver = "docs"
+
+[[marker]]
+slot = "openai"
+kind = "code"
+text = "project_spend_limit_exceeded"
+status = 429
+class = "billing"
+src = "oai-errors"
+read = "2026-11-24"
+ver = "docs"
+
+[[marker]]
+slot = "openai"
+kind = "code"
+text = "organization_usage_limit_exceeded"
+status = 429
+class = "billing"
+src = "oai-errors"
+read = "2026-11-24"
+ver = "docs"
+
+[[marker]]
+slot = "openai"
+kind = "code"
+text = "billing_hard_limit_reached"
+status = 0
+class = "billing"
+src = "lib/core/include/nimbus/orch/billing_refusal.h:44"
+read = "2026-11-24"
+ver = "recorded"
+
+[[marker]]
+slot = "openai"
+kind = "text"
+text = "exceeded your current quota"
+status = 429
+class = "billing"
+src = "lib/core/include/nimbus/orch/billing_refusal.h:41"
+read = "2026-11-24"
+ver = "recorded"
+
+[[marker]]
+slot = "openai"
+kind = "type"
+text = "rate_limit_error"
+status = 429
+class = "rate_limited"
+src = "oai-errors"
+read = "2026-11-24"
+ver = "docs"
+
+[[marker]]
+slot = "openai"
+kind = "code"
+text = "slow_down"
+status = 429
+class = "rate_limited"
+src = "oai-errors"
+read = "2026-11-24"
+ver = "docs"
+
+[[marker]]
+slot = "openai"
+kind = "code"
+text = "server_is_overloaded"
+status = 503
+class = "server"
+src = "oai-errors"
+read = "2026-11-24"
+ver = "docs"
+
+[[marker]]
+slot = "openai"
+kind = "code"
+text = "context_length_exceeded"
+status = 400
+class = "context"
+src = "oai-ctx-community"
+read = "2026-11-24"
+ver = "none"
+
+[[marker]]
+slot = "openai"
+kind = "code"
+text = "model_not_found"
+status = 404
+class = "unknown_model"
+src = "test/support/fixtures/usage_2026-10/errors.json:23"
+read = "2026-11-24"
+ver = "recorded"
+
+[[marker]]
+slot = "openai"
+kind = "code"
+text = "invalid_json"
+status = 400
+class = "bad_request"
+src = "lib/core/src/orch_head_loop.cpp:105-111"
+read = "2026-11-24"
+ver = "recorded"
+
+# mistral
+[[marker]]
+slot = "mistral"
+kind = "type"
+text = "invalid_model"
+status = 400
+class = "unknown_model"
+src = "test/support/fixtures/usage_2026-10/errors.json:16"
+read = "2026-11-24"
+ver = "recorded"
+
+[[marker]]
+slot = "mistral"
+kind = "code"
+text = "3051"
+status = 400
+class = "refused_field"
+src = "lib/harness/src/providers/mistral.cpp:404-427"
+read = "2026-11-24"
+ver = "recorded"
+
+[[marker]]
+slot = "mistral"
+kind = "text"
+text = "there was an error parsing the body"
+status = 0
+class = "bad_request"
+src = "lib/core/src/orch_head_loop.cpp:105-111"
+read = "2026-11-24"
+ver = "recorded"
+
+# zai
+[[marker]]
+slot = "zai"
+kind = "code"
+text = "1000"
+status = 401
+class = "key_auth"
+src = "zai-codes"
+read = "2026-11-24"
+ver = "docs"
+
+[[marker]]
+slot = "zai"
+kind = "code"
+text = "1001"
+status = 401
+class = "key_auth"
+src = "zai-codes"
+read = "2026-11-24"
+ver = "docs"
+
+[[marker]]
+slot = "zai"
+kind = "code"
+text = "1003"
+status = 401
+class = "key_auth"
+src = "zai-codes"
+read = "2026-11-24"
+ver = "docs"
+
+[[marker]]
+slot = "zai"
+kind = "code"
+text = "1113"
+status = 429
+class = "billing"
+src = "zai-codes"
+read = "2026-11-24"
+ver = "docs"
+
+[[marker]]
+slot = "zai"
+kind = "code"
+text = "1211"
+status = 400
+class = "unknown_model"
+src = "test/support/fixtures/usage_2026-10/errors.json:30"
+read = "2026-11-24"
+ver = "recorded"
+
+[[marker]]
+slot = "zai"
+kind = "code"
+text = "1220"
+status = 403
+class = "key_forbidden"
+src = "zai-codes"
+read = "2026-11-24"
+ver = "docs"
+
+[[marker]]
+slot = "zai"
+kind = "code"
+text = "1200"
+status = 500
+class = "server"
+src = "zai-codes"
+read = "2026-11-24"
+ver = "docs"
+
+[[marker]]
+slot = "zai"
+kind = "code"
+text = "1230"
+status = 500
+class = "server"
+src = "zai-codes"
+read = "2026-11-24"
+ver = "docs"
+
+[[marker]]
+slot = "zai"
+kind = "code"
+text = "1234"
+status = 500
+class = "server"
+src = "zai-codes"
+read = "2026-11-24"
+ver = "docs"
+
+[[marker]]
+slot = "zai"
+kind = "code"
+text = "1261"
+status = 400
+class = "context"
+src = "zai-codes"
+read = "2026-11-24"
+ver = "docs"
+
+[[marker]]
+slot = "zai"
+kind = "code"
+text = "1301"
+status = 400
+class = "refusal"
+src = "zai-codes"
+read = "2026-11-24"
+ver = "docs"
+
+[[marker]]
+slot = "zai"
+kind = "code"
+text = "1302"
+status = 429
+class = "rate_limited"
+src = "zai-codes"
+read = "2026-11-24"
+ver = "docs"
+
+[[marker]]
+slot = "zai"
+kind = "code"
+text = "1305"
+status = 429
+class = "server"
+src = "zai-codes"
+read = "2026-11-24"
+ver = "docs"
+
+[[marker]]
+slot = "zai"
+kind = "text"
+text = "json parse error"
+status = 0
+class = "bad_request"
+src = "lib/core/src/orch_head_loop.cpp:105-111"
+read = "2026-11-24"
+ver = "recorded"

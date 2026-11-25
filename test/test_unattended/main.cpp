@@ -268,7 +268,8 @@ void test_a_quiet_hours_note_is_held_and_sent_as_stored_when_they_end() {
     TEST_ASSERT_TRUE(rig.sent.empty());
     TEST_ASSERT_TRUE(rig.ownerNotes().empty());   // the counter: not in his transcript before it is sent
     TEST_ASSERT_EQUAL(1, (int)rig.held->notes().size());
-    TEST_ASSERT_EQUAL((uint32_t)(f.fireAt + plain::kHeldNoteExpiryS), (uint32_t)rig.held->notes()[0].expires);
+    // P8 (lane E2-FIX2B): held for quiet hours, its 12 h count from their end (09:00).
+    TEST_ASSERT_EQUAL((uint32_t)(kNoon + 21 * 3600 + plain::kHeldNoteExpiryS), (uint32_t)rig.held->notes()[0].expires);
     // Still quiet at 08:59: nothing.
     rig.epoch = kNoon + 20 * 3600 + 59 * 60;
     plain::IdleOutcome io;
@@ -299,13 +300,87 @@ void test_an_expired_note_is_dropped_unsent() {
   plain::FireReport rep;
   TEST_ASSERT_TRUE(rig.fire(f, rep).ok());
   TEST_ASSERT_EQUAL((int)plain::FireResult::Held, (int)rep.result);
-  rig.epoch = kNoon + 21 * 3600 + 300;   // 09:05
+  rig.epoch = kNoon + 22 * 3600 + 300;   // 10:05: its hour after quiet hours ended (09:00) is over
   plain::IdleOutcome io;
   TEST_ASSERT_TRUE(rig.idle(io).ok());
   TEST_ASSERT_TRUE(io.worked);
   TEST_ASSERT_TRUE(rig.held->notes().empty());
   TEST_ASSERT_TRUE(rig.sent.empty());
   TEST_ASSERT_TRUE(rig.ownerNotes().empty());
+}
+
+// Lane E2-FIX2B, finding P8: quiet hours that last longer than the note's hold (the owner set their
+// end at 11:00, a routine fired at 22:15). Before: the note expired at 10:15, still in quiet hours,
+// and was dropped unsent. Now it waits for their end and goes then, once.
+void test_quiet_hours_longer_than_the_hold_keep_the_note_until_they_end() {
+  Rig rig;
+  rig.quiet.endMinute = 11 * 60;
+  rig.epoch = kNoon + 10 * 3600 + 900;   // 22:15
+  TEST_ASSERT_TRUE(rig.boot().ok());
+  std::mt19937 r(13);
+  plain::RoutineFire f = makeFire(r, rig.epoch);
+  rig.routineModel.push(sp::say("the nightly summary"));
+  plain::FireReport rep;
+  TEST_ASSERT_TRUE(rig.fire(f, rep).ok());
+  TEST_ASSERT_EQUAL((int)plain::FireResult::Held, (int)rep.result);
+  rig.epoch = kNoon + 22 * 3600 + 45 * 60;   // 10:45, still quiet, past fire + 12 h
+  plain::IdleOutcome io;
+  TEST_ASSERT_TRUE(rig.idle(io).ok());
+  TEST_ASSERT_EQUAL(1, (int)rig.held->notes().size());
+  TEST_ASSERT_TRUE(rig.sent.empty());
+  rig.epoch = kNoon + 23 * 3600 + 60;   // 11:01
+  TEST_ASSERT_TRUE(rig.idle(io).ok());
+  TEST_ASSERT_EQUAL(1, (int)rig.sent.size());
+  TEST_ASSERT_TRUE(rig.sent[0].text == "the nightly summary");
+  TEST_ASSERT_TRUE(rig.held->notes().empty());
+  TEST_ASSERT_TRUE(rig.idle(io).ok());
+  TEST_ASSERT_EQUAL(1, (int)rig.sent.size());
+}
+
+
+// Lane E2-FIX2B, finding P14: a cut right after the channel took a held note. Before: the outbox on
+// the card still said Ready, so the restart sent it again. Now Sent is on the card before the send.
+void test_a_cut_after_the_send_never_sends_a_held_note_twice() {
+  Rig rig;
+  rig.epoch = kNoon + 11 * 3600;   // 23:00
+  TEST_ASSERT_TRUE(rig.boot().ok());
+  std::mt19937 r(17);
+  rig.routineModel.push(sp::say("sent only once"));
+  plain::FireReport rep;
+  TEST_ASSERT_TRUE(rig.fire(makeFire(r, rig.epoch), rep).ok());
+  TEST_ASSERT_EQUAL((int)plain::FireResult::Held, (int)rep.result);
+  std::string atSend;   // the outbox on the card the moment the channel takes the note
+  const auto send = rig.channel.send;
+  rig.channel.send = [&rig, &atSend, send](const std::string& chat, const std::string& text) {
+    atSend = rig.heldFile;
+    return send(chat, text);
+  };
+  rig.epoch = kNoon + 21 * 3600 + 60;   // 09:01
+  plain::IdleOutcome io;
+  TEST_ASSERT_TRUE(rig.idle(io).ok());
+  TEST_ASSERT_EQUAL(1, (int)rig.sent.size());
+  rig.heldFile = atSend;   // the power is cut right after the send: the card holds what it held then
+  TEST_ASSERT_TRUE(rig.boot().ok());
+  for (int i = 0; i < 3; ++i) TEST_ASSERT_TRUE(rig.idle(io).ok());
+  TEST_ASSERT_EQUAL(1, (int)rig.sent.size());
+  TEST_ASSERT_TRUE(rig.held->notes().empty());
+  // The neighbor: a send the channel refuses stays Ready and goes on the next pass.
+  rig.routineModel.push(sp::say("refused once"));
+  rig.epoch = kNoon + 11 * 3600 + 86400;
+  TEST_ASSERT_TRUE(rig.fire(makeFire(r, rig.epoch), rep).ok());
+  int refusals = 1;
+  rig.channel.send = [&refusals, send](const std::string& chat, const std::string& text) {
+    if (refusals > 0) return --refusals, false;
+    return send(chat, text);
+  };
+  rig.epoch += 10 * 3600 + 60;
+  TEST_ASSERT_TRUE(rig.idle(io).ok());
+  TEST_ASSERT_EQUAL(1, (int)rig.sent.size());
+  TEST_ASSERT_EQUAL(1, (int)rig.held->notes().size());
+  TEST_ASSERT_TRUE(rig.held->notes()[0].state == plain::HeldState::Ready);
+  TEST_ASSERT_TRUE(rig.idle(io).ok());
+  TEST_ASSERT_EQUAL(2, (int)rig.sent.size());
+  TEST_ASSERT_TRUE(rig.sent[1].text == "refused once");
 }
 
 void test_an_already_delivered_note_is_not_sent_again() {
@@ -731,6 +806,8 @@ int main(int, char**) {
   RUN_TEST(test_a_routine_output_reaches_the_owners_transcript_whole);
   RUN_TEST(test_the_note_label_names_the_routine_with_the_year);
   RUN_TEST(test_a_quiet_hours_note_is_held_and_sent_as_stored_when_they_end);
+  RUN_TEST(test_quiet_hours_longer_than_the_hold_keep_the_note_until_they_end);
+  RUN_TEST(test_a_cut_after_the_send_never_sends_a_held_note_twice);
   RUN_TEST(test_an_expired_note_is_dropped_unsent);
   RUN_TEST(test_an_already_delivered_note_is_not_sent_again);
   RUN_TEST(test_the_same_text_on_another_day_is_still_sent);

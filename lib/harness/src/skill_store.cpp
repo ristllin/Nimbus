@@ -2,7 +2,28 @@
 
 #include <algorithm>
 
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
 #include "nimbus/harness/builtin_skills.h"
+#else
+// Engine 2 links no built-in skill (PRD section 4; lane E2-P-SKILL): the store is shared, the
+// built-in table (builtin_skills.cpp) is engine 1's, so here the store has none.
+namespace agent {
+namespace {
+struct BuiltinSkill {
+  const char* id;
+  const char* title;
+  const char* desc;
+};
+size_t builtinSkillCount() { return 0; }
+const BuiltinSkill& builtinSkill(size_t) {
+  static const BuiltinSkill kNone{nullptr, nullptr, nullptr};
+  return kNone;
+}
+bool isBuiltinSkill(const std::string&) { return false; }
+std::string builtinSkillBody(const std::string&, bool, bool) { return std::string(); }
+}  // namespace
+}  // namespace agent
+#endif
 #include "nimbus/harness/compose.h"   // loopToolName
 
 namespace agent {

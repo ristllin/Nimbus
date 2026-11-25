@@ -46,6 +46,60 @@ def test_release_yml_wiring():
     assert rel["manifest_pairs"]["nimbus-tft"] == "firmware-nimbus-tft.bin"
     assert rel["webflash_dir_of_type"]["freenove-35"] == "esp32s3-cyd-35"
     assert "esp32s3-cyd-40" in rel["built_envs"]
+    assert rel["runs_plan"] and rel["literals"] == []
+
+
+# --- release.yml reads the variant table (tools/release/variants.json) ----------
+def _variants():
+    return m._load_publish_candidate().load_table()
+
+
+def _judge_table(table):
+    real = m.read_sources()
+    real["rel"] = m.parse_release_yml(m._read(m.RELEASE_YML_REL), table)
+    return m.judge(m.CONFIG_TABLE, real)
+
+
+def test_a_variant_literal_back_in_the_workflow_fails():
+    yml = m._read(m.RELEASE_YML_REL)
+    for literal in (
+        "pio run -e esp32s3-cyd",
+        "freenove-35=firmware-freenove-35.bin",
+        "repository: x/firmware-freenove.bin",
+        "repository: ristllin/nimbus-fw-releases",
+    ):
+        real = m.read_sources()
+        real["rel"] = m.parse_release_yml(yml + "\n# " + literal + "\n")
+        ok, errs = m.judge(m.CONFIG_TABLE, real)
+        assert not ok and any("names variants itself" in e for e in errs), literal
+
+
+def test_a_workflow_that_does_not_run_the_plan_fails():
+    yml = m._read(m.RELEASE_YML_REL).replace("publish_candidate.py plan", "publish_candidate.py nothing")
+    real = m.read_sources()
+    real["rel"] = m.parse_release_yml(yml)
+    ok, errs = m.judge(m.CONFIG_TABLE, real)
+    assert not ok and any("does not run" in e for e in errs)
+
+
+def test_the_table_drifting_from_the_config_table_fails():
+    assert _judge_table(_variants())[0]  # the neighbor: the shipped table agrees
+    for idx, key, value, who in (
+        (1, "image", "firmware-freenove-28.bin", "freenove-28"),
+        (3, "env", "esp32s3-cyd-35", "freenove-40"),
+        (2, "webflash", False, "freenove-35"),
+    ):
+        t = _variants()
+        t["variants"] = [dict(r) for r in t["variants"]]
+        t["variants"][idx][key] = value
+        if key == "env":  # two rows on one env is refused by the table itself
+            t["variants"][2]["env"] = "esp32s3-cyd-40"
+        ok, errs = _judge_table(t)
+        assert not ok and any(who in e for e in errs), (key, errs)
+    t = _variants()
+    t["variants"] = t["variants"][:3]
+    ok, errs = _judge_table(t)
+    assert not ok and any("freenove-40" in e and "missing" in e for e in errs)
 
 
 # --- the class rule: an unmapped / mis-mapped config FAILS --------------------
@@ -148,14 +202,14 @@ def test_dropped_publish_asset_fails():
 
 
 def test_empty_webflash_loop_fails_closed():
-    # If the `for v in ...` loop parser matched nothing (a reformat), that dimension must
-    # fail closed, not be skipped silently.
+    # If the plan has no web-flash list, that dimension must fail closed, not be skipped
+    # silently.
     real = m.read_sources()
     real["rel"] = dict(real["rel"])
     real["rel"]["webflash_lists"] = []
     ok, errs = m.judge(m.CONFIG_TABLE, real)
     assert not ok
-    assert any("for v in" in e for e in errs)
+    assert any("web-flash variant list" in e for e in errs)
 
 
 def test_missing_chipfamily_fails_closed():

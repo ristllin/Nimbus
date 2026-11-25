@@ -31,13 +31,18 @@ ARG ARDUINOJSON_REF=v7.4.3
 # older portable headers than the firmware, so a header the engine now needs was
 # missing and the image build failed (or, worse, drifted).
 ARG SOLIDE_DRIVERS_REF=v0.8.1
+# Unity's header (the version pio test -e native resolves): test/support/tx_battery/pending.h,
+# which the hosted tests include through stub_wire.h, names unity.h.
+ARG UNITY_REF=v2.6.1
 # The Makefile resolves ArduinoJson from .pio/libdeps/native and solide-drivers
 # as the sibling $(REPO)/../solide-drivers; REPO is /src, so the sibling is
 # exactly /solide-drivers.
 RUN git clone --depth 1 --branch ${ARDUINOJSON_REF} https://github.com/bblanchon/ArduinoJson.git \
         /src/.pio/libdeps/native/ArduinoJson \
     && git clone --depth 1 --branch ${SOLIDE_DRIVERS_REF} https://github.com/ristllin/solide-drivers.git \
-        /solide-drivers
+        /solide-drivers \
+    && git clone --depth 1 --branch ${UNITY_REF} https://github.com/ThrowTheSwitch/Unity.git \
+        /src/.pio/libdeps/native/Unity
 WORKDIR /src/nimbusd
 # make clean first: the build context may carry a host (macOS) build/ dir, and a
 # stale Mach-O object would fail the Linux link with "file format not recognized".

@@ -6,124 +6,163 @@
 // the fragments concatenate BYTE-IDENTICALLY to the original CONFIG_HTML -
 // tools/webui_concat_check.py asserts it. Served in order by webui.cpp's
 // chunked '/' handler; web_pages.h lists the order.
+//
+// Comments stay OUT of the served script (CUM-997): UI_JS is a run of adjacent raw-string
+// literals that the compiler joins, and every comment sits between two of them as a C++
+// comment, so app.js does not carry ~90 KB of prose through the cloud relay's
+// kLoopbackMaxRespBody buffer. To comment new code, close the literal on its own line,
+// write // lines, and reopen the next literal on its own line, as everywhere below (the
+// reopened literal starts with that newline, so the code lines stay byte-identical).
 
 static const char UI_JS[] PROGMEM = R"=====(<script>
 const $=id=>document.getElementById(id);
+)====="
 // Hosted (Virtual Nimbus) honest-UI flag (CUM-279): nimbusd's bootstrap sets
 // window.NIMBUS_HOSTED before this runs; hides device-only chrome that is faked or
 // dead on a hosted instance (no ring, screen, mic, AP, or ESP OTA).
+R"=====(
 let HOSTED=false;try{HOSTED=(window.NIMBUS_HOSTED===true);}catch(e){}
+)====="
 // --- Per-device auth (owner R2: identify ONCE per browser, then forever) ---
 // The token persists in localStorage, never per-tab sessionStorage (a QR link opened in
 // a phone's ephemeral webview lost it). Every request carries it; with no token the page
 // renders only the identify gate. Storage access can throw (Safari private browsing,
 // blocked site data): every touch is guarded, with an in-memory token as the fallback.
+R"=====(
 let _memTok='';
 function nimbusTok(){try{return localStorage.getItem('nimbusTok')||_memTok;}catch(e){return _memTok;}}
+)====="
 // Store the token. Returns true only when it is DURABLY stored (survives a reload).
+R"=====(
 function setTok(t){_memTok=t;try{localStorage.setItem('nimbusTok',t);return localStorage.getItem('nimbusTok')===t;}catch(e){return false;}}
+)====="
 // True when this load accepted a deprecated ?t= sign-in link, so a one-time
 // migration hint can be shown once the page is up (CUM-45).
+R"=====(
 let _signinMigrated=false;
 (function(){
   try{const legacy=sessionStorage.getItem('nimbusTok');   // migrate pre-R2 tabs
       if(legacy&&!nimbusTok())setTok(legacy);}catch(e){}
   const u=new URLSearchParams(location.search).get('t');
+)====="
   // Legacy ?t= sign-in link (deprecated, CUM-45). A durable token must never stay in a
   // URL (browser history syncs across machines). Accept it ONCE for old QR codes and
   // bookmarks: store it for the X-Nimbus-Token header, strip it from the address bar
   // (keeping non-secret state such as ?onboard=provider) and flag the migration hint.
   // New sign-ins use the one-time ?c= exchange below.
+R"=====(
   if(u&&setTok(u)){
     _signinMigrated=true;
     const q=new URLSearchParams(location.search);q.delete('t');
     history.replaceState(null,'',location.pathname+(q.toString()?'?'+q.toString():''));
   }
+)====="
   // Base path of the served app. On the LAN this is "" (page at "/"); through the
   // cloud tunnel the page is served under "/d/<deviceId>/", so absolute API paths
   // ("/api/state") must be prefixed to stay inside the tunnel subtree. Computed once
   // from the current location: the directory of the current path, minus a trailing
   // slash. "/" -> "", "/d/<id>/" -> "/d/<id>".
+R"=====(
   const _base=location.pathname.replace(/\/[^/]*$/,'');
   const _f=window.fetch;
   window.fetch=function(url,opt){
     opt=opt||{};
     opt.headers=Object.assign({},opt.headers||{},{'X-Nimbus-Token':nimbusTok()});
+)====="
     // Rewrite same-origin absolute paths under the app base (no-op on LAN). Leave
     // protocol-relative ("//host") and full URLs untouched.
+R"=====(
     if(_base&&typeof url==='string'&&url.charAt(0)==='/'&&url.charAt(1)!=='/')url=_base+url;
     return _f(url,opt).then(r=>{if(r.status===401)showAuth();return r;});
   };
 })();
+)====="
 // An unauthenticated tab must STOP polling. Every token-gated GET (state/orch/
 // health/telegram/mem) 401s without a valid token, and the device treats a burst
 // of 401s as "someone wants to configure" and parks the panel on the Config QR -
 // which permanently blocked the idle screensaver from arming (owner: "a full
 // night, no logo"). canPoll() gates every background poll; a successful identify
 // reloads the page so polling resumes clean. Set on no-token or the first 401.
+R"=====(
 let _authPaused=false;
 function canPoll(){return !!nimbusTok() && !_authPaused;}
+)====="
 // Full-screen identify gate: shown before ANY data when no token is stored, or on
 // a 401 (wrong/rotated token). One successful identification is permanent for
 // this browser. Mirrors the guidance printed on the device's Connectivity screen.
+R"=====(
 function showAuth(){
   _authPaused=true;   // stop the background pollers from re-flooding the device with 401s
   if($('authgate'))return;
+)====="
   // CUM-454: nothing of the app may show through the gate. On a phone the overlay alone
   // was not enough: the page under it still scrolled, and iOS overscroll or the
   // collapsing URL bar exposed the shell at the bottom edge. authlock (ui_shell.h)
   // stops the page scrolling and hides the sidebar/bottom bar and every pane; the gate
   // is sized to the dynamic viewport and scrolls within itself. Removed on sign-in.
+R"=====(
   document.documentElement.classList.add('authlock');
   const b=document.createElement('div');b.id='authgate';
   b.style.cssText='position:fixed;inset:0;height:100vh;height:100dvh;overflow-y:auto;overscroll-behavior:none;background:#14181c;color:#dde;z-index:9999;display:flex;text-align:center;padding:24px';
+)====="
   // Scan-first, with an explicit text fallback (CUM-208): a QR-only flow strands
   // anyone who can't scan (no second device, camera trouble, or they ARE the phone).
   // "Enter the code instead" reveals the code field + how to read the code as text on
   // the device, so the manual path is discoverable rather than buried.
+R"=====(
   b.innerHTML='<div style="max-width:420px;margin:auto">'+
     '<img src=/logo.svg alt="" style="width:96px;height:96px;display:block;margin:0 auto 14px;background:#fff;border-radius:50%;padding:6px">'+
     '<h2 style="margin:0 0 8px">Sign in to Nimbus</h2>'+
     '<p style="color:#9ab">Scan the Sign-in QR on the device screen to sign in with no typing.</p>'+
+)====="
     // Can't scan (this same phone, no camera, an ephemeral webview)? The code path is
     // a first-class control right here, not a menu safari (CUM-384): a real button
     // reveals the field, and the reveal says exactly where to read the code on the
     // device - the Show code affordance on its own Sign-in QR screen.
+R"=====(
     '<button id=authshow type=button style="background:none;border:1px solid #2ea394;color:#7fd1c8;cursor:pointer;font-size:14px;padding:8px 16px;border-radius:9px;margin-top:4px">Enter the code instead</button>'+
     '<div id=authcode style="display:none;margin-top:12px">'+
     '<p style="color:#9ab;font-size:13px">Type the device sign-in code from the device screen. When the device shows its Setup screen, the code is on it; otherwise open the Sign-in QR (Settings &gt; Connectivity) and tap Show code. It lasts about 10 minutes.</p>'+
+)====="
     // Codes are lowercase hex (CUM-453): no autocapitalize or autocorrect, or a phone
     // keyboard capitalizes the first letter of a case-sensitive code.
+R"=====(
     '<input id=authtok placeholder="device sign-in code" aria-label="Device sign-in code" autocapitalize=off autocorrect=off spellcheck=false autocomplete=off style="width:240px;padding:8px;font-size:15px"> '+
     '<button id=authuse style="padding:8px 16px;font-size:15px">Continue</button>'+
     '<p id=autherr role=alert style="color:#e88;font-size:13px;margin-top:8px"></p></div>'+
     '<p style="color:#678;font-size:12px;margin-top:14px">New device? Open 192.168.4.1 on its setup hotspot. First-time setup signs you in automatically.</p></div>';
   document.body.appendChild(b);
   $('authshow').onclick=()=>{$('authcode').style.display='block';$('authshow').style.display='none';$('authtok').focus();};
+)====="
   // Hand-entry fallback (CUM-208, CUM-295): the typed value is a SINGLE-USE,
   // short-lived sign-in code, exchanged for the durable token exactly like the ?c=
   // link - never stored as the token itself (a single-use code is not the token).
   // Normalized to the minted form (lowercase hex) so a stray capital or space still redeems.
   // Enter (the phone keyboard's Go key) submits, like every other single-field form here.
+R"=====(
   $('authtok').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();$('authuse').click();}};
   $('authuse').onclick=()=>{const c=$('authtok').value.trim().toLowerCase();if(!c)return;
     const btn=$('authuse');btn.disabled=true;
     signinExchange(c,()=>{btn.disabled=false;
       $('autherr').textContent='That code is invalid or has expired. Type the code the device screen shows now.';});};
 }
+)====="
 // One-time sign-in code exchange (CUM-45): a short-lived, single-use code is
 // exchanged for the durable token, stored client-side, and the page reloads clean.
 // Nothing durable ever appears in a URL, so a synced-history copy of a ?c= link is
 // inert once used. Shared by the ?c= link handler and the hand-entry fallback.
 // onFail runs on a bad/expired code (the gate then handles sign-in).
+R"=====(
 function signinExchange(code,onFail){
   const fd=new FormData();fd.append('code',code);
   fetch('/api/signin/exchange',{method:'POST',body:fd}).then(r=>r.ok?r.json():Promise.reject(r.status))
     .then(o=>{if(!o||!o.token){if(onFail)onFail();return;}
       if(setTok(o.token)){location.reload();return;}
+)====="
       // Storage blocked (private browsing): the token lives in memory only, so a
       // reload would drop it and the single-use code is already spent. Instead
       // dismiss any sign-in gate and resume with the in-memory token.
+R"=====(
       _authPaused=false;const g=$('authgate');if(g)g.remove();
       document.documentElement.classList.remove('authlock');   // CUM-454: app back
       if(typeof loadState==='function')loadState();})
@@ -132,18 +171,24 @@ function signinExchange(code,onFail){
 (function(){
   const c=new URLSearchParams(location.search).get('c'); if(!c)return;
   const q=new URLSearchParams(location.search);q.delete('c');
+)====="
   // Strip the code from the address bar immediately (single-use, keep it out of history).
+R"=====(
   history.replaceState(null,'',location.pathname+(q.toString()?'?'+q.toString():''));
   signinExchange(c);   // bad/expired -> the gate handles sign-in
 })();
+)====="
 // One-time migration hint for a deprecated ?t= sign-in link (CUM-45): the person
 // is already signed in on this browser; nudge them to the Sign-in QR next time.
+R"=====(
 function renderMigrationHint(){
   if($('migHint'))return;
   const b=document.createElement('div');b.id='migHint';b.className='warnbox';
+)====="
   // Own OPAQUE background + lift (CUM-233): the shared .warnbox tint is translucent,
   // fine for in-flow banners but as a fixed overlay it let the page text bleed through
   // into an unreadable overlap. A solid raised card sits cleanly over the content.
+R"=====(
   b.style.cssText='position:fixed;left:50%;top:12px;transform:translateX(-50%);max-width:520px;z-index:200;display:flex;gap:12px;align-items:flex-start;background:var(--raise2);box-shadow:0 6px 24px rgba(0,0,0,.45)';
   const s=document.createElement('span');
   s.textContent='You are signed in on this browser. That sign-in link is being retired for security; next time scan the Sign-in QR on the device.';
@@ -154,14 +199,19 @@ function renderMigrationHint(){
 }
 function showMigrationHint(){
   if(!_signinMigrated||$('migHint'))return;
+)====="
   // Suppress during first-run onboarding (CUM-233): a stale pre-reset browser token
   // can set _signinMigrated on a factory-reset device, where this notice is the wrong
   // audience and collides with the setup wizard. Only show it on a configured device.
+R"=====(
   fetch('/api/state').then(r=>r.json()).then(st=>{if(!st.needsOnboarding)renderMigrationHint();}).catch(()=>renderMigrationHint());
 }
 document.addEventListener('DOMContentLoaded',showMigrationHint);
+)====="
 // No stored token -> gate immediately, before any load/poll renders data.
+R"=====(
 if(!nimbusTok())document.addEventListener('DOMContentLoaded',showAuth);
+)====="
 // Navigation (CUM-25): five destinations, each backed by one or more existing
 // pane divs shown together. This preserves every inner element id (the JS builds
 // against ids, not pane structure) while presenting the approved IA:
@@ -170,10 +220,13 @@ if(!nimbusTok())document.addEventListener('DOMContentLoaded',showAuth);
 //   Assistant (providers/models, tools + sandbox, connectors + MCP, skills,
 //              routines + wake-ups, usage + budgets, safety),
 //   Device (display, sound, battery, network, updates, cloud, advanced, danger).
+R"=====(
 const DEST={home:['dash'],chat:['chat'],memory:['mem'],assistant:['harness','usage','gov'],device:['set']};
+)====="
 // Per-pane lazy loaders, run when a destination containing that pane opens.
 // Defensive (CUM-279): a loader that throws on one absent/hosted-only field must
 // never break navigation - the body is guarded so a bad pane still switches.
+R"=====(
 function loadPane(p){
  try{
   if(p==='dash'){   // Home: active sessions + health load immediately, not on the next poll
@@ -183,8 +236,10 @@ function loadPane(p){
   if(p==='gov'){if(typeof loadLoops==='function')loadLoops();
     if(typeof loadWakeups==='function')loadWakeups();
     if(typeof loadSafety==='function')loadSafety();}
+)====="
   // Safety fetchpol + moderation load with pane-usage's loadOrch/loadFetchQ (same
   // DEST.assistant group); the Activity list + allowlist load via loadSafety above.
+R"=====(
   if(p==='mem'){if(typeof loadMemDash==='function')loadMemDash();if(typeof loadFiles==='function')loadFiles();}
   if(p==='harness'){if(typeof loadOrch==='function')loadOrch();if(typeof loadModels==='function')loadModels();if(typeof loadConnectors==='function')loadConnectors();if(typeof loadTools==='function')loadTools();if(typeof loadSkills==='function')loadSkills();}
   if(p==='usage'){if(typeof loadOrch==='function')loadOrch();if(typeof loadFetchQ==='function')loadFetchQ();if(typeof loadUsageHistory==='function')loadUsageHistory();}
@@ -192,9 +247,11 @@ function loadPane(p){
   if(p==='set'){if(typeof loadThemes==='function')loadThemes();if(typeof loadConnect==='function')loadConnect();if(typeof loadWifi==='function')loadWifi();}
  }catch(e){/* one pane's lazy load must never kill navigation */}
 }
+)====="
 // Switch to a destination: show its pane group, hide the rest, mark the tab, run
 // the group's loaders. Guarded so a tab click always completes (never strands on
 // Home) even if a loader or a stray field would throw. Exposed for quick actions.
+R"=====(
 function goDest(dest){
   const panes=DEST[dest]; if(!panes)return;
   try{
@@ -205,17 +262,23 @@ function goDest(dest){
   try{window.scrollTo(0,0);}catch(e){}
 }
 document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>goDest(b.dataset.p));
+)====="
 // Quick actions (Home) and any in-page link that jumps to a destination.
+R"=====(
 document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>goDest(b.dataset.go));
 goDest('home');   // default destination
+)====="
 // Honest hosted chrome (CUM-279): hide the ESP OTA "Software update" card (a VN
 // updates by image roll, not firmware OTA) and the Home action that jumps to it.
+R"=====(
 function applyHostedChrome(){
   if(!HOSTED)return;
   try{
+)====="
     // Software update: a VN updates by image roll, not ESP OTA. Keep the titled
     // "Software update" group in its normal place (no floating orphan between Sound
     // and Connectivity, CUM-218) and replace its body with the honest platform line.
+R"=====(
     const f=$('fwsec'), body=f&&f.querySelector('.setbody');
     if(body){body.innerHTML='';
       const v=document.createElement('p'); v.style.margin='6px 0';
@@ -226,8 +289,10 @@ function applyHostedChrome(){
       body.appendChild(n);}
     document.querySelectorAll('[data-go=device]').forEach(b=>{
       if((b.textContent||'').indexOf('Check for updates')===0)b.style.display='none';});
+)====="
     // A hosted instance has no restart, power, screen, ring, sound or card to erase, and
     // only one mode: those controls go, never a button that answers an error.
+R"=====(
     ['homeRestart','homePowerOff','modehdr'].forEach(id=>{const el=$(id); if(el)el.style.display='none';});
     document.querySelectorAll('.mobmode').forEach(el=>{el.style.display='none';});
     document.querySelectorAll('details.setgroup').forEach(g=>{const s=g.querySelector('summary'),t=s?s.textContent:'';
@@ -237,9 +302,11 @@ function applyHostedChrome(){
       [ms,tip,lb].forEach(el=>{if(el)el.style.display='none';});}
     const lede=document.querySelector('#pane-set .plede');
     if(lede)lede.textContent='Identity, software version and connectivity, all in one place.';
+)====="
     // What this instance does not have: never a control that answers a refusal or does
     // nothing. Voice, a custom endpoint, the settings it keeps fixed, the Safety sub-page
     // (no scanner, downloads or guest moderation here), standing rules and self-approval.
+R"=====(
     document.querySelectorAll('details.setgroup').forEach(g=>{const s=g.querySelector('summary'),t=s?s.textContent:'';
       if(['Voice','Custom endpoint'].some(x=>t.indexOf(x)===0))g.style.display='none';});
     const off=el=>{if(el)el.style.display='none';};
@@ -256,12 +323,16 @@ function applyHostedChrome(){
     off(document.querySelector('.subtab[data-sp=safety]'));
     ['prefslist','prefsnew','prefsmsg'].forEach(id=>{const e=$(id); if(id==='prefsnew')off(e&&e.parentElement); else if(id==='prefslist')row(id); else off(e);});
     const oh=$('orchHost'); if(oh)[].slice.call(oh.options).forEach(o=>{if(o.value==='custom')o.remove();});
+)====="
     // Recording is real here, and is about this instance rather than a card.
+R"=====(
     const tr=$('orchTrace'), trLb=tr&&tr.closest('label');
     if(trLb)[].forEach.call(trLb.childNodes,n=>{if(n.nodeType===3&&/thinking/.test(n.textContent))n.textContent=' Record tool calls ';});
     const trTip=trLb&&trLb.nextElementSibling;
     if(trTip&&trTip.classList.contains('tip'))trTip.textContent='Keeps a record of what the assistant did on each turn - each tool call and its result - viewable in the chat. Stored on this instance. Turning it off stops new records.';
+)====="
     // The lines that would be untrue on a hosted instance, in its own words.
+R"=====(
     const HOSTED_WORDS=[
       ['On-device storage','Instance storage'],
       ['What the device knows and the files it has made, stored on its SD card, not in a cloud.','What this instance knows and the files it has made, stored on its own volume.'],
@@ -277,12 +348,14 @@ function applyHostedChrome(){
   }catch(e){}
 }
 applyHostedChrome();
+)====="
 // Honest hosted cloud + sign-in (CUM-218). A hosted instance is DEFINED by its
 // cloud link, so the device-firmware pairing UI ("Cloud access is off. Pair with
 // the cloud") is a lie there. State the one true fact - this instance is reached
 // through its cloud link - and drop the pairing controls. The device sign-in code
 // is a LAN recovery aid (recover a browser that cannot scan the device's QR); a
 // hosted instance has no screen and no LAN, so hide it rather than show a bare "-".
+R"=====(
 function applyHostedCloudChrome(){
   if(!HOSTED)return;
   try{
@@ -295,18 +368,22 @@ function applyHostedCloudChrome(){
       u.style.cssText='font-family:var(--mono);word-break:break-all;margin-top:6px;color:var(--ink2)';
       u.textContent=location.origin+location.pathname.replace(/\/[^/]*$/,'');   // the tunnel URL
       line.appendChild(u);}
+)====="
     // Device sign-in code (identity group + Connectivity row + regen button).
+R"=====(
     ['idTokenRow','cxTokenRow'].forEach(id=>{const el=$(id); if(el)el.style.display='none';});
     const rg=$('regenTok'); if(rg&&rg.parentNode)rg.parentNode.style.display='none';
   }catch(e){}
 }
 applyHostedCloudChrome();
+)====="
 // Honest hosted networking (CUM-207/CUM-279): a hosted instance has no radio, so the
 // whole Wi-Fi group ("Trying saved networks", the saved list, Scan, Add a hidden
 // network, Recovery) and the Bluetooth group are false there - the same "ap undefined"
 // honesty class the memory tile and network line already fixed. Collapse both to one
 // platform line and drop the LAN "On your network" row (a hosted instance has no LAN
 // address); Cloud access stays as the real way in.
+R"=====(
 function applyHostedConnectivity(){
   if(!HOSTED)return;
   try{
@@ -323,6 +400,7 @@ function applyHostedConnectivity(){
   }catch(e){}
 }
 applyHostedConnectivity();
+)====="
 // Honest hosted battery/power (CUM-214 ruling): a hosted instance has no pack, no LED
 // ring, and no sense hardware, so the whole unified Battery area is moot there - the one
 // #battsec section now carries the battery mode preset, the customization (nested
@@ -330,6 +408,7 @@ applyHostedConnectivity();
 // On a VN the profile is a no-op (nimbusd omits it from /api/state and /api/config ignores
 // hardware keys), the ring is absent, and no telemetry is valid. Collapse it to one honest
 // platform line.
+R"=====(
 function applyHostedBattery(){
   if(!HOSTED)return;
   try{
@@ -345,17 +424,21 @@ function applyHostedBattery(){
   }catch(e){}
 }
 applyHostedBattery();
+)====="
 // "What next" card on Home, shown once right after onboarding finishes (CUM-66).
+R"=====(
 (function(){try{if(localStorage.getItem('nimbusJustOnboarded')==='1'){
   localStorage.removeItem('nimbusJustOnboarded');
   const w=$('whatNext'); if(w)w.style.display='';
 }}catch(e){}
 const dz=$('whatNextDismiss'); if(dz)dz.onclick=()=>{const w=$('whatNext'); if(w)w.style.display='none';};})();
 
+)====="
 // ---- Global search / command palette (CUM-62) ------------------------------
 // One search over destinations + actions (a static index), files, memory,
 // sessions, and the embedded docs pack. Keyboard: Ctrl/Cmd+K or "/" opens, Esc
 // closes, Up/Down move, Enter activates. Results are grouped by source.
+R"=====(
 const SEARCH_INDEX=[
   {group:'Go to',label:'Home',kw:'dashboard status tiles sessions alerts health device name rename identity',act:()=>goDest('home')},
   {group:'Go to',label:'Chat',kw:'message assistant talk conversation',act:()=>goDest('chat')},
@@ -380,9 +463,13 @@ const SEARCH_INDEX=[
   {group:'Action',label:'Sign-in code and connectivity',kw:'device sign-in token qr wifi network recovery',act:()=>{goDest('device');_openGroup('Connectivity');}},
   {group:'Action',label:'Erase / factory reset',kw:'erase reset wipe factory sd danger',act:()=>{goDest('device');_openGroup('Danger zone');}}
 ];
+)====="
 // Open a Device <details> group by its summary text, so an action can jump to it.
+R"=====(
 function _openGroup(name){document.querySelectorAll('details.setgroup').forEach(d=>{var s=d.querySelector('summary');if(s&&s.textContent.indexOf(name)===0)d.open=true;});}
+)====="
 // Jump to the Assistant page and activate one of its seven exclusive subtabs.
+R"=====(
 function _goSub(sp){goDest('assistant');var b=document.querySelector('.subtab[data-sp='+sp+']');if(b)b.click();}
 function _sEsc(s){return (s||'').replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));}
 let _sSel=0,_sItems=[];
@@ -417,10 +504,12 @@ function renderSearch(groups){
   box.querySelectorAll('.sresult').forEach(el=>{el.onmouseenter=()=>{_sSel=+el.dataset.i;_sPaint();};el.onclick=()=>_sActivate(_sItems[+el.dataset.i]);});
   _sSel=0;_sPaint();
 }
+)====="
 // The search "index": a static settings/actions index plus live source fetchers.
 // Static hits are synchronous; each source fills its group as it resolves, so the
 // palette stays responsive. searchIndexStatic() is pure and unit-testable.
 // A hosted instance drops the actions whose group it does not have.
+R"=====(
 const SEARCH_NOT_HOSTED=['Safety','Check for updates','Pair with the cloud','Display and touch','Ring theme and demo','Battery and battery mode','Sign-in code and connectivity','Erase / factory reset'];
 function searchIndexStatic(q){
   const ql=(q||'').trim().toLowerCase();
@@ -453,6 +542,7 @@ document.addEventListener('keydown',e=>{
   if((e.key==='k'||e.key==='K')&&(e.metaKey||e.ctrlKey)){e.preventDefault();openSearch();}
   else if(e.key==='/'&&!$('searchOverlay')&&!/^(INPUT|TEXTAREA|SELECT)$/.test((e.target&&e.target.tagName)||'')){e.preventDefault();openSearch();}
 });
+)====="
 // Sub-tab switching (Assistant page): the seven subtabs render EXCLUSIVELY - one
 // subpane at a time (owner amendment, CUM-163). Scoped to .subtab/data-sp and
 // #subpane-<x>; .subpane is a different class from .pane, so the top destination
@@ -460,12 +550,15 @@ document.addEventListener('keydown',e=>{
 // Connectors, Tools, Skills), pane-usage (Usage), and pane-gov (Routines, Safety),
 // all shown together by DEST.assistant, so hiding every .subpane and showing one
 // gives a single visible pane. Default = the first sub-tab (Models).
+R"=====(
 document.querySelectorAll('.subtab').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('.subpane').forEach(p=>p.style.display='none');
   document.querySelectorAll('.subtab').forEach(t=>t.classList.remove('on'));
   $('subpane-'+b.dataset.sp).style.display='';
   b.classList.add('on');
+)====="
   // Refresh the area we just revealed (all also load once at page init).
+R"=====(
   const sp=b.dataset.sp;
   if(sp==='connectors'){if(typeof loadConnectors==='function')loadConnectors();if(typeof loadOrch==='function')loadOrch();}
   else if(sp==='tools'&&typeof loadTools==='function')loadTools();
@@ -476,10 +569,12 @@ document.querySelectorAll('.subtab').forEach(b=>b.onclick=()=>{
   else if(sp==='safety'){if(typeof loadOrch==='function')loadOrch();if(typeof loadFetchQ==='function')loadFetchQ();}
 });
 {const st=document.querySelector('.subtab'); if(st)st.classList.add('on');}
+)====="
 // Tap-? help: every button.qh toggles the first .hint.tip among its own or its
 // parent's following siblings. Delegated, so dynamically built rows (paramRow,
 // connector cards) work with no extra wiring. Placement invariant: the tip must
 // FOLLOW the ? button or the button's immediate parent (label/heading/cell).
+R"=====(
 document.addEventListener('click',e=>{
   const b=e.target.closest&&e.target.closest('button.qh'); if(!b)return;
   e.preventDefault();   // a ? inside a <label>/<summary> must not activate its control
@@ -493,6 +588,7 @@ document.addEventListener('click',e=>{
   const open=h.classList.toggle('open');
   b.setAttribute('aria-expanded',open?'true':'false');
 });
+)====="
 // TTS voices, fetched LIVE from the device (Mistral: its /v1/audio/voices catalog with
 // gender/accent, cached device-side; OpenAI: the verified gpt-4o-mini-tts set) so the
 // picker can't drift from the provider. Minimal bundled fallback if the fetch fails.
@@ -500,6 +596,7 @@ document.addEventListener('click',e=>{
 // entries ({value,label,name,gender,lang,emotion}) that drive a cascading
 // gender -> persona -> emotion picker (#vGender/#vPersona/#vEmotion); the three
 // picks resolve to one entry's slug and save it exactly like the flat select did.
+R"=====(
 function capProbeUpd(){
   var m=$('capProbe'),box=$('capProbeActive'),cost=$('capProbeCost');
   if(!m)return;
@@ -518,8 +615,10 @@ function fillVoices(prov, sel, ck){
                      {value:'gb_jane_neutral',label:'Jane (female, UK) - neutral',name:'Jane',gender:'female',lang:'UK',emotion:'neutral'},
                      {value:'fr_marie_neutral',label:'Marie (female, FR) - neutral',name:'Marie',gender:'female',lang:'FR',emotion:'neutral'}],
             openai:[{value:'alloy',label:'Alloy - neutral'},{value:'nova',label:'Nova - female'},{value:'onyx',label:'Onyx - deep male'}]};
+)====="
   // Cumulo Nimbus voice routes through the OpenAI upstream (gpt-4o-mini-tts, default
   // "alloy"), so its voice set IS the OpenAI one - fetch and fall back against that.
+R"=====(
   FB.cumulo=FB.openai;
   const catProv=(prov==='cumulo')?'openai':prov;
   const tv=$('ttsVoice'), g=$('vGender'), pp=$('vPersona'), em=$('vEmotion'), h=$('voiceHint');
@@ -551,24 +650,32 @@ function fillVoices(prov, sel, ck){
     em.onchange=resolve;
     if(h)h.textContent='Mistral voices, live from the provider: pick gender, then persona, then emotion.';};
   const render=list=>{
+)====="
     // openai and cumulo (which rides the openai upstream) are always flat; only
     // Mistral's catalog carries the gender/persona/emotion structure.
+R"=====(
     const structured=prov!=='openai'&&prov!=='cumulo'&&list.some(v=>v.gender||v.name);
     structured?buildCascade(list):renderFlat(list);};
+)====="
   // A sequence token: only the newest request may draw. A slow list for the
   // previous provider (a Mistral catalog) must never overwrite the one just picked.
+R"=====(
   const seq=(window._voiceSeq=(window._voiceSeq||0)+1);
   const mine=()=>seq===window._voiceSeq;
   fetch('/api/voices?provider='+encodeURIComponent(catProv)).then(r=>r.json())
     .then(l=>{if(mine())render(Array.isArray(l)&&l.length?l:(FB[prov]||FB.mistral));})
     .catch(()=>{if(mine())render(FB[prov]||FB.mistral);});
 }
+)====="
 // Provider priority as an ordered, checkable list -> a comma string (no free-text).
+R"=====(
 function renderPrio(hostId, field, csv){
+)====="
   // cumulo/zai are reorderable rows beside the BYOK heads (both are runnable heads,
   // CUM-242). A stored priority is NEVER reordered: the saved order is kept and any
   // provider it omits is appended (off) in ALL's order. orchHost still lists only the
   // BYOK heads: the router is the fallback source, not the head.
+R"=====(
   const ALL=['openai','anthropic','mistral','cumulo','zai'].concat(HOSTED?[]:['custom']), host=$(hostId); if(!host)return;
   let order=csv.split(',').map(s=>s.trim()).filter(x=>ALL.includes(x));
   let rows=order.map(p=>({p,on:true})).concat(ALL.filter(x=>!order.includes(x)).map(p=>({p,on:false})));
@@ -589,8 +696,10 @@ function renderPrio(hostId, field, csv){
   };
   draw();
 }
+)====="
 // curated override params: key must match nimbus::Param enum ordinal.
 // type: 'num' | 'bool' | 'select'(with opts). label/def/value come from /api/state.
+R"=====(
 let META={};   // key -> {name,value,def,overridden}
 function fmt(k,v){return (META[k]&&META[k].kind=='bool')?(v?'On':'Off'):v;}
 
@@ -613,8 +722,10 @@ function paramRow(p){
   else {inp=document.createElement('input'); inp.type='number';
     if(p.min!==undefined){inp.min=p.min;inp.max=p.max;inp.step=p.step||1;}}
   inp.value=p.value; inp.id='p_'+p.key; row.appendChild(inp);
+)====="
   // Dirty-mark on edit so the 3s poll's in-place sync (applyState) never stomps an
   // unsaved change; cleared only on a SUCCESSFUL Set (audit P1.1).
+R"=====(
   inp.oninput=inp.onchange=()=>{inp.dataset.dirty=1;};
   const setb=document.createElement('button'); setb.textContent='Set';
   setb.onclick=()=>apply({['p_'+p.key]:inp.value}).then(ok=>{if(ok)delete inp.dataset.dirty;});
@@ -634,8 +745,10 @@ function effHtml(p){return p.overridden
   ? '<span class=ovr>custom '+fmt(p.key,p.value)+'</span> (default '+fmt(p.key,p.def)+')'
   : 'default '+fmt(p.key,p.def);}
 
+)====="
 // Context-rich device tiles (Home Overview): a bare number is meaningless, so each
 // tile shows the value WITH its scale (free/total), a threshold marker, and colour.
+R"=====(
 function _tile(k,v,cx,pct,col,mark){
   const g=(pct>0||col)?('<div class=g><i style="width:'+Math.max(0,Math.min(100,pct))+'%;background:'+(col||'#555')+'"></i>'+
     (mark!==undefined?'<span class=mk style="left:'+Math.min(100,mark)+'%"></span>':'')+'</div>'):'';
@@ -646,7 +759,9 @@ function renderDevTiles(d){
   const kb=x=>Math.round((x||0)/1024), mb=x=>((x||0)/1048576).toFixed(1);
   let t;
   if(HOSTED){
+)====="
     // Hosted (CUM-279): the real container free/cap heap in MB, no ESP 34K floor.
+R"=====(
     const mFree=mb(d.heap), mTot=d.heapTotal?mb(d.heapTotal):'64';
     t=_tile('Memory',mFree+'<small>/'+mTot+' MB</small>','container',
             d.heapTotal?d.heap/d.heapTotal*100:100,'#7fd1c8');
@@ -660,12 +775,16 @@ function renderDevTiles(d){
               d.psramFree/d.psramTotal*100,'#7fd1c8');
   const bt=d.batt;
   if(bt&&bt.valid){const m=bt.minsToEmpty;
+)====="
     // Trend wording only (owner 2026-07-16): charging/onExtPower are voltage-trend
     // INFERENCES - no charge-detect hardware exists, so never present them as fact.
+R"=====(
     const tl=(m===undefined||m<0)?(bt.onExtPower?'V stable':'estimating'):(m>=60?Math.floor(m/60)+'h '+(m%60)+'m':m+'m left');
+)====="
     // mvTrue = the ADC's top-band under-read corrected by the BATTCAL anchor - the
     // SAME correction behind the percent next to it, so a full pack reads 8.40V/100%
     // instead of the old 7.91V/100% (owner: "we know for a fact it's 8.4").
+R"=====(
     const bmv=bt.mvTrue||bt.millivolts;
     t+=_tile('Battery',bt.percent+'<small>%</small>',(bmv?(bmv/1000).toFixed(2)+'V · ':'')+tl+(bt.charging?' · V rising':''),
               Math.max(0,bt.percent),bt.percent<20?'#c55':'#7fd1c8');
@@ -675,15 +794,21 @@ function renderDevTiles(d){
   t+=_tile('Mode',(d.mode==1?'Orch':'Notif'),(d.jobs||0)+' active session'+((d.jobs||0)==1?'':'s'),0,'');
   box.innerHTML=t;
 }
+)====="
 // Last LAN address seen, so a changed one can refresh the sign-in links (below).
 // null = nothing seen yet, which must NOT count as a change.
+R"=====(
 let _lastStaIp=null;
+)====="
 // Last station up/down seen, so a join/drop transition re-renders the saved-network
 // list (signal + connection line). null = nothing seen yet, not a change.
+R"=====(
 let _lastSta=null;
+)====="
 // Glass-box availability, cached off the polls the UI already runs (no extra
 // requests). Turn details are SD-gated AND gated on the Activity recording knob,
 // so the chat says which one is missing instead of just showing nothing.
+R"=====(
 let GB={trace:true,sd:true};
 function _chatTraceHint(){
   const el=$('chatTrace'); if(!el)return;
@@ -692,8 +817,10 @@ function _chatTraceHint(){
   else if(!GB.sd)m='No SD card, so turn details can’t be stored.';
   el.textContent=m; el.style.display=m?'':'none';
 }
+)====="
 // CUM-397: the mint affordance. Save posts the capacity, then we poll for the
 // honest outcome (the device message is the single source of truth) and refresh.
+R"=====(
 function setMintMsg(t,err){var m=$('cloudMintMsg');if(m){m.textContent=t||'';m.style.color=t?(err?'#e0b870':'#7fd1c8'):'';}}
 function doMint(){
   var capEl=$('cloudMintCap'),cap=capEl?capEl.valueAsNumber:NaN;
@@ -714,8 +841,10 @@ function pollMint(btn,left){
     else{setMintMsg(m.message||'Couldn\'t mint a key. Try again.',true);if(btn)btn.disabled=false;}
   }).catch(()=>setTimeout(()=>pollMint(btn,left-1),1500));
 }
+)====="
 // The settings-store banner on Home: the device is short of room for settings, so
 // some changes may not save (the full-store class behind the October replay loop).
+R"=====(
 function _nvsBanner(n,r){let b=$('nvsBanner');
   const show=!!n&&(!!n.low||n.fails>0||!!(r&&r.starved));
   if(!b){if(!show)return;const tiles=$('devtiles');if(!tiles||!tiles.parentNode)return;
@@ -725,12 +854,14 @@ function _nvsBanner(n,r){let b=$('nvsBanner');
   b.style.display='block';
   b.textContent='Device storage is almost full, so some changes may not save. Remove connectors you don\'t use.'+
     (n.fails>0?(' '+n.fails+(n.fails==1?' change':' changes')+' did not save since the last restart.'):'');}
+)====="
 // The degraded banner on Home (lane DEGRADE): one line per condition the device runs
 // degraded on, the same set its screen shows (/api/state degraded). The reason opens under
 // its line (a native details row: keyboard reachable, no script state). Calm on purpose: no
 // motion, no toast, no sound. A row is updated in place and only where something changed, so a
 // reason the page is reading stays open, a focused line keeps focus and a selection survives
 // the 3 s poll.
+R"=====(
 function _degradedBanner(g){
   let b=$('degradedBar');
   const items=(g&&g.items)||[];
@@ -748,12 +879,16 @@ function _degradedBanner(g){
       const sm=document.createElement('summary');sm.style.cursor='pointer';
       const p=document.createElement('p');p.style.margin='4px 0 4px 16px';p.style.opacity='.85';
       row.appendChild(sm);row.appendChild(p);}
+)====="
     // Write only what changed: assigning textContent replaces the text node even with the same
     // text, which clears a selection in it and makes a live region announce again.
+R"=====(
     if(row.firstChild.textContent!==it.line)row.firstChild.textContent=it.line;
     if(row.lastChild.textContent!==it.why)row.lastChild.textContent=it.why;
+)====="
     // In the device's order, and a row already in place is left alone: appendChild MOVES a node
     // (remove, then insert), which drops the focus of a keyboard user on its line every 3 s.
+R"=====(
     if(b.children[at]!==row)b.insertBefore(row,b.children[at]||null);
     at++;
   });
@@ -765,32 +900,44 @@ function applyState(d){
   if(d.storeSD!==undefined){GB.sd=!!d.storeSD&&!d.sdLost;_chatTraceHint();}
   if(d.nvs)_nvsBanner(d.nvs,d.nvsReserve);
   _degradedBanner(d.degraded);
+)====="
   // CUM-15: reveal the full-card Format control only when the driver supports it.
+R"=====(
   if($('sdFormatRow'))$('sdFormatRow').style.display=(d.files&&d.files.canFormat)?'block':'none';
+)====="
   // CUM-187: hide the ring simulator on a board with no physical LED ring (the
   // ring-only params are already omitted from d.params server-side). CUM-394: the
   // whole dedicated Ring section (theme + demo + preview) is meaningless without a
   // ring, so collapse it too rather than show an empty section.
+R"=====(
   if(d.hasRing!==undefined&&$('ringsimwrap'))$('ringsimwrap').style.display=d.hasRing?'':'none';
   if(d.hasRing===false&&$('ringGroup'))$('ringGroup').style.display='none';
   else if(d.hasRing===true&&$('ringGroup'))$('ringGroup').style.display='';
+)====="
   // ---- Cloud access (cumulo-nimbus tunnel) ----
+R"=====(
   if(d.cloud&&$('cloudLine')){
     var c=d.cloud;
+)====="
     // Live tunnel reachability (proposal §4): once paired, state the one fact the tab never
     // did - reachable vs paired-but-not-connecting. Otherwise the server's own status line.
+R"=====(
     $('cloudLine').textContent=c.paired
      ?(c.online?'Cloud access is on and reachable.':'Paired, but the tunnel is not connecting.')
      :(c.line||'');
     var pairing=(c.state==='pairing'&&!!c.code);
     var card=$('cloudPairCard'); if(card)card.style.display=pairing?'block':'none';
     if(pairing){
+)====="
       // Large, high-contrast code (CUM-51: no more grayed-out code). The value is
       // from the untrusted pairing server, so textContent - never innerHTML.
+R"=====(
       $('cloudCode').textContent=c.code;
+)====="
       // QR encodes the app deep link carrying the code, so a phone can scan instead
       // of typing. Rendered by our own /api/qr (trusted SVG); re-fetched only when
       // the code changes.
+R"=====(
       var qbox=$('cloudQr');
       if(qbox&&qbox.dataset.code!==c.code){qbox.dataset.code=c.code;
         var link='https://app.cumulo-nimbus.ai/link?code='+encodeURIComponent(c.code);
@@ -810,9 +957,11 @@ function applyState(d){
     $('cloudPair').onclick=()=>cpost('pair',$('cloudPair'),'Starting pairing…','Pairing started - scan the QR or enter the code.');
     $('cloudUnpair').onclick=()=>cpost('unpair',$('cloudUnpair'),'Unpairing…','Unpaired.');
     $('cloudOff').onclick=()=>cpost('optout',$('cloudOff'),'Turning off…','Cloud access off.');
+)====="
     // CUM-397: inline mint affordance, same screen. Shown only when paired AND no
     // cumulo key yet (a hardware device, never a hosted instance). Nothing mints on
     // its own: only the Save button calls /api/cloud/mintkey.
+R"=====(
     var mc=$('cloudMintCard');
     if(mc){
       var hasCk=!!c.hasCumuloKey,show=!!(c.paired&&!hasCk&&!HOSTED);
@@ -822,12 +971,16 @@ function applyState(d){
       if(mbtn&&!mbtn._wired){mbtn._wired=1;mbtn.onclick=doMint;}
     }
   }
+)====="
   // ---- Firmware update (OTA) ----
+R"=====(
   if(d.ota!==undefined&&$('fwState')){
     $('fwCur').textContent=(d.fw||'')+' ('+(d.build||'')+')';
     $('fwLatest').textContent=d.otaLatest||'not checked yet';
+)====="
     // The release's one-line notes from the release manifest (QW5, owner decision D5):
     // what the available update brings, or what the installed version brought.
+R"=====(
     const fnr=$('fwNotesRow'),fn=$('fwNotes');
     if(fnr&&fn){fnr.style.display=d.otaNotes?'':'none';fn.textContent=otaNotesText(d);}
     var st=d.ota; if(st==='error'&&d.otaErr)st+=' ('+d.otaErr+')';
@@ -837,9 +990,11 @@ function applyState(d){
     $('fwBarWrap').style.display=(d.ota==='downloading'||d.ota==='verifying')?'block':'none';
     if(d.otaPct>=0)$('fwBar').style.width=d.otaPct+'%';
     var fi=$('fwInstall');
+)====="
     // Battery gate (CUM-68, N5 payload): an update needs enough charge. When it is
     // available but the battery is too low, name the threshold and block install
     // rather than letting it fail mid-flash.
+R"=====(
     var battOk=(d.otaBattOk===undefined)?true:!!d.otaBattOk;
     var fb=$('fwBatt');
     if(fb){var gated=(d.ota==='available')&&!battOk;
@@ -847,12 +1002,14 @@ function applyState(d){
       fb.textContent=gated?(d.otaBattMsg||'Charge the device to install this update.'):'';}
     fi.style.display=(d.ota==='available')?'inline-block':'none';
     $('fwCheck').disabled=busy;fi.disabled=busy||((d.ota==='available')&&!battOk);
+)====="
     // Single-source the verdict line from the SAME state read as the status field
     // (d.ota), re-derived on every 3s render, so a stale "latest"/"available" line
     // can never sit next to a contradicting status (CUM-249/CUM-264). Only the
     // terminal verdict states are owned here; a live action's own feedback (the
     // spinner mid-check, or an error the owner just triggered) is left alone - it
     // is transient and already reflects the state it came from.
+R"=====(
     var fm=$('fwMsg'), fmb=fm&&fm.getAttribute('data-fb');
     if(fm&&fmb!=='pending'&&fmb!=='error'){
       if(d.ota==='available')fbState(fm,'ok','Update available: '+(d.otaLatest||'a new version')+'.');
@@ -860,8 +1017,10 @@ function applyState(d){
       else if(d.ota==='downloading'||d.ota==='verifying'||d.ota==='rebooting')fbState(fm,'ok','Updating. Keep the device powered on; it restarts when done.');
       else if(d.ota==='unsupported')fbState(fm,'none','Updates aren\'t available on this build.');
       else if(d.ota==='idle')fbState(fm,'idle');
+)====="
       // 'checking'/'error' are left to the action's own pending/error feedback
       // (which this block never writes, so it can never deadlock itself).
+R"=====(
     }
     if(d.autoUpd!==undefined){const au=$('autoUpd');
       if(au&&document.activeElement!==au){au.checked=!!d.autoUpd;
@@ -871,15 +1030,19 @@ function applyState(d){
       if(uc&&document.activeElement!==uc){uc.checked=!!d.usbCfm;
         uc.onchange=()=>{const f=new FormData();f.append('usbCfm',uc.checked?'1':'0');
           fetch('/api/config',{method:'POST',body:f}).then(jok).then(()=>toast(uc.checked?'USB confirm on':'USB confirm off')).catch(failToast);};}}
+)====="
     // Check-for-updates: the POST only STARTS the check on the device (202
     // {ok:true}); the verdict is not in that accept body - the check runs async.
     // So poll /api/state until the definitive otaResult settles and read the
     // verdict from THAT one field - the same source the panel above shows - so
     // the copy can never say "latest" while the engine reports available (CUM-249).
+R"=====(
     $('fwCheck').onclick=()=>run({status:'fwMsg',btn:$('fwCheck'),pending:'Checking for updates…',
+)====="
       // A 409 is a LOCAL refusal (no Wi-Fi / low memory / already running), not a
       // network fault: surface the server's honest message rather than "check the
       // network" (CUM-197).
+R"=====(
       work:()=>fetch('/api/ota/check',{method:'POST'}).then(r=>r.json().then(j=>{
         if(!r.ok)throw ((j&&j.msg)||('Couldn\'t start the update check ('+r.status+').'));
         return pollOtaResult();})),
@@ -889,19 +1052,23 @@ function applyState(d){
         if(o.result==='failed')throw 'the update check failed';   // -> error state
         if(o.result==='pending')return {none:true,msg:'Still checking. Give it a moment, then check again.'};
         return {none:true,msg:'You are on the latest version.'};},   // up-to-date
+)====="
       // A string here is the settled failure reason; anything else is a real
       // transport failure (fetch rejected) - only THEN is the connection the
       // thing to check (CUM-197).
+R"=====(
       error:e=>(typeof e==='string'&&e)||'Couldn\'t reach the device. Check the connection and try again.'});
     fi.onclick=()=>{
       if((d.ota==='available')&&!battOk){fbState('fwMsg','error',d.otaBattMsg||'Charge the device before installing.');return;}
       uiConfirm('Install firmware '+(d.otaLatest||'')+'?\n\nThe device will download, verify the signature, and restart - about two minutes. Keep it powered on.',{ok:'Install Update'}).then(go=>{
        if(!go)return;
+)====="
        // CUM-58 battery gate expressed THROUGH the run() feedback helper (N1): doApply
        // POSTs (with force on a retry); a {ok:false} gate answer either confirms and
        // retries with force (need-power = "install anyway, I'm charging") or throws so
        // run() renders the error state; success resolves to the run() ok copy, plus the
        // device's plain note when the battery health estimate reads low (never a stop).
+R"=====(
        var doApply=function(force){var f=new FormData();if(force)f.append('force','1');
         return fetch('/api/ota/apply',{method:'POST',body:f}).then(r=>r.json()).then(j=>{
           if(j&&j.ok===false){
@@ -917,15 +1084,19 @@ function applyState(d){
   }
   renderDevTiles(d);
   if(d.fw){const fv=$('fwver'); if(fv)fv.textContent=d.fw+(d.build&&d.build!==d.fw?(' ('+d.build+')'):''); fv&&(fv.title='firmware version (build id)'); const hv=$('hostedFwVer'); if(hv)hv.textContent=d.fw+(d.build&&d.build!==d.fw?(' ('+d.build+')'):'');}
+)====="
   // Low-battery preferences + the battery-mode monitor toggle. Wired whenever a
   // batt object is present (CUM-395 folded these in with the pack), so a board with
   // no pack fitted can still see and change them before one is read (CUM-386).
+R"=====(
   if(d.batt){
+)====="
     // CUM-15 class (lying-knob): batt.settingsLive is the SERVER's verdict on
     // whether these two preferences can act right now (rationale: power_policy.h
     // battSettingsLive). When they cannot, the section says so once and the
     // toasts tell the deferred truth, naming the actual blocker; the toggles
     // stay interactive on purpose (pre-configuration is legitimate).
+R"=====(
     const bLive=!!d.batt.settingsLive;
     const np=$('battNoRead'); if(np)np.style.display=(d.batt.battMon&&!bLive)?'':'none';
     const bMsg=(on,y,n)=>bLive?(on?y:n):(d.batt.battMon?'Saved, waiting for a battery':'Applies when monitoring is on');
@@ -939,8 +1110,10 @@ function applyState(d){
       ls.onchange=()=>{const f=new FormData();f.append('lbSaver',ls.checked?'1':'0');
         fetch('/api/config',{method:'POST',body:f}).then(jok)
           .then(()=>toast(bMsg(ls.checked,'Power saving on','Power saving off'))).catch(failToast);};}
+)====="
     // Battery monitoring opt-in (populated even when telemetry is invalid, so an
     // all-in-one owner can turn it on before a pack is ever read). Boot-applied.
+R"=====(
     const bm=$('battMon');
     if(bm&&document.activeElement!==bm){bm.checked=!!d.batt.battMon;
       bm.onchange=()=>{const f=new FormData();f.append('battMon',bm.checked?'1':'0');
@@ -948,18 +1121,24 @@ function applyState(d){
           .then(()=>{toast('Restart to apply');            // CUM-270: offer the control directly
             var br=$('battRestartRow'); if(br)br.style.display='';}).catch(failToast);};}
   }
+)====="
   // Battery hardware section (Device tab). The pack config (thresholds, capacity,
   // chemistry, dividers) is reachable whenever a battery object is present, even
   // before a valid reading, so a freenove / all-in-one can be set up before a pack
   // is fitted (CUM-386). Only the LIVE readout below waits for bt.valid; the config
   // and its Save button are always populated and wired.
+R"=====(
   var bt=d.batt;
+)====="
   // HOSTED (Virtual Nimbus) has no pack/sense hardware, so applyHostedBattery()
   // collapses #battsec to one honest platform line - never re-show it here.
+R"=====(
   if(bt&&!HOSTED){
     $('battsec').style.display='';
+)====="
     // --- pack config: populated + wired in both the valid and no-reading states
     // (webui.cpp always emits these fields regardless of bt.valid) ---
+R"=====(
     if(document.activeElement!==$('sleepMv')&&$('sleepMv'))$('sleepMv').value=(bt.sleepMv!==undefined?bt.sleepMv:6000);
     if(document.activeElement!==$('wakeMv')&&$('wakeMv'))$('wakeMv').value=(bt.wakeMv!==undefined?bt.wakeMv:6500);
     if($('sleepOvr'))$('sleepOvr').checked=!!bt.sleepOvr;
@@ -971,28 +1150,36 @@ function applyState(d){
     if(document.activeElement!==$('battCells')&&$('battCells'))$('battCells').value=(bt.cells!==undefined?bt.cells:0);
     if(document.activeElement!==$('battCurve')&&$('battCurve'))$('battCurve').value=(bt.curve||'');
     window._battState={rtop:bt.rtop,rbot:bt.rbot};   // for the divider-change confirm
+)====="
     // A fixed-divider board (all-in-one) uses its onboard divider, so the sense-
     // resistor inputs do nothing - hide them rather than show a dead knob (CUM-370).
+R"=====(
     window._battDivFixed=!!bt.divFixed;
     var _rtr=$('battRtopRow'),_rbr=$('battRbotRow');
     if(_rtr)_rtr.style.display=bt.divFixed?'none':'';
     if(_rbr)_rbr.style.display=bt.divFixed?'none':'';
+)====="
     // Save the pack config. Wired UNCONDITIONALLY (a prior refactor nested this
     // inside the Calibrate handler, so Save did nothing until Calibrate was pressed
     // first, and the whole block only ran on a valid reading - CUM-386).
+R"=====(
     var pb=$('protSave'); if(pb)pb.onclick=function(){
       var f=new FormData();
       f.append('sleepMv',$('sleepMv').value||'6000');
       f.append('wakeMv',$('wakeMv').value||'6500');
       f.append('sleepOvr',$('sleepOvr').checked?'1':'0');
       f.append('brightOvr',$('brightOvr').checked?'1':'0');
+)====="
       // battery hardware (divider resistors + capacity) - send only if present + changed
+R"=====(
       if($('battCapMah'))f.append('battCapMah',$('battCapMah').value||'3500');
       if($('battChem'))f.append('battChem',$('battChem').value||'liion');
       if($('battCells'))f.append('battCells',$('battCells').value||'0');
       if($('battCurve'))f.append('battCurve',$('battCurve').value||'');
+)====="
       // On a fixed-divider board the sense resistors are a dead knob (hidden), so
       // don't send them - the ADC uses the board's onboard divider regardless.
+R"=====(
       if($('battRtop')&&!window._battDivFixed)f.append('battRtop',$('battRtop').value||'220000');
       if($('battRbot')&&!window._battDivFixed)f.append('battRbot',$('battRbot').value||'100000');
       var dividerChanged=!window._battDivFixed&&$('battRtop')&&$('battRbot')&&window._battState&&(+$('battRtop').value!==window._battState.rtop||+$('battRbot').value!==window._battState.rbot);
@@ -1005,8 +1192,10 @@ function applyState(d){
         fetch('/api/config',{method:'POST',body:f}).then(jok).then(function(j){if(pbtn){pbtn.textContent='Saved';setTimeout(function(){pbtn.textContent='Save';},1200);}toast((j&&j.warn)?j.warn:'Battery settings saved');if(j&&j.warn)loadState();}).catch(failToast);
       });
     };
+)====="
     // --- live readout: real values when a reading is valid, honest 'waiting' copy
     // otherwise (never hide the whole section behind the reading - CUM-386) ---
+R"=====(
     var bcb=$('battcalBtn'),bw=$('battWait');
     if(bt.valid){
       if(bw)bw.style.display='none';
@@ -1014,7 +1203,9 @@ function applyState(d){
       $('battpct').textContent=bt.percent+'%';
       var _bmv=bt.mvTrue||bt.millivolts;
       $('battmv').textContent=(_bmv?_bmv+' mV':'-');
+)====="
       // never hide the measurement behind the correction: raw stays one hover away
+R"=====(
       $('battmv').title=(bt.mvTrue&&bt.mvTrue!==bt.millivolts)
         ?('ADC-corrected (BATTCAL anchor). Raw reading: '+bt.millivolts+' mV - the S3 ADC under-reads a full 2S pack.')
         :'raw ADC reading (uncalibrated - run BATTCAL on a full pack to correct the top band)';
@@ -1023,8 +1214,10 @@ function applyState(d){
         :(m>=60?(Math.floor(m/60)+'h '+(m%60)+'m'):(m+'m'));
       $('battrate').textContent=(bt.ratePctHr!==undefined&&bt.ratePctHr>0)?(bt.ratePctHr.toFixed(1)+' %/hr'):'-';
       $('batthealth').textContent=(bt.health!==undefined)?(bt.health+'%'+(bt.segments?(' ('+bt.segments+' cycles learned)'):' (baseline pending)')):'-';
+)====="
       // Voltage-trend wording only: charging/onExtPower are inferences from the ADC
       // trend - there is no charge-detect hardware, so never state them as fact.
+R"=====(
       $('battsrc').textContent=bt.charging?'voltage rising (inferred)':bt.onExtPower?'voltage stable (inferred)':'draining';
       $('battcal').textContent=bt.calibrated?'calibrated ✓':'not calibrated (reads low near full)';
       if(bcb){bcb.disabled=false;bcb.title='';bcb.onclick=()=>{
@@ -1034,8 +1227,10 @@ function applyState(d){
             ok:()=>{setTimeout(loadState,1200);return 'Calibrated - this reading is now the 100% anchor.';},
             error:e=>'Couldn\'t calibrate'+(e?(' ('+e+')'):'')+' - try again.'});});};}
     } else {
+)====="
       // No valid reading yet (freenove with no pack fitted, or monitoring off). The
       // pack config above stays usable; keep the live rows honest.
+R"=====(
       var waiting=!!bt.battMon;
       if(bw){bw.style.display='';
         bw.textContent=waiting
@@ -1052,15 +1247,19 @@ function applyState(d){
       if(bcb){bcb.disabled=true;bcb.title='Calibration needs a battery reading.';bcb.onclick=null;}
     }
   } else { $('battsec').style.display='none'; }
+)====="
   // Device identity readouts (P2): live SSID/mDNS; the input is only synced when
   // the user isn't mid-edit (3 s poll would stomp their typing otherwise).
+R"=====(
   if(d.apSsid!==undefined){const e=$('idApSsid');if(e)e.textContent=d.apSsid;
     const c=$('cxApSsid');if(c)c.textContent=d.apSsid;}
+)====="
   // #cxLan is owned by loadConnect(), which has the per-origin sign-in links. Writing
   // plain text here too meant the 3 s state poll wiped those links a moment after the
   // Connectivity tab drew them. Re-fetch instead when the address actually changes
   // (new DHCP lease / different network), so the links can't go stale while the tab
   // sits open.
+R"=====(
   if(d.mdns!==undefined){const e=$('idMdns');if(e)e.textContent=d.mdns;}
   if(d.staIp!==undefined&&d.staIp!==_lastStaIp){
     if(_lastStaIp!==null&&typeof loadConnect==='function')loadConnect();
@@ -1069,7 +1268,9 @@ function applyState(d){
   if(d.devName!==undefined){const i=$('devName');
     if(i&&document.activeElement!==i&&!i.dataset.dirty)i.value=d.devName;
     const c=$('cxName');if(c)c.textContent=d.devName||'Nimbus';
+)====="
     // Header brand shows the CONFIGURED name so multiple boards are distinguishable.
+R"=====(
     const bn=$('brandName');if(bn)bn.textContent=d.devName||'Nimbus';
     if(d.devName)document.title=d.devName;}
   if(d.clock){
@@ -1079,8 +1280,10 @@ function applyState(d){
     const dsi=$('day_starts');if(d.clock.day_starts&&document.activeElement!==dsi&&!dsi.dataset.dirty)dsi.value=d.clock.day_starts;
     const ck=$('devClock');
     if(ck){
+)====="
       // Timezone hint: the device's local time at its epoch vs this computer's local
       // time at the same instant (QW5; comparing epochs could never differ once synced).
+R"=====(
       ck.textContent=d.clock.local+(d.clock.synced&&!tzMatchesBrowser(d.clock)?' (not this computer\'s local time: check the timezone)':'');
     }
     const bd=$('clockBadge');
@@ -1090,8 +1293,10 @@ function applyState(d){
     const gc=$('govClock');
     if(gc){
       if(!d.clock.synced){
+)====="
         // Build ONCE, then just toggle visibility - rewriting innerHTML every
         // 3 s poll would destroy the Sync-now button mid-click (review).
+R"=====(
         if(!gc.firstChild){
           gc.innerHTML='<p class="hint tip">The device clock hasn\'t synced, so daily and weekly routines '+
             '- including nightly memory upkeep - can\'t run yet. It sets itself from the '+
@@ -1101,18 +1306,24 @@ function applyState(d){
         gc.style.display='';
       } else gc.style.display='none';
     }
+)====="
     // The instant the clock lands, re-render the routine rows ("waiting for
     // clock sync" -> real next-run deltas) if the Routines pane is on screen.
+R"=====(
     if(!wasSynced&&d.clock.synced&&typeof loadLoops==='function')loadLoops();
   }
   const kb=x=>Math.round((x||0)/1024)+' KB', mb=x=>((x||0)/1048576).toFixed(1)+' MB';
+)====="
   // Adaptive size: KB < 1 MB, MB < 1 GB, else GB.
+R"=====(
   const sz=x=>{x=x||0; return x<1048576?kb(x):(x<1073741824?mb(x):(x/1073741824).toFixed(1)+' GB');};
+)====="
   // Free RAM, PSRAM, and battery each already have their own tile above; the info
   // line carries only what the tiles do not show (data store and network), so
   // nothing is repeated on the Home page (CUM-214).
   // Network line (sta/ap/mDNS) is a device LAN concept; on a hosted instance it
   // rendered "ap undefined - undefined" (CUM-279), so hide it there.
+R"=====(
   const netLine=HOSTED?'':(
     (d.sta?('sta <b>'+d.staIp+'</b> ('+d.rssi+' dBm) &middot; '):'')+
     'ap <b>'+d.apIp+'</b> &middot; <b>'+d.mdns+'</b>');
@@ -1121,8 +1332,10 @@ function applyState(d){
     (d.storeTotal?('Data store ('+(d.storeLabel||'flash')+'): <b>'+sz(d.storeFree)+'</b> free of '+sz(d.storeTotal)+
       '<span class=hint> - memories and history'+(d.storeSD?'':' (insert an SD card for more space)')+'</span><br>'):'')+
     netLine;
+)====="
   // profile radios; keep the Customize group heading naming the selected battery
   // mode (CUM-269) so "Customize battery mode: Balanced" is never ambiguous.
+R"=====(
   var _profNm=['Dark','Balanced','Full'];
   var _pn=p=>_profNm[p]||'Balanced';
   var _setCustProf=p=>{var e=$('custProfName'); if(e)e.textContent=_pn(p);};
@@ -1131,49 +1344,63 @@ function applyState(d){
     r.onchange=()=>{_setCustProf(+r.value);apply({profile:r.value});};
   });
   _setCustProf(d.profile);
+)====="
   // Effective-mode line: rendered ONLY while an automatic adjustment holds a
   // different mode than the picked one, in the user vocabulary via _pn - the
   // machine slug in d.effectiveProfileName reads as a different mode next to
   // the radios (CUM-15 class: the panel must not lie; that wire field stays for
   // API consumers). The undefined guards keep a partial state rendering blank.
+R"=====(
   $('effprof').textContent=(d.effectiveProfile!==undefined&&d.profile!==undefined&&d.effectiveProfile!==d.profile)
     ?('Effective battery mode: '+_pn(d.effectiveProfile)+' (adjusted automatically for power)')
     :'';
+)====="
   // mode
+R"=====(
   $('mode').value=d.mode;
   $('mode').onchange=()=>{ const want=+$('mode').value; switchMode(want).then(ok=>{ if(!ok)$('mode').value=d.mode; }); };
+)====="
   // Prominent header mode switch (same effect as the Device-tab selector) - the owner
   // couldn't find how to switch modes; it now lives at the top of every tab.
+R"=====(
   const mh=$('modehdr'); if(mh){[...mh.children].forEach(b=>{
     const mv=+b.dataset.m; b.classList.toggle('on',mv===d.mode); b.classList.toggle('nf',mv===0);
     b.onclick=()=>{ if(mv!==d.mode) switchMode(mv); };
   });}
+)====="
   // Connectivity → Bluetooth adapts to the mode (proposal §2): a dead three-row table in
   // Orchestrator (radio off, no bonds) collapses to one honest line; the table shows only
   // in Notifier, where the BLE link is the whole point.
+R"=====(
   if(d.mode!==undefined){
     const notifier=(d.mode===0);
     const bl=$('btOrchLine'); if(bl)bl.style.display=notifier?'none':'';
     const bt=$('btTable'); if(bt)bt.style.display=notifier?'':'none';
   }
+)====="
   // Wi-Fi live signal + connection line (proposal §3). rssi is a station fact from
   // /api/state; cache it so loadWifi() can badge the in-use row, and refresh the live
   // figure each poll without a full list reload. A sta transition re-renders the list.
+R"=====(
   if(d.rssi!==undefined)window._rssi=d.rssi;
   if(d.sta&&d.rssi!==undefined&&$('wifiRssi'))$('wifiRssi').textContent=d.rssi+' dBm';
   if(d.sta!==undefined){
     if(_lastSta!==null&&d.sta!==_lastSta&&typeof loadWifi==='function')loadWifi();
     _lastSta=d.sta;
   }
+)====="
   // The display is a color touch panel; the panel selector was retired, so only
   // the 180-degree flip remains a runtime choice.
+R"=====(
   const sf=$('scrFlip');
   if(sf&&document.activeElement!==sf){sf.checked=!!d.scrFlip;
     sf.onchange=()=>{const f=new FormData();f.append('scrFlip',sf.checked?'1':'0');
       fetch('/api/config',{method:'POST',body:f}).then(jok)
         .then(()=>toast(sf.checked?'Display flipped':'Display normal')).catch(failToast);};}
+)====="
   // Screen rest (idle minutes before the screen rests; 0 = always on). The remote
   // setter for an owner whose touch panel is dead. Clamp 0..1440 client-side too.
+R"=====(
   const sm=$('saverMin');
   if(sm&&document.activeElement!==sm&&d.saverMin!==undefined){sm.value=d.saverMin;
     sm.onchange=()=>{let v=parseInt(sm.value,10);if(isNaN(v))v=5;if(v<0)v=0;if(v>1440)v=1440;sm.value=v;
@@ -1181,15 +1408,19 @@ function applyState(d){
       fetch('/api/config',{method:'POST',body:f}).then(jok)
         .then(()=>toast(v===0?'Screen stays on':'Screen rest saved')).catch(failToast);};}
   const tc=$('tchCal'); if(tc&&d.tchCal!==undefined&&tc!==document.activeElement)tc.value=d.tchCal||'';
+)====="
   // Capacitive touch self-calibrates (pixel coordinates), so the resistive
   // min/max field does nothing - hide it and its label, and show the 3-flag
   // orientation control instead (swap/flipX/flipY, applied live). Toggle the
   // WRAPPER div (label + hint + row together) - toggling just the .row via
   // .closest() left the label/hint above it visible, an empty-looking section.
+R"=====(
   if(tc&&d.touchCap){const w=$('tchCalWrap'); if(w)w.style.display='none';
     const or=$('tOrient');
     if(or){or.style.display='';
+)====="
       // Current flags: last field of tchCal, else the capacitive default (swap+flipY=5).
+R"=====(
       let f=5;const parts=(d.tchCal||'').split(',');if(parts.length>=5){const n=parseInt(parts[parts.length-1],10);if(!isNaN(n))f=n;}
       if(document.activeElement!==$('tSwap'))$('tSwap').checked=(f&1)!==0;
       if(document.activeElement!==$('tFlipX'))$('tFlipX').checked=(f&2)!==0;
@@ -1197,7 +1428,9 @@ function applyState(d){
       const applyOrient=()=>{const nf=($('tSwap').checked?1:0)|($('tFlipX').checked?2:0)|($('tFlipY').checked?4:0);
         orchApply({tchCal:'0,320,0,240,'+nf}).then(ok=>{if(ok)toast('Touch updated');});};
       $('tSwap').onchange=applyOrient;$('tFlipX').onchange=applyOrient;$('tFlipY').onchange=applyOrient;}}
+)====="
   // device identity: mark dirty while editing; Save persists (reboot-to-apply)
+R"=====(
   $('devName').oninput=()=>{$('devName').dataset.dirty=1;};
   $('devNameSave').onclick=()=>apply({devName:$('devName').value})
     .then(ok=>{if(ok)delete $('devName').dataset.dirty;});
@@ -1205,7 +1438,9 @@ function applyState(d){
   if(tz){tz.oninput=()=>{tz.dataset.dirty=1;};
     $('devTzSave').onclick=()=>apply({devTz:tz.value})
       .then(ok=>{if(ok)delete tz.dataset.dirty;});
+)====="
     // QW5: the same browser detection the setup wizard offers.
+R"=====(
     const tzd=$('devTzDetect'),bt=tzFromBrowser();
     if(tzd&&bt){tzd.textContent='Use this computer\'s timezone ('+(bt.iana||bt.posix)+')';
       tzd.onclick=()=>{tz.value=bt.posix;apply({devTz:bt.posix}).then(ok=>{if(ok){delete tz.dataset.dirty;toast('Timezone set');}});};}
@@ -1214,11 +1449,13 @@ function applyState(d){
   $('day_startsSave').onclick=()=>apply({day_starts:ds.value}).then(ok=>ok&&delete ds.dataset.dirty);
   const csb=$('clockSyncBtn');
   if(csb)csb.onclick=()=>apply({clockSync:1});
+)====="
   // params - rebuild the DOM ONLY on first load or when the param SET changes;
   // otherwise value-sync each row in place. The old unconditional innerHTML=''
   // rebuild every 3s poll destroyed the very input the user was typing into
   // (focus + in-progress value lost) - the field-QA "everything I type gets
   // deleted" bug (audit P1.1). Focused or dirty fields are never overwritten.
+R"=====(
   META={}; d.params.forEach(p=>META[p.key]=p);
   const host=$('params');
   const psig=d.params.map(p=>p.key).join();
@@ -1236,6 +1473,7 @@ let _toastT;
 function toast(msg,ms){const t=$('toast'); if(!t)return; t.textContent=msg||'Saved';
   t.classList.add('show'); clearTimeout(_toastT); _toastT=setTimeout(()=>t.classList.remove('show'),ms||1400);}
 
+)====="
 // ---- Shared confirm/prompt modal (CUM-266) ---------------------------------
 // The app's own styled dialog, replacing the native browser popups. A styled
 // modal cannot block the thread the way the native calls do, so this is async:
@@ -1243,6 +1481,7 @@ function toast(msg,ms){const t=$('toast'); if(!t)return; t.textContent=msg||'Sav
 // resolves to the typed string, or null when dismissed. One modal element is
 // reused. If the modal DOM is somehow absent, it fails closed (the destructive
 // path is cancelled) rather than silently proceeding.
+R"=====(
 function _openModal(o){
   var ov=$('modalOv');
   if(!ov)return Promise.resolve(o.kind==='alert'?true:(o.kind==='prompt'?null:false));
@@ -1260,9 +1499,11 @@ function _openModal(o){
     var ok=$('modalOk'), cancel=$('modalCancel');
     ok.textContent=o.ok||'Confirm'; ok.className=o.danger?'danger':'';
     cancel.textContent=o.cancel||'Cancel'; cancel.style.display=isAlert?'none':'';
+)====="
     // Type-to-confirm: OK stays disabled until the input matches the word,
     // case-insensitively (the caller re-checks the same way), so a lowercase
     // entry is accepted just as the native prompt used to accept it.
+R"=====(
     var gate=function(){ if(o.confirmWord)ok.disabled=(inp.value.trim().toUpperCase()!==o.confirmWord.toUpperCase()); };
     var done=false;
     var finish=function(val){ if(done)return; done=true;
@@ -1274,8 +1515,10 @@ function _openModal(o){
       if(e.key==='Escape'){ e.preventDefault(); finish(cancelVal()); }
       else if(e.key==='Enter'){ if(!ok.disabled){ e.preventDefault(); finish(okVal()); } }
       else if(e.key==='Tab'){
+)====="
         // Keep focus inside the dialog (native confirm/prompt did), so Tab can't
         // reach the controls behind the dimmed overlay.
+R"=====(
         var f=[inp,cancel,ok].filter(function(el){return el&&el.offsetParent!==null&&!el.disabled;});
         if(!f.length)return;
         var first=f[0], last=f[f.length-1], a=document.activeElement;
@@ -1291,25 +1534,32 @@ function _openModal(o){
     (isPrompt?inp:ok).focus();
   });
 }
+)====="
 // body first, then an options object: {title, ok, cancel, danger, confirmWord,
 // value, placeholder}. uiConfirm/uiAlert -> Promise<bool>; uiPrompt -> Promise<string|null>.
+R"=====(
 function uiConfirm(body,o){o=o||{};return _openModal({kind:'confirm',body:body,title:o.title,ok:o.ok||'Confirm',cancel:o.cancel,danger:o.danger});}
 function uiAlert(body,o){o=o||{};return _openModal({kind:'alert',body:body,title:o.title,ok:o.ok||'OK'});}
 function uiPrompt(body,o){o=o||{};return _openModal({kind:'prompt',body:body,title:o.title,ok:o.ok||'Confirm',cancel:o.cancel,danger:o.danger,value:o.value,placeholder:o.placeholder,confirmWord:o.confirmWord});}
+)====="
 // Sequential gate: run each step's confirm only when its cond is true, aborting
 // on the first decline. Resolves true only if every needed confirm was accepted.
+R"=====(
 function uiConfirmAll(steps){
   return steps.reduce(function(p,s){ return p.then(function(ok){
     if(!ok)return false; if(!s.cond)return true; return uiConfirm(s.msg,s.opts||{}); }); },
     Promise.resolve(true));
 }
+)====="
 // The Software update panel's What's new line: the notes of the release the device
 // last saw, said as this version's or the update's.
+R"=====(
 function otaNotesText(d){
   if(!d.otaNotes)return '';
   const whose=(d.otaLatest&&d.otaLatest===d.fw)?'In this version: ':'In '+(d.otaLatest||'the update')+': ';
   return whose+d.otaNotes;
 }
+)====="
 // ---- Timezone from this browser (QW5) ------------------------------------------
 // Routines, reminders and each day's records follow the device's POSIX TZ (devTz),
 // and a new device runs on UTC. The browser knows this computer's zone (Intl), so
@@ -1321,8 +1571,11 @@ function otaNotesText(d){
 // before the last Sunday" or "Saturday at 24:00" stays right in later years. Names
 // come from Intl when it has a plain one (GMT, BST, PST), else the quoted numeric
 // form (<+09>).
+R"=====(
 function _tzPad(n){return (n<10?'0':'')+n;}
+)====="
 // POSIX offset text from minutes WEST of UTC: 480 -> "8", -330 -> "-5:30".
+R"=====(
 function _tzOffStr(minWest){const a=Math.abs(minWest),h=Math.floor(a/60),m=a%60;
   return (minWest<0?'-':'')+h+(m?':'+_tzPad(m):'');}
 function _tzOffAt(t){return -new Date(t).getTimezoneOffset();}   // minutes EAST of UTC at instant t
@@ -1335,11 +1588,15 @@ function _tzName(iana,t,offEast){
   const a=Math.abs(offEast);
   return '<'+(offEast<0?'-':'+')+_tzPad(Math.floor(a/60))+(a%60?_tzPad(a%60):'')+'>';
 }
+)====="
 // The first whole minute in (a, b] whose offset differs from a's (a, b minute-aligned).
+R"=====(
 function _tzEdge(a,b){const o=_tzOffAt(a);
   while(b-a>60000){const m=a+Math.floor((b-a)/120000)*60000;if(_tzOffAt(m)===o)a=m;else b=m;}
   return b;}
+)====="
 // Every offset change in year y: [{t, from, to}] (minutes east).
+R"=====(
 function _tzChanges(y){
   const out=[],day=86400000;
   for(let t=Date.UTC(y,0,1);t<Date.UTC(y+1,0,1);t+=day){
@@ -1348,15 +1605,19 @@ function _tzChanges(y){
   }
   return out;
 }
+)====="
 // When rule r ({m, w, d, mins}; w 5 = the last) fires in year y, at offset oldEast.
+R"=====(
 function _tzRuleAt(r,y,oldEast){
   const first=new Date(Date.UTC(y,r.m-1,1)).getUTCDay(), dim=new Date(Date.UTC(y,r.m,0)).getUTCDate();
   let dom=1+((r.d-first+7)%7)+7*(r.w-1);
   if(r.w===5)while(dom>dim)dom-=7;
   return Date.UTC(y,r.m-1,dom)+r.mins*60000-oldEast*60000;
 }
+)====="
 // The ways to write a change at instant t (offset oldEast before it): that day, or the
 // day before at 24:00 and later; "last" before "Nth" where both describe the day.
+R"=====(
 function _tzCandidates(t,oldEast){
   const l=new Date(t+oldEast*60000), y=l.getUTCFullYear(), mo=l.getUTCMonth();
   const dom=l.getUTCDate(), mins=l.getUTCHours()*60+l.getUTCMinutes(), wd=l.getUTCDay();
@@ -1368,8 +1629,10 @@ function _tzCandidates(t,oldEast){
   }
   return out;
 }
+)====="
 // The POSIX rule part for the change in year y into offset `to`, checked against the
 // same change in the next six years (stopping at a year that has none).
+R"=====(
 function _tzRuleFor(y,to){
   const c=_tzChanges(y).find(x=>x.to===to);
   if(!c)return '';
@@ -1379,7 +1642,9 @@ function _tzRuleFor(y,to){
   const r=cands.find(r=>later.every(([yy,x])=>_tzRuleAt(r,yy,x.from)===x.t))||cands[0];
   return 'M'+r.m+'.'+r.w+'.'+r.d+(r.mins===120?'':'/'+Math.floor(r.mins/60)+(r.mins%60?':'+_tzPad(r.mins%60):''));
 }
+)====="
 // {iana, posix} for this browser's zone, or null when the browser has no Intl.
+R"=====(
 function tzFromBrowser(now){
   let iana='';
   try{iana=Intl.DateTimeFormat().resolvedOptions().timeZone||'';}catch(e){return null;}
@@ -1392,19 +1657,25 @@ function tzFromBrowser(now){
   if(!start||!end)return {iana,posix:base};   // no clean yearly change: standard time only
   return {iana,posix:base+_tzName(iana,tDst,dst)+(dst-std===60?'':_tzOffStr(-dst))+','+start+','+end};
 }
+)====="
 // "YYYY-MM-DD HH:MM" in this browser's local time: the shape of the device's clock.local.
+R"=====(
 function _tzLocalStr(ms){const d=new Date(ms);
   return d.getFullYear()+'-'+_tzPad(d.getMonth()+1)+'-'+_tzPad(d.getDate())+' '+_tzPad(d.getHours())+':'+_tzPad(d.getMinutes());}
+)====="
 // Whether the device's local time is this computer's local time at the same instant
 // (the old drift hint compared UTC epochs, which always agree once synced, so it could
 // never catch a wrong timezone).
+R"=====(
 function tzMatchesBrowser(c){return !!(c&&c.local)&&_tzLocalStr(c.epoch*1000)===c.local;}
 function loadState(){if(!canPoll())return;fetch('/api/state').then(r=>r.json()).then(applyState).catch(()=>{});}
+)====="
 // Poll /api/state until an OTA check settles to a definitive otaResult, so the
 // "Check for updates" verdict is read from the SAME field the panel shows and
 // can never disagree with it (CUM-249). Resolves {result,latest}; if the check
 // is still running after the budget, resolves result:'pending' so the caller can
 // honestly say "still checking" rather than guess a verdict.
+R"=====(
 function pollOtaResult(tries){
   tries=(tries==null)?15:tries;
   var again=()=>(tries<=0)?{result:'pending',latest:''}
@@ -1415,10 +1686,12 @@ function pollOtaResult(tries){
     return again();                 // still checking - wait and re-read
   }).catch(again);                  // transient blip - retry within the budget
 }
+)====="
 // The setup-AP password + auth token are OFF /api/state (secrets); fetch them
 // from the token-gated /api/connect only when the Connectivity tab is opened.
 // The fetch shim attaches the token to every request, GETs included.
 // Unauthenticated -> 401 -> show a "scan the QR" hint.
+R"=====(
 function loadConnect(){
   fetch('/api/connect')
    .then(r=>r.ok?r.json():Promise.reject(r.status))
@@ -1427,27 +1700,35 @@ function loadConnect(){
      if($('cxApSsid'))$('cxApSsid').textContent=c.apSsid||'';
      if($('cxApPass'))$('cxApPass').textContent=c.apPass||'';
      if($('cxToken'))$('cxToken').textContent=c.token||'';
+)====="
      // Access token also shown in Device → identity (owner ask); click to copy.
+R"=====(
      if($('idToken')){$('idToken').textContent=c.token||'-';
        $('idToken').onclick=()=>{if(navigator.clipboard&&c.token){navigator.clipboard.writeText(c.token);toast('Sign-in code copied');}};}
+)====="
      // Every address links to ITSELF. This used to render one link labelled with the
      // mDNS name whose href was the raw-IP URL, so clicking "nimbus.local" signed you in
      // at the IP origin and the name kept asking for the token forever (the token is
      // stored per origin). Each address carries its own one-time ?c= sign-in code
      // (exchanged for the token over POST), so either one signs in with one click.
+R"=====(
      if($('cxLan')&&(c.url||c.mdnsUrl)){
        const link=(href,label)=>'<a href="'+href+'" target=_blank rel=noopener>'+label+'</a>';
        const parts=[];
        if(c.mdnsUrl&&c.mdns)parts.push(link(c.mdnsUrl,c.mdns));
        if(c.url)parts.push(link(c.url,c.ip||c.apIp||'this device'));
        $('cxLan').innerHTML=parts.join(' &middot; ');
+)====="
        // Copy affordance for the reach address (proposal §1): the plain mDNS name, else
        // the IP - what an owner types to get back, without the sign-in query string.
+R"=====(
        const cb=$('cxLanCopy'), addr=c.mdns||c.ip||c.apIp||'';
        if(cb&&addr&&navigator.clipboard){cb.style.display='';
          cb.onclick=()=>navigator.clipboard.writeText(addr).then(()=>toast('Address copied'));}
      }
+)====="
      // Bluetooth (Notifier link) state
+R"=====(
      if($('btState'))$('btState').textContent=c.bleOn?(c.bleConn?'on · a device is connected':'on · advertising'):'off (Notifier mode only)';
      if($('btBonds'))$('btBonds').textContent=(c.bleBonds||0)+' paired'+((c.bleBonds||0)?' · pairing survives restart':'');
      if($('btMac'))$('btMac').textContent=c.bleMac||'-';
@@ -1456,16 +1737,20 @@ function loadConnect(){
      if($('cxApPass'))$('cxApPass').textContent=h;
      if($('cxToken'))$('cxToken').textContent=h;});
 }
+)====="
 // Forget all BLE bonds (Connectivity → Bluetooth) - every paired device must re-pair.
+R"=====(
 (function(){const b=$('btForget'); if(!b)return; b.onclick=()=>{
   uiConfirm('Forget all paired devices?\n\nEach computer pairs again automatically the next time its broker connects.',{ok:'Forget Devices',danger:true}).then(ok=>{ if(!ok)return;
   fetch('/api/ble/forget',{method:'POST'}).then(r=>r.ok?r.json():Promise.reject(r.status)).then(()=>{
     toast('Bluetooth pairings cleared'); if(typeof loadConnect==='function')loadConnect();
   }).catch(()=>toast('Couldn\'t forget pairings - try again'));});};
 })();
+)====="
 // Rotate the auth token: POST /api/token/regen (authenticated with the current token),
 // then persist the NEW token locally so THIS browser stays in; every other browser 401s
 // on its next call and gets the identify gate.
+R"=====(
 (function(){const b=$('regenTok'); if(!b)return; b.onclick=()=>{
   uiConfirm('Generate a new device sign-in code?\n\nEvery browser is signed out except this one. Scan the new Sign-in QR on each other device.',{ok:'Generate Code'}).then(ok=>{ if(!ok)return;
   fetch('/api/token/regen',{method:'POST'}).then(jok).then(o=>{
@@ -1474,8 +1759,10 @@ function loadConnect(){
       toast('New token set');}
   }).catch(e=>{if(hasServerText(e))failToast(e);else toast('Couldn\'t generate a token - try again');});});};
 })();
+)====="
 // Erase storage: type-to-confirm SD wipe (keeps config, keeps the token, so no
 // localStorage cleanup needed - the device reboots on the same network).
+R"=====(
 (function(){const b=$('sdReset'); if(!b)return; b.onclick=()=>{
   uiPrompt('Erase all stored data on the SD card?\n\nThis deletes every memory, all conversation history, saved files, and media. Wi-Fi, keys, and settings are kept. The device restarts.\n\nType ERASE STORAGE to confirm:',{ok:'Erase Storage',danger:true,confirmWord:'ERASE STORAGE',placeholder:'ERASE STORAGE'}).then(p=>{
   if(p===null)return;
@@ -1485,20 +1772,26 @@ function loadConnect(){
     .then(()=>toast('Erasing storage - the device is restarting'))
     .catch(()=>toast('Couldn\'t erase - try again'));});};
 })();
+)====="
 // Factory reset: type-to-confirm, then POST the exact confirm phrase the device requires.
+R"=====(
 (function(){const b=$('factoryReset'); if(!b)return; b.onclick=()=>{
   const alsoSd=$('factoryEraseSd')&&$('factoryEraseSd').checked;
+)====="
   // CUM-514 (L20 docs audit): memory lives in storage, which this reset erases
   // ONLY with the box ticked - the sentence follows the box.
+R"=====(
   uiPrompt('Erase all content and settings?\n\nThis removes Wi-Fi, API keys, the Telegram list, Bluetooth pairings, the device name, and the device sign-in code, then restarts into first-time setup as a fresh device.'+(alsoSd?'\n\nStorage is erased too: memories, conversation history, saved files, routines and logs (up to a minute).':'\n\nMemories, conversation history and saved files are kept. To remove them too, tick Also erase storage.')+'\n\nType FACTORY RESET to confirm:',{ok:'Factory Reset',danger:true,confirmWord:'FACTORY RESET',placeholder:'FACTORY RESET'}).then(p=>{
   if(p===null)return;
   if(p.trim().toUpperCase()!=='FACTORY RESET'){toast('Not reset - the phrase didn\'t match');return;}
   const fd=new FormData();fd.append('confirm','FACTORY RESET');fd.append('eraseSd',alsoSd?'1':'0');
   fetch('/api/factory-reset',{method:'POST',body:fd}).then(r=>r.ok?r.json():Promise.reject(r.status)).then(()=>{
+)====="
     // The erase wipes this device's auth token, so our stored one is now stale -
     // drop it so we don't 401-loop against the old token when it reboots into the
     // setup AP + onboarding wizard (which re-issues a fresh token via the captive
     // portal / GET /?t=).
+R"=====(
     _memTok='';try{localStorage.removeItem('nimbusTok');}catch(e){}
     document.body.innerHTML='<div style="max-width:460px;margin:18vh auto;padding:0 20px;text-align:center;font-family:inherit;color:var(--ink)">'+
       '<img src=/logo.svg style="width:52px;height:52px"><h2 style="margin:14px 0 8px">Device is resetting…</h2>'+
@@ -1506,10 +1799,12 @@ function loadConnect(){
       'Reconnect to its <b>&ldquo;…-setup&rdquo;</b> Wi-Fi network to run the setup wizard.</p></div>';
   }).catch(st=>toast(st===409?'Couldn\'t erase - reseat the SD card':'Reset failed - try again'));});};
 })();
+)====="
 // Restart (CUM-270): styled confirm, POST /api/restart (token-gated, deferred on
 // the device to the main task), then an honest interstitial that polls /api/state
 // until the device answers and reloads. Bound to the Home quick action, the
 // Settings > Power row, and the battery-monitor "Restart now" hint.
+R"=====(
 function doRestart(){
   uiConfirm('Restart the device?\n\nIt restarts and reconnects on its own in about a minute. Nothing is erased.',{ok:'Restart'}).then(go=>{
     if(!go)return;
@@ -1528,11 +1823,13 @@ function doRestart(){
   });
 }
 
+)====="
 // Power off (CUM-224 flow, restated behind the styled modal per CUM-270): POST
 // /api/poweroff, then an honest offline interstitial. The device goes to deep
 // sleep, so the page cannot poll it back - it replaces the body with a clear "it
 // is asleep" screen. The wake copy follows the response's tapWakes. Bound to the
 // Settings > Power row and the Home quick action.
+R"=====(
 function doPowerOff(){
   uiConfirm('Power the device off?\n\nIt saves everything and goes to sleep. Touch models wake when you tap the screen; others wake when you reconnect power.',{ok:'Power Off',danger:true}).then(go=>{
     if(!go)return;
@@ -1549,7 +1846,9 @@ function doPowerOff(){
   ['powerOff','homePowerOff'].forEach(id=>{const b=$(id); if(b)b.onclick=doPowerOff;});
   ['homeRestart','deviceRestart','battRestart'].forEach(id=>{const b=$(id); if(b)b.onclick=doRestart;});
 })();
+)====="
 // Full-card format (CUM-15): its own typed confirm, distinct from Erase Storage.
+R"=====(
 (function(){const b=$('sdFormat'); if(!b)return; b.onclick=()=>{
   uiPrompt('Reformat the entire SD card?\n\nThis erases the WHOLE card, not just the assistant\'s data. Use it only if the card is corrupted. The device restarts. This can take up to a minute.\n\nType FORMAT CARD to confirm:',{ok:'Format Card',danger:true,confirmWord:'FORMAT CARD',placeholder:'FORMAT CARD'}).then(p=>{
   if(p===null)return;
@@ -1560,7 +1859,9 @@ function doPowerOff(){
       else{toast(j&&j.error?j.error:'Couldn\'t format the card');} })
     .catch(()=>toast('Couldn\'t format - try again'));});};
 })();
+)====="
 // --- Local Loops ---
+R"=====(
 function loadLoops(){
   const el=$('loopList'); if(!el)return;
   const esc=s=>(s||'').replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
@@ -1571,9 +1872,11 @@ function loadLoops(){
     el.innerHTML='<table><tbody>'+list.map(l=>{
       let sched=l.kind==='interval'?('every '+Math.round(l.everySec/60)+'m'):
         (l.kind==='once'?'one-time wakeup':(l.kind+' '+(l.at||'')));
+)====="
       // why (from the device) is the authoritative block reason (no clock synced,
       // a governor cap, rate limit, or a paused-with-reason); empty = firing or
       // simply scheduled, so we show the next-run countdown instead.
+R"=====(
       const CK=window.CLOCK;
       if(l.enabled&&!l.why&&l.nextRun>0&&CK&&CK.synced)sched+='<br><span class=hint>'+fmtIn(l.nextRun-CK.epoch)+'</span>';
       const pend=l.byAgent&&!l.approved;
@@ -1585,10 +1888,12 @@ function loadLoops(){
     }).join('')+'</tbody></table>';
     el.querySelectorAll('button[data-act]').forEach(b=>b.onclick=()=>{
       const fd=new FormData(); fd.append('action',b.dataset.act); fd.append('id',b.dataset.id);
+)====="
       // nimbusd answers {"ok":false} when the id no longer exists (a stale row,
       // the same honest no-op the wake-up card surfaces); the device always
       // stages ok:true. Either way the list reloads to the truth, but a no-op
       // or a failed request must say so, never pass silently.
+R"=====(
       fetch('/api/loops',{method:'POST',body:fd}).then(r=>r.json()).then(x=>{
         setTimeout(loadLoops,500);
         if(x&&x.ok===false)fbState('lpMsg','error','That routine is no longer available - the list is up to date.');
@@ -1597,17 +1902,21 @@ function loadLoops(){
     });
   }).catch(()=>{el.innerHTML='<span class=hint>Couldn\'t load routines</span>';});
 }
+)====="
 // ---- Wake-ups (CUM-72, N2 /api/wakeups) ------------------------------------
 // Default silent-allow; "ask me first" surfaces at most ONE pending approval as a single
 // yes/no card. The device's contract (CUM-514): GET answers {approvalMode:"ask"|"auto",
 // quietEnd:<minute of day>, wakeups:[{id,name,note,enabled,pending,inSec}]}; POST takes
 // action=mode&value=ask|auto, action=quiet_end&value=HH:MM, or action=approve|cancel&id=<id>.
+R"=====(
 function wkIn(s){if(s==null)return '';const m=Math.round(s/60);
   return m<1?'in under a minute':(m<120?'in ~'+m+' min':'in ~'+Math.round(m/60)+' h');}
+)====="
 // GATE2: a 200 body of {"ok":false} is the server's honest no-op (a stale row:
 // the wake-up already fired or was removed between the page's GET and the
 // click). jok() only guards the HTTP status, so the seam itself rejects - no
 // caller can render a success state for a no-op.
+R"=====(
 const WK_GONE='gone';
 function wkPost(body){return fetch('/api/wakeups',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(body).toString()}).then(jok).then(j=>((j&&j.ok===false)?Promise.reject(WK_GONE):j));}
 function loadWakeups(){
@@ -1618,7 +1927,9 @@ function loadWakeups(){
       work:()=>wkPost({action:'mode',value:sel.value}),
       ok:()=>sel.value==='ask'?'Ask me first - new wake-ups wait for approval.':'Wake-ups run silently.',
       error:e=>e===WK_GONE?'That save did not apply - try again.':'Couldn\'t save'+(e?(' ('+e+')'):'')+' - try again.'});
+)====="
     // Quiet hours end (owner design 9/11 Nov): self-wakeups fire at this minute.
+R"=====(
     const qe=$('wkQuietEnd');
     if(qe){
       if(document.activeElement!==qe&&typeof d.quietEnd==='number'){
@@ -1631,7 +1942,9 @@ function loadWakeups(){
         error:e=>e===WK_GONE?'That save did not apply - try again.':'Couldn\'t save'+(e?(' ('+e+')'):'')+' - try again.'});
     }
     const items=(d.wakeups||[]).filter(w=>w);
+)====="
     // A single pending approval card (never a loop): only the FIRST pending item.
+R"=====(
     const p=items.find(w=>w.pending), box=$('wkPending');
     if(box){
       if(p){box.style.display='block';
@@ -1667,19 +1980,23 @@ function initLoopForm(){
     fd.append('prompt',prompt); fd.append('chatId',$('lpChat').value.trim());
     fd.append('schedule',JSON.stringify(sched));
     fetch('/api/loops',{method:'POST',body:fd}).then(r=>r.json()).then(x=>{
+)====="
       // lpMsg is shared with the row buttons above, so both write it through
       // fbState - one state machine, no stale error class under a later "Created".
+R"=====(
       fbState('lpMsg',x.ok?'ok':'error',x.ok?'Created':(x.error||'Couldn\'t create - try again'));
       if(x.ok){$('lpName').value='';$('lpPrompt').value='';} setTimeout(loadLoops,500);
     }).catch(()=>fbState('lpMsg','error','Couldn\'t create - try again'));
   };
 }
 document.addEventListener('DOMContentLoaded',initLoopForm);
+)====="
 // Shared response guard: a 401 body is valid JSON, so jok() throws the status rather
 // than let a false "Saved" toast. A 507 (CUM-479, settings storage full) and a 400
 // (CUM-514, a refused value) keep the device's sentence for failToast and the inline
 // status; a code ("bad_action") is not a sentence and is not shown. STORAGE_FULL_MSG
 // mirrors nimbus::store::kStorageFullMessage for a body that did not parse.
+R"=====(
 const STORAGE_FULL_MSG='Couldn\'t save: device storage is full. Remove an unused provider key or connector and try again.';
 let _saveErr='',_refuseErr='',_lastFail=0;
 function refusalText(j){const s=j&&j.error;
@@ -1691,26 +2008,36 @@ function jok(r){
   if(r.status!==507)throw r.status;
   return r.json().catch(()=>({})).then(j=>{_saveErr=(j&&j.message)||STORAGE_FULL_MSG;throw 507;});
 }
+)====="
 // Whether a failure carries the device's own sentence (storage full, a refusal).
+R"=====(
 function hasServerText(e){return e===507||(e===400&&!!_refuseErr);}
+)====="
 // The failure sentence for a status: storage-full and a refusal get the device's
 // sentence, any other failure the caller's fallback.
+R"=====(
 function saveFailText(e,dflt){
   if(e===507)return _saveErr||STORAGE_FULL_MSG;
   if(e===400&&_refuseErr)return _refuseErr;
   if(e===CARD_BUSY)return 'Try again shortly - device busy';   // the card or memory, for a moment
   return dflt||'Couldn\'t save - try again';}
+)====="
 // For callers that only see apply()/orchApply()'s false: the last failure's text.
+R"=====(
 function lastFailText(dflt){return saveFailText(_lastFail,dflt);}
+)====="
 // ---- Busy answers (503 + Retry-After) ----------------------------------------------
 // While a tool holds the SD card, or working memory is short, the device answers 503
 // with Retry-After (card: {"error":"busy"}): "busy, retrying", never an error or an empty
 // state. The last view stays, a busy note shows above it, and the load runs again after
 // Retry-After. cardJson reads an answer like r.json() and jok() like itself, but a busy
 // one rejects with CARD_BUSY. A 503 with no Retry-After is an answer, not busy.
+R"=====(
 const CARD_BUSY='card-busy';
 let _busyMs=5000,_busyCard=true;
+)====="
 // A hosted instance answers any read during a turn with a plain 503: the same wait.
+R"=====(
 function isBusy(r){return r.status===503&&(HOSTED||!!r.headers.get('Retry-After'));}
 function noteBusy(r){const s=parseInt(r.headers.get('Retry-After'),10);
   _busyMs=Math.min(Math.max(isNaN(s)?5:s,2),30)*1000;
@@ -1718,8 +2045,10 @@ function noteBusy(r){const s=parseInt(r.headers.get('Retry-After'),10);
 function busyGuard(r){if(isBusy(r)){noteBusy(r);throw CARD_BUSY;}return r;}
 function cardJson(r){return busyGuard(r).json();}
 function busyWhat(){return HOSTED?'The assistant is busy right now.':_busyCard?'The SD card is busy right now.':'The device is busy right now.';}
+)====="
 // The busy note for `anchor` (an id or a node): one line above it, or inside it when it
 // is an empty card (a panel that never loaded); on while busy, gone once data arrives.
+R"=====(
 function _busyNoteOf(a){
   const f=a.firstElementChild,p=a.previousElementSibling;
   if(f&&f.classList.contains('cardbusy'))return f;
@@ -1736,10 +2065,12 @@ function cardBusyNote(anchor,on){
   }
   n.lastChild.textContent=busyWhat()+' Retrying in a few seconds.';
 }
+)====="
 // A loader's failure: a busy answer shows the note and runs `retry` once after
 // Retry-After (one timer per key, so a polled loader never stacks timers; the newest
 // retry wins, so a busy view the owner moved on from is not the one retried).
 // True when it was busy.
+R"=====(
 const _busyTimers={},_busyRetry={};
 function onCardBusy(e,key,retry,anchor){
   if(e!==CARD_BUSY)return false;
@@ -1748,8 +2079,10 @@ function onCardBusy(e,key,retry,anchor){
   if(!_busyTimers[key])_busyTimers[key]=setTimeout(()=>{delete _busyTimers[key];_busyRetry[key]();},_busyMs);
   return true;
 }
+)====="
 // A download, preview or detail fetch: waits out busy answers (`tries` more fetches,
 // each after Retry-After); onBusy() runs at the first so the page can say it waits.
+R"=====(
 function cardFetch(url,onBusy,tries=2){
   return fetch(url).then(r=>{
     if(!isBusy(r)||tries<=0)return r;
@@ -1758,10 +2091,12 @@ function cardFetch(url,onBusy,tries=2){
   });
 }
 function busyToast(){toast(HOSTED?'Waiting for the assistant':_busyCard?'Waiting for the SD card':'Waiting for the device');}
+)====="
 // Fetch plain text, surfacing the SERVER's reason on failure. The glass-box
 // endpoints answer 404 with a human sentence ("off: …", "nosd: …", "evicted: …")
 // precisely so the chat can say why instead of showing an empty panel. A busy card
 // is waited out first (cardFetch, defined below and hoisted).
+R"=====(
 function _tfetch(url){
   return cardFetch(url).then(r=>r.text().then(t=>{
     if(r.ok)return t;
@@ -1773,6 +2108,7 @@ function failToast(e){_lastFail=e;
   if(hasServerText(e)){toast(saveFailText(e),6000);return;}
   toast(e===401?'Sign in required':saveFailText(e));}
 
+)====="
 // ---- Feedback-state system (CUM-31) ----------------------------------------
 // One helper renders every async action through pending -> result, so nothing
 // ever just "disappears": the status element shows a pending state, then exactly
@@ -1783,6 +2119,7 @@ function failToast(e){_lastFail=e;
 //   state = 'pending' | 'ok' | 'none' | 'error' | 'idle'
 //   pct   = 0..100 for a determinate bar, or undefined for none / an
 //           indeterminate pending shimmer.
+R"=====(
 function fbState(el, state, msg, pct){
   el = (typeof el==='string')?$(el):el; if(!el)return;
   el.classList.remove('fb-pending','fb-ok','fb-none','fb-error');
@@ -1806,6 +2143,7 @@ function fbState(el, state, msg, pct){
     wrap.appendChild(document.createElement('i'));el.appendChild(wrap);
   }
 }
+)====="
 // run(opts): drive one async action through the feedback states.
 //   opts.status  : status element (id or node) - required
 //   opts.btn     : optional button to disable while pending
@@ -1816,6 +2154,7 @@ function fbState(el, state, msg, pct){
 //   opts.none    : default "nothing found" message
 //   opts.error(e): error message (should name the next step); default provided
 // Returns the work() promise so callers can chain. Never leaves a pending state.
+R"=====(
 function run(opts){
   const el=(typeof opts.status==='string')?$(opts.status):opts.status;
   const btn=opts.btn;
@@ -1832,10 +2171,12 @@ function run(opts){
     throw e;
   }).finally(()=>{ if(btn)btn.disabled=false; });
 }
+)====="
 // Live ring demo: POSTs the ring simulator's CURRENT selection - its posture
 // picks the battery mode (Full/Balanced/Dark), its status picks what the ring
 // shows - so the device mirrors exactly what the on-page simulator is showing,
 // not just the theme. The device drives the ring for ~4s and auto-reverts.
+R"=====(
 document.addEventListener('DOMContentLoaded',()=>{const b=document.getElementById('prevBtn');
  if(b)b.onclick=()=>{
   const POST={Full:2,Balanced:1,Dark:0};        // posture -> profile (battery mode)
@@ -1846,26 +2187,32 @@ document.addEventListener('DOMContentLoaded',()=>{const b=document.getElementByI
   if(st!=null)body.set('status',String(st));
   fetch('/api/preview',{method:'POST',body}).then(jok).then(()=>toast('Playing on device')).catch(failToast);};});
 function apply(body){
+)====="
   // Resolves to true/false so callers can react HONESTLY: the old bare
   // .catch(failToast) swallowed the rejection, so chained .then()s reported
   // success even on a 401/network failure (audit P1.5).
+R"=====(
   return fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
     body:new URLSearchParams(body).toString()})
    .then(jok).then(()=>{toast('Saved');loadState();return true;})
    .catch(e=>{failToast(e);return false;});
 }
 
+)====="
 // Switching Notifier<->Orchestrator restarts the device, so the config POST's connection
 // drops mid-flight: fire the change, tell the owner it is restarting, then (Orchestrator
 // direction only) poll until it answers and reload; that is why the mode controls skip
 // apply(). Notifier runs with Wi-Fi off (no web server), so switching to it never
 // reconnects: say so plainly. Resolves false if the owner cancels (the caller reverts the
 // dropdown).
+R"=====(
 function switchMode(mv){
   return uiConfirm('Switch to '+(mv?'Orchestrator':'Notifier')+'?\n\nThe device restarts to change modes. This takes a few seconds.',{ok:mv?'Switch To Orchestrator':'Switch To Notifier'}).then(go=>{
     if(!go)return false;
+)====="
     // A dropped connection is the expected reboot; an error answer stops the switch -
     // a 507 means the device could not store the new mode and does NOT restart (CUM-479).
+R"=====(
     return fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
       body:new URLSearchParams({mode:mv}).toString()}).then(r=>{if(!r.ok)return jok(r);},()=>{})
      .then(()=>{
@@ -1885,9 +2232,11 @@ function switchMode(mv){
   });
 }
 
+)====="
 // Revert-to-defaults (owner 2026-07-18): drop EVERY per-param override so the
 // active battery mode runs on its pure reference preset. Confirmed - it
 // discards all customization in one click.
+R"=====(
 if($('revertProf'))$('revertProf').onclick=()=>{
   uiConfirm('Reset this battery mode to its defaults?\n\nEvery customized value returns to the preset.',{ok:'Reset To Defaults',danger:true}).then(go=>{ if(!go)return;
   apply({revert_overrides:1}).then(ok=>{
@@ -1895,16 +2244,22 @@ if($('revertProf'))$('revertProf').onclick=()=>{
   });});
 };
 
+)====="
 // ---- Orchestrator control surface (ROUND 3 Part A) ----
+R"=====(
 const PROVLBL={cumulo:'Cumulo Nimbus',openai:'OpenAI',anthropic:'Anthropic',mistral:'Mistral',zai:'Z.ai'};
 let _provOpenDone=false;   // one-shot guard for auto-opening "Providers & keys" (CUM-214)
 let ORCH=null, VPOLL={};   // verify polls PER PROVIDER (review: a single global let a
+)====="
                            // second provider's verify kill the first's completion poll,
                            // stranding its button disabled at "checking..." forever)
+R"=====(
 
+)====="
 // LED theme palettes come from the device (GET /api/themes -> [{name,colors:[[r,g,b],...]}]),
 // the single source of truth in nimbus::theme - the page no longer hardcodes RGBs.
 // Fetched once and cached; #themeChips renders a swatch strip per theme, click = save.
+R"=====(
 let THEMES=null, _curTheme=null, _themesReq=false;
 const THEME_FB=[{name:'teal',colors:[[127,209,200],[80,190,180],[40,150,155],[170,230,220]]}];
 function renderThemeChips(){
@@ -1926,9 +2281,11 @@ function loadThemes(){
               if(o&&o.roles)ROLES=o.roles;renderThemeChips();renderStatusLegend();renderRingSimControls();ringSimStart();})
     .catch(()=>{THEMES=THEME_FB;renderThemeChips();renderStatusLegend();renderRingSimControls();ringSimStart();});
 }
+)====="
 // Status legend fallback ONLY (used when /api/themes is unreachable): the LIVE
 // legend now arrives as roles[] from the device itself (generated from
 // status_style.cpp), so it can never drift. ROLES holds it.
+R"=====(
 let ROLES=null;
 const STATUS_LEGEND=[
   {s:'Running',       role:0, pat:'comet',   d:'working'},
@@ -1953,12 +2310,14 @@ function renderStatusLegend(){
     row.appendChild(sw);row.appendChild(lab);row.appendChild(pat);row.appendChild(dsc);box.appendChild(row);});
 }
 
+)====="
 // ---- Live LED-ring simulator: draws the 45-LED ring in the SELECTED theme + the
 // selected status's animation, so a theme/mode choice is previewable on the page.
 // Reads THEMES/_curTheme live each frame, so applying a theme recolours it instantly.
 // Mirrors the on-device status language: comet=running, breathe=needs-you/approval/
 // error, fade=done-ember, static=idle; Full lights the whole ring, Balanced/Dark the
 // single cue LED (Dark idle/done = off).
+R"=====(
 let _rs={status:'Running',role:0,anim:'comet',posture:'Full',t0:null,ready:false};
 function ringPalette(){const t=(THEMES||[]).find(x=>x.name===_curTheme)||(THEMES||[])[0];return (t&&t.colors)||[[127,209,200]];}
 function ringStatuses(){
@@ -1987,9 +2346,11 @@ function ringSimStart(){
     ctx.beginPath();ctx.arc(cx,cy,R,0,Math.PI*2);ctx.strokeStyle='rgba(255,255,255,.04)';ctx.lineWidth=2;ctx.stroke();
     const breathe=0.5+0.5*Math.sin(el*2.4), comet=(el*0.16)%1;
     const single=_rs.posture!=='Full', dark=_rs.posture==='Dark', idle=_rs.role===-2, fade=_rs.anim==='fade', err=_rs.role===-1;
+)====="
     // Rainbow theme: rotating full-wheel gradient (~6 s/rev, matches the device's
     // nowMs*11 16-bit phase = 60.4 deg/s). Error keeps its fixed alert hue and Idle
     // stays dull - same exemptions as the firmware Animator.
+R"=====(
     const rb=_curTheme==='rainbow'&&!err&&!idle;
     const ledCol=i=>{if(!rb)return 'rgb('+col[0]+','+col[1]+','+col[2]+')';
       return 'hsl('+(((i/N)*360+el*60.4)%360).toFixed(1)+',100%,55%)';};
@@ -2019,10 +2380,12 @@ function ringSimStart(){
   requestAnimationFrame(frame);
 }
 
+)====="
 // Distinct, honest copy per verify-reason (L1's /api/orch reason contract). Each
 // tells the owner WHAT is wrong and the one next step, instead of a bare "key
 // rejected"/"couldn't verify". Class picks the color: bad (red) = a key problem,
 // warn (amber) = a router/environment problem, unk (neutral) = transient/unknown.
+R"=====(
 const VFYREASON={
   nocredits:      {cls:'bad', txt:'Needs credits or subscription'},
   suspended:      {cls:'bad', txt:'Account suspended'},
@@ -2030,12 +2393,17 @@ const VFYREASON={
   'low-memory':   {cls:'unk', txt:'Verification deferred'},
   connectfail:    {cls:'unk', txt:'Couldn\'t reach the provider'},
   tlsbusy:        {cls:'unk', txt:'Busy now. Retry in a moment.'},
+  cleartext:      {cls:'bad', txt:'Needs an https:// address'},
 };
+)====="
 // CUM-447: the full "what happened, what happens next" line for a low-memory
 // deferral, shared by the pill hover and the hint under the key field.
+R"=====(
 const DEFER_MSG='Verification deferred: the device is low on working memory right now. Your key is saved; it is checked again automatically when memory frees up, or tap Verify to retry.';
+)====="
 // The measured number for the hover, when the device reported it: "Largest free
 // block 11 KB, needs 8 KB." (max8/floor are bytes; 0 when not reported).
+R"=====(
 function deferNum(p){
   const need=p&&p.vfyFloor?Math.round(p.vfyFloor/1024):8;
   if(!p||!p.vfyMax8)return '';
@@ -2043,22 +2411,28 @@ function deferNum(p){
 }
 function vfyBadge(v,ts,reason,p){
   if(v===1) return '<span class="badge vfy ok">verified</span>';   // a real pass always wins
+)====="
   // An honest reason from the verify surface renders whenever present (item 4).
+R"=====(
   const r=reason&&VFYREASON[reason];
   if(r){const tip=reason==='low-memory'?' title="'+(DEFER_MSG+deferNum(p)).replace(/"/g,'&quot;')+'"':'';
     return '<span class="badge vfy '+r.cls+'"'+tip+'>'+r.txt+'</span>';}
   if(ts===0) return '<span class="badge vfy unk">unverified</span>';
   if(v===0)  return '<span class="badge vfy bad">key rejected</span>';
+)====="
   // v===-1: couldn't verify. In Notifier mode the TLS handshake can't get enough
   // free memory - guide the user to verify from Orchestrator mode.
+R"=====(
   const hint=(ORCH && !ORCH.running) ? 'verify from Orchestrator mode' : 'Couldn\'t verify - retry';
   return '<span class="badge vfy unk">'+hint+'</span>';
 }
+)====="
 // ---- Which provider a pasted key belongs to (QW5) --------------------------------
 // Row for row the device's nimbus/orch/key_home.h; the harness checks both against
 // test/support/fixtures/key_home_cases.json. The setup wizard preselects Cumulo
 // Nimbus, so a direct key pasted there used to be stored in the Cumulo slot and come
 // back "Rejected - check the key": the page now reads the key and puts it where it goes.
+R"=====(
 function keyHome(k){
   k=(k||'').replace(/^ +| +$/g,'');
   if(!k)return '';
@@ -2072,8 +2446,10 @@ function keyHome(k){
   if(/^[A-Za-z0-9]{32}$/.test(k))return 'mistral';
   return '';
 }
+)====="
 // Whether keyHome(k) is certain (a published prefix or the bot token's form), not a
 // shape alone (key_home.h keyHomeSure).
+R"=====(
 function keyHomeSure(k){
   k=(k||'').replace(/^ +| +$/g,'');
   const h=keyHome(k);
@@ -2081,16 +2457,20 @@ function keyHomeSure(k){
   return h==='cumulo'||h==='anthropic'||h==='tavily'||h==='telegram';
 }
 const PROVNOUN={cumulo:'a Cumulo Nimbus key',anthropic:'an Anthropic key',openai:'an OpenAI key',mistral:'a Mistral key',zai:'a Z.ai key'};
+)====="
 // Every guarded secret slot: [field, noun, where] (key_home.h keyHomeSlot).
+R"=====(
 const KEYSLOT={cumulo:['cumuloKey','a Cumulo Nimbus key','under Cumulo Nimbus'],anthropic:['antKey','an Anthropic key','under Anthropic'],
   openai:['oaiKey','an OpenAI key','under OpenAI'],mistral:['mistKey','a Mistral key','under Mistral'],zai:['zaiKey','a Z.ai key','under Z.ai'],
   tavily:['tavKey','a Tavily web search key','under Assistant > Tools > Web search'],
   telegram:['tgToken','a Telegram bot token','under Assistant > Connectors > Telegram']};
+)====="
 // The refusal for a value posted to a guarded slot, or '' (key_home.h misplacedKeyError,
 // row for row): a certain home is refused in any other slot; the Cumulo, Telegram and
 // Tavily slots take only their own form, so a provider key never reaches the router,
 // api.telegram.org or Tavily; a shape-only guess is never refused in another provider's
 // slot. The device refuses the same values; this also guards a Virtual Nimbus.
+R"=====(
 function slotError(field,v){
   const own={cumuloKey:['cumulo','a Cumulo Nimbus key','those start with cumulo_sk_. Choose the provider your key comes from and save it there.'],
     tgToken:['telegram','a Telegram bot token','a bot token looks like 123456789:AAH... Copy it from @BotFather.'],
@@ -2104,17 +2484,22 @@ function slotError(field,v){
   return 'That is not '+f[1]+': '+f[2];
 }
 const PROVCONSOLE={cumulo:'app.cumulo-nimbus.ai',anthropic:'platform.claude.com',openai:'platform.openai.com',mistral:'console.mistral.ai',zai:'z.ai'};
+)====="
 // A key that is not an AI provider key at all: where it goes instead, or ''.
+R"=====(
 function notProviderKeyText(home){
   if(home==='telegram')return 'That is a Telegram bot token. It goes under Assistant > Connectors > Telegram (or the Telegram step of setup), not here.';
   if(home==='tavily')return 'That is a Tavily web search key. It goes under Assistant > Tools > Web search, not here.';
   return '';
 }
+)====="
 // The plain-words outcome of a finished provider check, with the one next step: what
 // the Models page badge says (vfyBadge), in a sentence. pv is /api/orch providers[p].
+R"=====(
 function vfyOutcome(p,pv){
   const lbl=PROVLBL[p]||(p==='telegram'?'Telegram':p), con=PROVCONSOLE[p], at=con?' at '+con:'';
   if(pv.verify===1)return {ok:true,txt:'Verified ✓'};
+  if(pv.vfyReason==='cleartext')return {ok:false,txt:'The key is never sent to an http:// address. Use an https:// address, or clear the key.'};
   if(pv.verify===0)return {ok:false,txt:lbl+' rejected this key. Check that you copied all of it, or create a new key'+at+'.'};
   const r=pv.vfyReason;
   if(r==='nocredits')return {ok:false,txt:'The key works, but the '+lbl+' account has no credit. Add credit'+at+', then tap Save & Verify.'};
@@ -2125,21 +2510,27 @@ function vfyOutcome(p,pv){
   if(r==='tlsbusy')return {ok:false,txt:'The device was busy. Your key is saved; tap Save & Verify again in a moment.'};
   return {ok:false,txt:'Couldn\'t verify: '+lbl+' gave an unexpected answer. Your key is saved; tap Save & Verify to try again.'};
 }
+)====="
 // One check's live state from /api/orch: a provider row, or Telegram's own fields.
+R"=====(
 function vfyState(d,p){
   if(p==='telegram')return {verify:d.tgVerify,vts:d.tgVts,bot:d.tgBot,vfyReason:d.tgVfyReason||''};
   return (d.providers&&d.providers[p])||null;
 }
+)====="
 // Start a check of provider p and report once it LANDS (QW5). say(text) shows progress;
 // done(outcome, state) ends it. afterSave: the key was just saved (verdict time reset;
 // Cumulo, Z.ai and Telegram start the check by themselves), so watch first and ask only
 // when the device is free and nothing landed. A refused start (409) names why: a reply in
 // flight, low memory (a recorded deferral), or another check running (wait, then ask).
+R"=====(
 function runVerify(p,say,done,afterSave){
   let prevVts=0,starts=0,needStart=true;
   const lost=()=>done({ok:false,txt:'Lost contact with the device. Check that this computer is on the same Wi-Fi, then try again.'},null);
+)====="
   // Two-argument then: only a failed request retries; a throw in say/done is a page
   // bug, never reported as "lost contact".
+R"=====(
   const poll=(left,ms)=>setTimeout(()=>fetch('/api/orch').then(r=>r.json()).then(d=>{
       const st=vfyState(d,p);
       if(st&&st.vts&&st.vts!==prevVts)return done(vfyOutcome(p,st),st);
@@ -2164,21 +2555,27 @@ function runVerify(p,say,done,afterSave){
     });
   };
   if(afterSave)return poll(30,300);
+)====="
   // A re-check of a stored key lands as a NEW verdict time: read the current one first.
+R"=====(
   fetch('/api/orch').then(r=>r.json()).then(d=>{const st=vfyState(d,p);prevVts=st?st.vts:0;start();})
     .catch(()=>start());
 }
+)====="
 // ---- Full model catalog (GET /api/models, CUM-26) --------------------------
 // The uncapped, capability-aware catalog per provider (loadModels fills it). The
 // picker renders THIS when present - grouped, flagship-first, with size badges -
 // and falls back to the 8-cap `choices` CSV before the first harvest lands. Keyed
 // by provider slug -> array of model objects {id,roles[],size,upstream,deprecated}.
+R"=====(
 let MODELCAT={};
 let MODELCAT_SIG='';   // bumped when the catalog changes, part of each select's sig
 const SIZELBL={L:'Large',M:'Medium',S:'Small'};   // size class -> group name
+)====="
 // Option label: the id plus a size-class badge and a deprecated marker when known,
 // and (lane DEF) its price per million input/output tokens when the device prices it,
 // so the stronger models are offered with what they cost (~ = a built-in estimate).
+R"=====(
 function modelLabel(id,m,prov,key){
   let t=id;
   if(m&&m.size&&SIZELBL[m.size])t+=' · '+m.size;
@@ -2187,7 +2584,9 @@ function modelLabel(id,m,prov,key){
   if(p)t+=' · '+p;
   return t;
 }
+)====="
 // "~$2/$10 per 1M" from the Usage page's price list (/api/usage/models), or "".
+R"=====(
 let _umAsked=false;
 function _modelPrice(prov,id){
   const u=_um();
@@ -2198,11 +2597,15 @@ function _modelPrice(prov,id){
   const d=v=>{const n=v/1e6;return '$'+(n>=1?(+n.toFixed(2)).toString():n.toFixed(2));};
   return (x.src==='est'?'~':'')+d(x.rIn)+'/'+d(x.rOut)+' per 1M';
 }
+)====="
 // Pretty name for a cumulo upstream group header (reuses the provider label map).
+R"=====(
 function upstreamLabel(up){return PROVLBL[up]||(up.charAt(0).toUpperCase()+up.slice(1));}
+)====="
 // Group a provider's catalog for the dropdown: cumulo by upstream provider (its
 // router shape is <upstream>/<model>); every other provider by size class, Large
 // first. API order is preserved inside each group (the catalog is flagship-first).
+R"=====(
 function groupModels(prov,cat){
   const order=[],byKey={};
   const push=(key,label,m)=>{if(!byKey[key]){byKey[key]={label:label,items:[]};order.push(key);}byKey[key].items.push(m);};
@@ -2210,13 +2613,16 @@ function groupModels(prov,cat){
     cat.forEach(m=>{const up=m.upstream||'other';push('up:'+up,upstreamLabel(up),m);});
   }else{
     cat.forEach(m=>{const sz=(m.size&&SIZELBL[m.size])?m.size:'X';push('sz:'+sz,sz==='X'?'Other':SIZELBL[sz],m);});
+)====="
     // Rank by size letter, Large first. Note: L's rank is 0, so a `||` fallback would
     // treat it as missing - use an explicit undefined check.
+R"=====(
     const rank={L:0,M:1,S:2,X:3},rk=k=>{const r=rank[k.slice(3)];return r===undefined?9:r;};
     order.sort((a,b)=>rk(a)-rk(b));
   }
   return order.map(k=>byKey[k]);
 }
+)====="
 // Build the model <select>. `id` is orchM_<prov> / subM_<prov>; the provider slug
 // and the role (orchestrator vs sub-agent) are derived from it so the same call
 // site keeps working. With a catalog: a "Recommended" group (from `choices`) on
@@ -2225,6 +2631,7 @@ function groupModels(prov,cat){
 // CUM-530: a Cumulo router row's pick is its selector "<upstream>/<id>" (the
 // catalog keeps the bare id + its upstream); a bare stored router value is the
 // openai upstream, so "gpt-5.6" and "openai/gpt-5.6" are one choice.
+R"=====(
 function modelSelOf(prov,m){return (prov==='cumulo'&&m.upstream&&m.id.indexOf(m.upstream+'/')!==0)?m.upstream+'/'+m.id:m.id;}
 function modelCurOf(prov,cur){return (prov==='cumulo'&&cur&&cur.indexOf('/')<0)?'openai/'+cur:(cur||'');}
 function modelSel(id,cur,choices,verified){
@@ -2237,14 +2644,18 @@ function modelSel(id,cur,choices,verified){
   const curSel=modelCurOf(prov,cur);
   const opt=(parent,val,label)=>{const o=document.createElement('option');
     o.value=val;o.textContent=label;if(val===curSel)o.selected=true;parent.appendChild(o);seen[val]=1;};
+)====="
   // filter(Boolean): cumulo/zai have no static choice list, so choices is "" until a
   // verify harvest fills it - without this that produced one stray blank <option>.
+R"=====(
   const recIds=(choices||'').split(',').map(x=>modelCurOf(prov,x.trim())).filter(Boolean);
   const cat=(MODELCAT[prov]||[]).filter(m=>m&&m.id&&(m.roles||[]).indexOf(role)>=0);
   if(cat.length){
+)====="
     // Recommended is a curated shortcut on top (from choices); the grouped list below
     // holds the REST - a model shown in Recommended is not repeated in its group, so
     // the dropdown never lists the same id twice on a small panel.
+R"=====(
     if(recIds.length){const g=document.createElement('optgroup');g.label='Recommended';
       recIds.forEach(rid=>{if(seen[rid])return;const m=cat.find(x=>modelSelOf(prov,x)===rid);opt(g,rid,modelLabel(rid,m,prov));});
       if(g.children.length)s.appendChild(g);}
@@ -2254,25 +2665,33 @@ function modelSel(id,cur,choices,verified){
   }else{
     recIds.forEach(m=>opt(s,m,m));
   }
+)====="
   // CUM-530: the stored catalog was cut to its size bound - say so, never hide it.
+R"=====(
   const more=(MODELCAT[prov]||[]).reduce((a,m)=>a+((m&&m.more)|0),0);
   if(more){const t=document.createElement('option');t.disabled=true;
     t.textContent=more+' more not shown (list truncated)';s.appendChild(t);}
+)====="
   // Never silently drop a model the owner already set that the list does not carry.
+R"=====(
   if(cur&&!seen[curSel])opt(s,curSel,cur);
   if(!verified){const t=document.createElement('option');
     t.value='';t.textContent='Verify the key to unlock';t.selected=!cur;s.appendChild(t);}
   s.dataset.sig=modelSelSig(choices,verified);   // rebuild-only-on-change signature (P1.1)
   s.onchange=()=>modelPick(id,s.value);
+)====="
   // R5: opening the dropdown shows the cached list at once and asks for a fresh one.
+R"=====(
   if(verified){s.addEventListener('focus',()=>modelsRefreshOnOpen(prov));
     s.addEventListener('mousedown',()=>modelsRefreshOnOpen(prov));}
   return s;
 }
+)====="
 // ---- Model list refresh on open (R5) ----------------------------------------
 // The device queues the refresh (at most one per provider an hour, run between
 // turns) and answers at once; the page polls GET /api/models until the list's
 // fetchedAt moves, then shows "Updated <time>" under the provider row.
+R"=====(
 let MODELFETCH={};   // provider -> fetchedAt (unix s) of the list shown
 const MREFRESH={};   // provider -> when this page last asked (one ask per 30 s)
 function updLabel(ts){
@@ -2306,8 +2725,10 @@ function pollModelsFor(prov,before,n){
       'Couldn\'t check for new models. '+(p.fetchedAt?updLabel(p.fetchedAt)+'.':'Try again later.')));
   }).catch(()=>{});},2000);
 }
+)====="
 // CUM-530: a model the device refuses answers 400 with the allowed values - show
 // them under the provider row (it used to answer 200 and change nothing).
+R"=====(
 function modelPick(id,val){
   const prov=id.substring(id.indexOf('_')+1);
   return fetch('/api/orch',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
@@ -2316,23 +2737,31 @@ function modelPick(id,val){
      if(r.status!==400)return jok(r).then(()=>{setProvMsg(prov,'');toast('Saved');loadOrch();});
      return r.json().catch(()=>({})).then(j=>{
        setProvMsg(prov,(j&&j.error)||'Couldn\'t save that model. Pick another one.',true);
+)====="
        // Let the poll put the select back on the stored model (a focused select
        // is never re-synced - it would keep showing the refused one).
+R"=====(
        const s=$(id);if(s)s.blur();
        toast('Pick another model');loadOrch();});})
    .catch(e=>failToast(e));
 }
+)====="
 // Provider row header markup. Shared by provRow (build) and provSync (in-place
 // poll update) so the Recommended badge + verify badge never drift between them.
+R"=====(
 function provHeadHtml(name,p){return '<b>'+(p.label||PROVLBL[name]||name)+'</b>'+
   ((p.recommended!==undefined?p.recommended:name==='cumulo')?' <span class="badge" style="background:#12312e;color:#7fd1c8;border:1px solid #2b6b63">Recommended</span>':'')+
   vfyBadge(p.verify,p.vts,p.vfyReason,p);}
+)====="
 // Key-field placeholder. Shared by provRow + provSync so the cumulo_sk_ hint on the
 // Cumulo row is not stomped back to the generic "API key" by the in-place poll.
+R"=====(
 function keyPlaceholder(name,p){return p.hasKey?'Key set - type to replace'
   :(name==='cumulo'?'cumulo_sk_ key':'API key');}
+)====="
 // CUM-447: reflect a live low-memory deferral in the hint under the key field. The
 // full sentence is shown; the measured number rides the hover (title) with the pill.
+R"=====(
 function setDeferHint(name,p){
   const e=$('dhint_'+name); if(!e)return;
   if(p&&p.verify===-1&&p.vfyReason==='low-memory'){
@@ -2344,9 +2773,11 @@ function provRow(name,p){
   const h=document.createElement('div'); h.className='provhead';
   h.innerHTML=provHeadHtml(name,p);
   w.appendChild(h);
+)====="
   // Cumulo Nimbus is the one-key, one-balance path: it carries the router base wiring
   // under the hood (no URL to type, unlike Custom endpoint) and Verify checks the key
   // against the router, not a third party (CUM-201 items 1-2).
+R"=====(
   if(name==='cumulo'){const ch=document.createElement('div'); ch.className='hint';
     ch.textContent=HOSTED?'One key, one balance. Paste your Cumulo Nimbus key.':'One key, one balance. Mint one from Cloud access, or paste your own.';
     w.appendChild(ch);}
@@ -2355,8 +2786,10 @@ function provRow(name,p){
   k.placeholder=keyPlaceholder(name,p);
   row.appendChild(k);
   const vb=document.createElement('button'); vb.type='button'; vb.id='vfy_'+name;
+)====="
   // verify needs Orchestrator-mode heap; a hosted instance has no cheap verify path
   // so it just saves (the key applies in-app immediately - CUM-279).
+R"=====(
   const canV=(!ORCH||ORCH.running)&&!HOSTED;
   vb.textContent=canV?(p.hasKey?'Verify':'Save & Verify'):'Save Key';
   vb.title=canV?'check the key against the provider':(HOSTED?'The key is saved and applied on this instance':'The key is saved now; to verify it, switch to Orchestrator mode');
@@ -2366,8 +2799,10 @@ function provRow(name,p){
   cb.onclick=()=>{uiConfirm('Remove the '+(PROVLBL[name]||name)+' key?',{ok:'Remove Key',danger:true}).then(ok=>{if(ok)orchApply({['clr_'+keyField(name)]:1});});};
   row.appendChild(cb); w.appendChild(row);
   const pm=document.createElement('div'); pm.className='hint'; pm.id='pmsg_'+name; w.appendChild(pm);
+)====="
   // CUM-447: a persistent one-line hint under the field for a low-memory deferral,
   // separate from the transient pmsg so the 5s poll can keep it in sync with state.
+R"=====(
   const dh=document.createElement('div'); dh.className='hint'; dh.id='dhint_'+name; w.appendChild(dh);
   setDeferHint(name,p);
   const mrow=document.createElement('div'); mrow.className='row';
@@ -2383,21 +2818,27 @@ function provRow(name,p){
   w.appendChild(mu);
   return w;
 }
+)====="
 // Maps a provider slug to its /api/orch key-write field. cumulo/zai have their own
 // store slots and router/probed-host verify routing; the old two-way ternary sent
 // everything else to mistKey, which silently wrote a cumulo_sk_ key into Mistral.
+R"=====(
 const KEYFIELD={openai:'oaiKey',anthropic:'antKey',mistral:'mistKey',cumulo:'cumuloKey',zai:'zaiKey'};
+)====="
 // Fallback is the slug's own field, NEVER another provider's: the old ||'mistKey'
 // silently wrote an unknown provider's key into Mistral. The server now emits keyField
 // per provider (merged into KEYFIELD in applyOrch), so this only bites truly-unknown
 // slugs from a mismatched firmware, and even then routes to the provider's own field.
+R"=====(
 function keyField(p){return KEYFIELD[p]||(p+'Key');}
 
+)====="
 // In-place sync of a provider row on the 5s poll - the old unconditional rebuild of
 // #provs destroyed the API-key input mid-typing (the field-QA "key deletes itself
 // after 1-2s" bug, audit P1.1). The key input's VALUE is never server-synced (the
 // server never returns keys) - only its placeholder; selects rebuild only when their
 // choices/verified signature changes and never while focused.
+R"=====(
 function provSync(name,p){
   const w=$('prov_'+name); if(!w)return;
   const h=w.querySelector('.provhead');
@@ -2412,9 +2853,11 @@ function provSync(name,p){
   syncModelSel('orchM_'+name,p.orchModelName||p.orchModel,p.choices,p.verify===1);
   syncModelSel('subM_'+name,p.subModelName||p.subModel,p.choices,p.verify===1);
 }
+)====="
 // One signature for a model select, shared by the build and the poll's sync: they
 // used to differ once prices loaded (the build added '|p'), so every 5 s poll rebuilt
 // every model select.
+R"=====(
 function modelSelSig(choices,verified){return (choices||'')+'|'+(verified?1:0)+'|'+MODELCAT_SIG+'|'+(_um()?'p':'');}
 function syncModelSel(id,cur,choices,verified){
   const s=$(id); if(!s||document.activeElement===s)return;   // mid-pick: hands off
@@ -2423,10 +2866,12 @@ function syncModelSel(id,cur,choices,verified){
   const want=modelCurOf(id.substring(id.indexOf('_')+1),cur);
   if(s.value!==want)s.value=want;
 }
+)====="
 // Fetch the uncapped catalog (GET /api/models) into MODELCAT, then re-sync any
 // open provider selects so they upgrade from the CSV fallback to the grouped list.
 // Not on the 5s poll (the PSRAM-built payload is multi-KB): called when the Models
 // pane opens and after a verify harvest.
+R"=====(
 function resyncModelSels(){
   if(ORCH&&ORCH.providers)Object.keys(ORCH.providers).forEach(n=>{const pp=ORCH.providers[n];if(!pp)return;
     syncModelSel('orchM_'+n,pp.orchModelName||pp.orchModel,pp.choices,pp.verify===1);
@@ -2444,14 +2889,18 @@ function loadModels(){
     resyncModelSels();
   }).catch(()=>{});
 }
+)====="
 // A Tool use switch: saved the moment it changes (no Save needed); while that save
 // is in flight the poll leaves it alone (data-dirty), then shows the stored value.
+R"=====(
 function _orchSwitch(id,v){const el=$(id);if(!el)return;
   if(!el.dataset.wired){el.dataset.wired='1';
     el.onchange=()=>{el.dataset.dirty='1';orchApply({[id]:el.checked?1:0}).then(()=>{delete el.dataset.dirty;});};}
   if(!el.dataset.dirty)el.checked=!!v;}
+)====="
 // The Code sandbox status line, from the device's one PDF rule (pdfRoute). A
 // Virtual Nimbus cannot collect a file a sub-agent builds, so it shows no switch.
+R"=====(
 var SBX_STAT={openai:'Ready. PDFs go through OpenAI.',anthropic:'Ready. PDFs go through Anthropic.',
   device:'PDFs are made on the device: text and tables only. Add an OpenAI or Anthropic key for charts.',
   devicepaused:'Your PDF provider is paused, so PDFs are made on the device for now: text and tables only.',
@@ -2467,9 +2916,11 @@ function applyOrch(d){
   if($('modOutbound')&&d.modOutbound!=null)$('modOutbound').checked=!!d.modOutbound;
   if($('modInjection')&&d.modInjection!=null)$('modInjection').checked=!!d.modInjection;
   ORCH=d;
+)====="
   // Inherit each provider's label + key-field from the server's canonical registry
   // (CUM-213) so a new provider needs no front-end edit; the hardcoded maps above are
   // only a fallback for firmware that predates these fields.
+R"=====(
   Object.keys(d.providers||{}).forEach(function(n){var pp=d.providers[n];if(!pp)return;
     if(pp.label)PROVLBL[n]=pp.label; if(pp.keyField)KEYFIELD[n]=pp.keyField;});
   $('orchoff').style.display=d.running?'none':'inline-block';
@@ -2479,17 +2930,21 @@ function applyOrch(d){
     host.dataset.sig=sig; host.innerHTML='';
     Object.keys(d.providers).forEach(n=>host.appendChild(provRow(n,d.providers[n])));
   } else Object.keys(d.providers).forEach(n=>provSync(n,d.providers[n]));
+)====="
   // A new user needs the key field first, but "Providers & keys" is collapsed by
   // default. Open it once, on first load, when no provider is verified yet - so
   // setup is visible without a hunt. Runs exactly once so it never fights a toggle
   // or re-opens on later polls (CUM-214).
+R"=====(
   if(!_provOpenDone){
     _provOpenDone=true;
     const anyVerified=Object.keys(d.providers||{}).some(n=>d.providers[n]&&d.providers[n].verify===1);
     const grp=host.closest&&host.closest('details.setgroup');
     if(grp&&!anyVerified)grp.open=true;
   }
+)====="
   // only fill inputs the user is not editing right now
+R"=====(
   const set=(id,v)=>{const e=$(id);if(e&&document.activeElement!==e)e.value=v;};
   set('custBase',d.cust.base||''); set('custConv',d.cust.conv); set('custModel',d.cust.model||'');
   $('custKey').placeholder=d.cust.hasKey?'Key set - type to replace':'API key';
@@ -2499,19 +2954,25 @@ function applyOrch(d){
   if(d.sttProv){set('sttProv',d.sttProv); $('sttProv').onchange=()=>orchApply({sttProv:$('sttProv').value});}
   if(d.ttsProv){set('ttsProv',d.ttsProv);
     $('ttsProv').onchange=()=>orchApply({ttsProv:$('ttsProv').value,ttsVoice:''});
+)====="
     // Only rebuild the voice list when the PROVIDER changed (or first load). The
     // 5s state poll re-runs applyOrch; re-filling every time would clobber a voice
     // the user just picked (this was the "switch doesn't update / reverts" bug).
     // Also rebuild when the Cumulo key state flips, so the "Needs a Cumulo key" hint
     // clears the moment a key is added while Cumulo Nimbus is the chosen voice.
+R"=====(
     const _ck=!!(d.providers&&d.providers.cumulo&&d.providers.cumulo.hasKey);
     if(window._vp!==d.ttsProv||window._vck!==_ck){window._vp=d.ttsProv;window._vck=_ck;fillVoices(d.ttsProv, d.ttsVoice||'', _ck);}}
+)====="
   // Theme swatches: palettes are fetched from /api/themes (cached in THEMES) and
   // rendered against the live selection. Fetch lazily on first sight of d.theme.
+R"=====(
   if(d.theme!==undefined){_curTheme=d.theme; if(THEMES){renderThemeChips();renderStatusLegend();}else loadThemes();}
   if(d.hasTav!==undefined){$('tavKey').placeholder=d.hasTav?'Key set - type to replace':'Tavily API key';
+)====="
     // Honest three-state status (owner: "unverified? verified but no confirmation?"):
     // verified via a real search / rejected / saved-but-unverified / no key.
+R"=====(
     const tv=!d.hasTav?'Web search is off - add a key to enable it'
       :d.tavVerify===1?'✓ Web search ready - key verified'
       :d.tavVerify===0?'✗ Key rejected by Tavily - check it'
@@ -2521,7 +2982,9 @@ function applyOrch(d){
     $('tavstat').textContent=tv;
     $('tavstat').style.color=!d.hasTav?'':d.tavVerify===1?'#7fd1c8':d.tavVerify===0?'#f0687a':'#e0b870';}
   $('tgToken').placeholder=d.hasTg?'Token set - type to replace':'Bot token';
+)====="
   // Telegram READINESS (P2.6): every gate that silently eats a reply, made visible.
+R"=====(
   {const r=$('tgReady');
    if(r){const parts=[];
     if(!d.hasTg)parts.push(HOSTED?'• No bot connected. A bot is connected when the instance is created at app.cumulo-nimbus.ai.':'• No bot token yet - Telegram is off (create one with @BotFather)');
@@ -2529,15 +2992,19 @@ function applyOrch(d){
       ?'⚠ Token saved - restart the device to start Telegram'
       :'⚠ Token saved - Telegram runs in Orchestrator mode (switch modes to start it)');
     else parts.push('✓ Bot active');
+)====="
     // Verify-on-save verdict (owner: "run a tiny verification"): a real getMe check.
     // A hosted bot is checked by the platform, and reports no verdict here.
+R"=====(
     if(d.hasTg&&!HOSTED){
       if(d.tgVerify===1)parts.push('✓ Token verified'+(d.tgBot?(' - bot @'+d.tgBot):''));
       else if(d.tgVerify===0)parts.push('✗ Token rejected by Telegram - check it');
       else if(d.tgVts>0)parts.push('⚠ Couldn’t verify the token - retry');
       else parts.push('⏳ Verifying the token…');
+)====="
       // Resolve the save-flow message once the verdict lands (it used to say
       // "verifying…" forever - the verdict only appeared in this readiness line).
+R"=====(
       if(_tgVerifyWatch&&(d.tgVerify===1||d.tgVerify===0||d.tgVts>0)){
         _tgVerifyWatch=false;
         const m=$('orchmsg');
@@ -2559,18 +3026,32 @@ function applyOrch(d){
       ck?'✓ voice notes (Cumulo Nimbus STT)' :
       '⚠ No '+(d.sttProv||'dictation')+' key - voice notes can’t be transcribed');
     r.textContent=parts.join('  ·  ');
+)====="
     // Red is reserved for a genuine failure (a token Telegram rejected). Normal
     // not-set-up states use a neutral marker and neutral color, so a fresh device
     // does not read as a wall of errors (CUM-214).
+R"=====(
     const bad=parts.some(p=>p[0]==='✗'),warn=parts.some(p=>p[0]==='⚠'||p[0]==='⏳'),setup=parts.some(p=>p[0]==='•');
     r.style.color=bad?'#e77':warn?'#e0b870':setup?'#a7adba':'#7fd1c8';}}
+)====="
   // Tool use switches save on change; one the owner just flipped keeps its state
   // while its save is in flight, so the 5 s poll never puts the old value back.
+R"=====(
   _orchSwitch('orchLoop',d.orchLoop);_orchSwitch('midFail',d.midFail);_orchSwitch('codeSbx',d.codeSbx);
+)====="
+  // Engine 2 (E2-P-SURF): a setting it does not read is hidden, with one line saying so.
+R"=====(
+  if(d.engine===2&&d.inert)d.inert.forEach(function(x){var e=$(x[0]);if(!e||e.dataset.inert)return;e.dataset.inert=1;
+    var c=e.tagName==='INPUT'?(e.closest('label')||e):e,t=c,i,n=c.nextElementSibling,p=document.createElement('p');
+    for(i=0;i<x[2];i++){t=t.previousElementSibling;if(t)t.style.display='none';}
+    if(n&&n.classList.contains('tip'))n.style.display='none';
+    c.style.display='none';p.className='hint';p.textContent=x[1];c.parentNode.insertBefore(p,c);});
   if(d.orchTrace!==undefined){_orchSwitch('orchTrace',d.orchTrace);
     GB.trace=!!d.orchTrace;_chatTraceHint();}   // glass-box honesty (no extra poll)
   _sbxStatus(d);
+)====="
   // "Voice replies" toggle (P2.5): applies immediately (like the SFX controls).
+R"=====(
   if(d.ttsOn!==undefined){const tv=$('ttsOn');
     if(tv){tv.checked=!!d.ttsOn; tv.onchange=()=>orchApply({ttsOn:tv.checked?1:0});}}
   if(d.loopRounds!==undefined)set('loopRounds',d.loopRounds);
@@ -2582,7 +3063,9 @@ function applyOrch(d){
   if(d.capProbeH!==undefined)set('capProbeH',d.capProbeH);
   if($('capProbe'))capProbeUpd();
   if(d.loopDeadline!==undefined)set('loopDeadline',d.loopDeadline);
+)====="
   // Token usage tiles (real billed in/out tokens, last turn + session running total)
+R"=====(
   if(d.usage&&$('usageTiles')){const u=d.usage,kt=n=>(n||0)>=1000?((n/1000).toFixed(1)+'K'):(''+(n||0));
     $('usageTiles').innerHTML=
       _tile('This session',kt(u.sessIn+u.sessOut),'in '+kt(u.sessIn)+' · out '+kt(u.sessOut)+' · '+(u.turns||0)+' turns',0,'')+
@@ -2590,16 +3073,20 @@ function applyOrch(d){
     _usageBP=Array.isArray(u.byProvider)?u.byProvider:[];
     _usageCeil=u.ceiling||null;   // lane DEF: the monthly spend ceiling (renderCeiling)
     if(d.providers)_provSlugs=Object.keys(d.providers);
+)====="
     // Refetch the per-model prices when the ledger moved (the list must add up to the tile).
+R"=====(
     const _sig=JSON.stringify(_usageBP),_uv=$('subpane-usage');
     if(_sig!==_bpSig){_bpSig=_sig;if(_uv&&_uv.offsetParent)loadUsageModels();}
     renderUsageAll();}
   if(d.sfxLvlN!==undefined){$('sfxLvlN').value=d.sfxLvlN;$('sfxLvlO').value=d.sfxLvlO;$('sfxTheme').value=d.sfxTheme;
     if(d.sfxVol!==undefined){$('sfxVol').value=d.sfxVol;$('sfxVolPct').textContent=d.sfxVol+'%';}
     $('sfxtier').textContent='tier: '+d.sfxTier+(d.sfxSync&&d.sfxSync!=='idle'?' · '+d.sfxSync:'');}
+)====="
   // Directive: stash the shipped default + cap (single source, from the server) so
   // the box can pre-fill it and "Revert to default" restores it. An empty stored
   // value shows the shipped default, matching what the assistant actually runs.
+R"=====(
   window.__dirDefault=d.directiveDefault||''; window.__dirMax=d.directiveMax||1500;
   set('directive',(d.directive&&d.directive.length)?d.directive:window.__dirDefault);   // a missing field must never surface as literal "undefined" (CUM-214)
   $('memview').textContent=d.mem||'(empty)';
@@ -2611,11 +3098,15 @@ function applyOrch(d){
       '</td><td>'+_sEsc(x.category)+'</td><td>'+_sEsc(x.state)+'</td></tr>';});
     h+='</table>'; if(j)j.innerHTML=h; if(dj)dj.innerHTML=h;}
 }
+)====="
 // Per-provider monthly budget rows (owner: budget per provider). Each provider that
 // has usage OR a set limit renders a labelled bar: tokens for LLM hosts, calls for
 // search providers. Over-budget rows go red. 0 limit shows the raw count, no bar.
+R"=====(
 const BUDLBL={cumulo:'Cumulo Nimbus',openai:'OpenAI',anthropic:'Anthropic',mistral:'Mistral',zai:'Z.ai',tavily:'Tavily',custom:'Custom'};
+)====="
 // ---- W18: URL-download queue (policy select + pending/approve cards) --------
+R"=====(
 function loadFetchQ(){fetch('/api/fetchq').then(r=>r.json()).then(renderFetchQ).catch(()=>{});}
 function renderFetchQ(rows){
   const box=$('fetchRows'); if(!box)return;
@@ -2646,13 +3137,17 @@ function fetchQAct(id,op){
   fetch('/api/fetchq',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
     body:'id='+id+'&op='+op}).then(()=>loadFetchQ());
 }
+)====="
 // Safety ACTIVITY surface (CUM-215): the scanner's blocked/suspected log, per-entry
 // owner actions (approve scoped / dismiss / report), and the scoped allowlist.
+R"=====(
 var _safetyReport={available:false,copy:''};
 function loadSafety(){if(HOSTED)return;fetch('/api/safety').then(cardJson).then(function(d){cardBusyNote('safetyList',false);renderSafety(d);}).catch(function(e){if(onCardBusy(e,'safety',loadSafety,'safetyList'))return;var b=$('safetyList');if(b&&/loading/i.test(b.textContent))b.innerHTML='<p class=hint>Could not load activity. Try again.</p>';
   var a=$('safetyAllow');if(a&&/loading/i.test(a.textContent))a.textContent='Could not load. Try again.';});}
+)====="
 // Reuse the one full HTML escaper (connEsc, defined below and hoisted): it also
 // escapes ' and ", so ids interpolated into inline handlers cannot break out (CUM-215).
+R"=====(
 function renderSafety(d){
   d=d||{};_safetyReport=d.report||{available:false,copy:''};
   var box=$('safetyList');
@@ -2666,8 +3161,10 @@ function renderSafety(d){
         var sbad=e.status==='dismissed'?' <span class="badge vfy">dismissed</span>':e.status==='approved'?' <span class="badge vfy ok">approved</span>':'';
         var opts='<option value=pattern>this content</option>';
         if(e.sender)opts+='<option value=sender>this sender</option>';
+)====="
         // "this type" (content-class) only for a genuine narrow category; a coarse
         // moderation rule would allow the whole gate, so it is not offered there.
+R"=====(
         if(e.rule&&e.rule!=='moderation')opts+='<option value=content-class>this type</option>';
         var when=e.ts?new Date(e.ts*1000).toLocaleString():'';
         var rep=_safetyReport||{};var repNote='';
@@ -2720,8 +3217,10 @@ function safetyRevoke(id){
     body:'id='+encodeURIComponent(id)}).then(()=>{toast('Revoked');loadSafety();}).catch(failToast);
 }
 function safetyReport(id){
+)====="
   // The device queues the report on a worker task and returns 202 immediately; poll
   // GET /api/safety a few times to pick up the outcome (report.last) it records.
+R"=====(
   fetch('/api/safety/report',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
     body:'id='+encodeURIComponent(id)})
     .then(r=>r.json().catch(()=>({})).then(j=>({s:r.status,j:j})))
@@ -2761,9 +3260,11 @@ function renderBudgets(bp){
     const used=isCall?(p.calls||0):(p.tokens||0);
     const lim=isCall?(p.callLimit||0):(p.tokenLimit||0);
     const unit=isCall?'calls':'tokens';
+)====="
     // W16: when a $ cap is set the bar tracks DOLLARS (the enforced axis);
     // otherwise the token/call axis as before. estCents is server-computed -
     // the same formula the refusal gate uses.
+R"=====(
     const hasUsd=(p.centsLimit||0)>0;
     const pct=hasUsd?Math.min(100,(p.estCents||0)/p.centsLimit*100)
                     :(lim>0?Math.min(100,used/lim*100):0);
@@ -2786,10 +3287,14 @@ function renderBudgets(bp){
   box.innerHTML=h;
   box.querySelectorAll('.d1ok').forEach(a=>a.onclick=e=>{e.preventDefault();_d1Hint(1);renderBudgets(_usageBP);});
 }
+)====="
 // D1: a $ cap counts built-in estimates; the Budgets row says so until "Got it".
+R"=====(
 let _d1Mem=false;
 function _d1Hint(done){try{if(done){_d1Mem=true;localStorage.setItem('nimbusD1Hint','1');}return _d1Mem||localStorage.getItem('nimbusD1Hint')==='1';}catch(e){return _d1Mem;}}
+)====="
 // ---- Spend graphs + $ estimates: every $ is from the server's prices (/api/usage/models).
+R"=====(
 const PROVCOL={cumulo:'#e98fcf',openai:'#7fd1c8',anthropic:'#f0b45a',mistral:'#f0947a',zai:'#a3d977',tavily:'#6cb8ff',custom:'#c9a7f5'};
 const OTHERCOL='#7b8290';
 const SRCLBL={owner:'yours',router:'Cumulo price',provider:'your default',est:'~estimate',none:'not priced'};
@@ -2799,7 +3304,9 @@ try{const g=localStorage.getItem('nimbusUsageGroup');if(g==='model'||g==='prov')
 function _um(){const m=_usageModels;return (m&&Array.isArray(m.models))?m:null;}
 function _aEsc(s){return _sEsc(String(s==null?'':s)).replace(/"/g,'&quot;');}
 function _mLabel(prov,m){const pl=BUDLBL[prov]||prov;return !m?pl+' (before model tracking)':m==='~other'?pl+' other models':m;}
+)====="
 // Cents at server prices (cache 0.1x/1.25x in): model row, else fold price, else (no model) residual.
+R"=====(
 function _costOf(prov,m,tin,tout,cr,cw,calls){
   const u=_um(); if(!u)return null;
   const p=(u.provRate||{})[prov]||{};
@@ -2823,7 +3330,9 @@ function renderUsageSummary(){
   _usageBP.forEach(p=>{atI+=p.totIn||0;atO+=p.totOut||0;atC+=p.totCalls||0;
     pI+=p.tokIn||0;pO+=p.tokOut||0;pCost+=p.estCents||0;pDef=pDef||!!p.approx;});
   const win=(days)=>{let i=0,o=0,c=0,cost=_um()?0:null,def=false;
+)====="
     // today==0: clock never synced, and buckets carry real days - zeros until it is.
+R"=====(
     if(_usageHist&&_usageHist.today&&Array.isArray(_usageHist.days)){const cut=_usageHist.today-days;
       _usageHist.days.forEach(b=>{if(b.d>cut){i+=b.in||0;o+=b.out||0;c+=b.calls||0;
         const w=_costOf(b.prov,b.m||'',b.in,b.out,b.cr,b.cw,b.calls);if(w){cost+=w.c;def=def||w.def;}}});}
@@ -2835,7 +3344,9 @@ function renderUsageSummary(){
     _tile('Last 30 days',_kt2(w30.t),_usdOr(w30.k)+' est · '+_kt2(w30.c)+' calls',0,'')+
     _tile('Last 7 days',_kt2(w7.t),_usdOr(w7.k)+' est · '+_kt2(w7.c)+' calls',0,'');
 }
+)====="
 // This period by model (the server's breakdown: rows add up to the provider and the tile).
+R"=====(
 function renderByModel(){
   const box=$('usageByModel'); if(!box)return;
   const u=_um(),kt=_kt2,live=_usageBP.filter(p=>(p.tokIn||0)+(p.tokOut||0)+(p.calls||0)>0);
@@ -2850,7 +3361,9 @@ function renderByModel(){
       kt((x.pIn||0)+(x.pOut||0))+' tokens',x.est,x.src==='est');});
     (u.residual||[]).filter(has).forEach(r=>{h+=row('Earlier usage, model not recorded',kt((r.pIn||0)+(r.pOut||0))+' tokens',r.est,r.src==='est');});
     if(p.calls>0)h+=row('Searches',kt(p.calls)+' calls',pr.callEst,pr.srcCall==='est');
+)====="
     // A paid custom endpoint with no price of yours counts at the highest built-in rate.
+R"=====(
     if(p.prov==='custom'&&u.models.some(x=>has(x)&&x.src==='est'))
       h+='<p class=hint style="margin:2px 0 6px">Custom endpoint: an estimate at the highest built-in price until you set its real price under Prices.</p>';});
   box.innerHTML=h+'</div>';
@@ -2863,11 +3376,15 @@ function loadUsageModels(f){
   fetch('/api/usage/models').then(jok).then(d=>{_usageModels=(d&&Array.isArray(d.models))?d:null;renderUsageAll(f);}).catch(()=>{});
 }
 function renderUsageAll(f){renderCeiling();renderBudgetLog();renderBudgets(_usageBP);renderUsageSummary();renderByModel();renderUsageChart();renderPrices(f);}
+)====="
 // Lane DEF: the monthly spend ceiling across all providers (GET /api/orch usage.ceiling):
 // this month's estimate against the ceiling, and whether paid calls are paused.
+R"=====(
 let _usageCeil=null;
+)====="
 // Lane DEF2: the ceiling can be off (the owner's choice, or provider limits set), each
 // provider's own monthly limit is a hard stop listed below it, and a daily warning.
+R"=====(
 function _ceilMeter(c){
   if(c.active===false)return '<div class=row style="justify-content:space-between"><b>'+_usd(c.spentCents,true)+
     ' this month, no overall ceiling</b><span class=hint>'+(c.ownerSet?'Turned off':'Off: your provider limits apply')+
@@ -2902,8 +3419,10 @@ function renderCeiling(){
   if($('dailymsg')&&c.dailyWarnCents>0&&!$('dailymsg').dataset.said)
     $('dailymsg').textContent='Today so far: '+_usd(c.todayCents||0,true)+'. One message a day past the warning.';
 }
+)====="
 // Lane BUD: the limit changes made with /budget from Telegram or the web chat (GET
 // /api/orch usage.ceiling.changes, newest first): when, from where, what changed.
+R"=====(
 function renderBudgetLog(){
   const box=$('budLog'),c=_usageCeil; if(!box)return;
   const rows=(c&&Array.isArray(c.changes))?c.changes.slice(0,3):[];
@@ -2916,7 +3435,9 @@ function renderBudgetLog(){
 if($('ceil_usd'))$('ceil_usd').oninput=()=>{$('ceil_usd').dataset.edited='1';};
 if($('ceil_on'))$('ceil_on').onchange=()=>{$('ceil_on').dataset.edited='1';};
 if($('daily_usd'))$('daily_usd').oninput=()=>{$('daily_usd').dataset.edited='1';};
+)====="
 // The ceiling is dollars in the UI, CENTS on the wire (spendCeil, 1 to 100,000 USD; off).
+R"=====(
 if($('ceilsave'))$('ceilsave').onclick=()=>{
   if($('ceil_on')&&!$('ceil_on').checked){
     orchApply({spendCeil:'off'}).then(ok=>{
@@ -2937,7 +3458,9 @@ if($('ceilsave'))$('ceilsave').onclick=()=>{
     loadOrch();
   });
 };
+)====="
 // The daily warning: dollars in the UI, CENTS on the wire (dailyWarn; 0 = the built-in rule).
+R"=====(
 if($('dailysave'))$('dailysave').onclick=()=>{
   const raw=$('daily_usd').value.trim(),usd=raw===''?0:+raw;
   if(!(usd>=0)||usd>100000){$('dailymsg').textContent='Enter an amount from $0.01 to $100,000, or leave it empty.';return;}
@@ -2951,7 +3474,9 @@ if($('dailysave'))$('dailysave').onclick=()=>{
     loadOrch();
   });
 };
+)====="
 // One provider's models: its color mixed toward black or white by rank.
+R"=====(
 function _shade(hex,r){const n=parseInt(hex.slice(1),16),f=[0,-.35,.4,-.55,.65,-.2,.22,-.68][r%8];
   return 'rgb('+[16,8,0].map(s=>{const c=n>>s&255;return Math.round(f<0?c*(1+f):c+(255-c)*f);}).join()+')';}
 function _cssVar(n,d){try{return getComputedStyle(document.documentElement).getPropertyValue(n).trim()||d;}catch(e){return d;}}
@@ -2965,7 +3490,9 @@ function _chartSeries(today,days){
     tot[key]=(tot[key]||0)+v;meta[key]={prov:b.prov,m:_chartGroup==='prov'?null:m};});
   return {perDay:perDay,tot:tot,meta:meta,def:def};
 }
+)====="
 // Top 8 series, the rest folded into "Other models".
+R"=====(
 function _chartPlan(s){
   const keys=Object.keys(s.tot).filter(k=>s.tot[k]>0).sort((a,b)=>s.tot[b]-s.tot[a]),rank={},out=[];
   keys.slice(0,8).forEach(k=>{const t=s.meta[k],p=t.prov,c=PROVCOL[p]||OTHERCOL,r=rank[p]||0;rank[p]=r+1;
@@ -2977,7 +3504,9 @@ function _chartPlan(s){
 }
 function renderUsageChart(){
   const cv=$('usageChart'); if(!cv)return;
+)====="
   // Nothing to draw: a slim empty-state line, not a large empty canvas (CUM-214).
+R"=====(
   const msg=$('usageChartMsg'),lg=$('usageLegend');
   const show=(on,t)=>{cv.style.display=on?'':'none';if(lg)lg.style.display=on?'':'none';if(msg)msg.textContent=t;return on;};
   const run=' - run a chat or Telegram turn and it will appear here.';
@@ -2994,7 +3523,9 @@ function renderUsageChart(){
   const dpr=window.devicePixelRatio||1,W=Math.max(280,cv.clientWidth||880),H=W<560?210:260;
   cv.width=Math.round(W*dpr);cv.height=Math.round(H*dpr);cv.style.height=H+'px';
   const ctx=cv.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,W,H);
+)====="
   // Round gridlines (1/2/2.5/5 x 10^k): the axis tops out at the first step past the tallest day.
+R"=====(
   const p10=maxV?Math.pow(10,Math.floor(Math.log10(maxV/3))):1,f=maxV/3/p10,step=(f<=1?1:f<=2?2:f<=2.5?2.5:f<=5?5:10)*p10,top=maxV?step*Math.ceil(maxV/step):0;
   const padL=W<560?44:52,padB=22,ph=H-10-padB,ink=_cssVar('--ink3','#6f7684'),scale=top?ph/top:0;
   ctx.font='11px system-ui';ctx.fillStyle=ink;ctx.strokeStyle=_cssVar('--line','#2a2d36');
@@ -3020,7 +3551,9 @@ function _syncChartBtns(){
   document.querySelectorAll('.rangeBtn').forEach(b=>b.style.cssText=css(+b.dataset.days===_chartDays));
   _CB.forEach(([id,k,v])=>{const b=$(id),a=(k==='g'?_chartGroup:_chartUnit)===v;if(b){b.style.cssText=css(a);b.setAttribute('aria-pressed',a);}});
 }
+)====="
 // ---- Prices: per model (mrate, micro-USD per 1M) + "Any other" (rates, cents).
+R"=====(
 function _priceProvs(){return (_provSlugs||[]).concat(Object.keys(PROVLBL),['custom','tavily']).filter((v,i,a)=>a.indexOf(v)===i);}
 function _provOptLabel(p){return p==='tavily'?'Tavily (search)':(BUDLBL[p]||p);}
 function _fillProvSelect(sel,dflt){
@@ -3046,7 +3579,9 @@ function _priceRow(m,name,sub,v,ph,src){   // v, ph: [in,out] or [searches]
 function renderPrices(force){
   const box=$('priceRows'),sel=$('price_prov');if(!box||!sel)return;
   _fillProvSelect(sel,'openai');_fillProvSelect($('bud_prov'),'openai');
+)====="
   // The 5 s poll never clobbers a price being typed or not yet saved.
+R"=====(
   if(!force&&(box.contains(document.activeElement)||[...box.querySelectorAll('input')].some(i=>i.value!==i.defaultValue)))return;
   const u=_um(),prov=sel.value;
   if(!u){box.innerHTML='<p class=hint style="grid-column:1/-1">Prices are loading.</p>';return;}
@@ -3067,12 +3602,16 @@ function _savePrice(prov,m,clear){
     :{rates:prov+':'+(prov==='tavily'?(bp.rateIn||0)+':'+(bp.rateOut||0)+':'+c('in'):c('in')+':'+c('out')+':'+(bp.rateCall||0))};
   if(msg)msg.textContent='';
   if(box.contains(document.activeElement))document.activeElement.blur();
+)====="
   // Only the saved row turns clean: a price typed in another row survives the reload.
+R"=====(
   orchApply(body).then(ok=>{if(msg)msg.textContent=ok===false?lastFailText():(clear?'Price cleared':'Price saved')+' - estimates updated.';
     if(ok!==false){box.querySelectorAll('input').forEach(i=>{if(i.dataset.m===m){if(clear)i.value='';i.defaultValue=i.value;}});loadUsageModels();}});
 }
 if($('price_prov'))$('price_prov').onchange=()=>{if($('ratemsg'))$('ratemsg').textContent='';renderPrices(1);};
+)====="
 // Hosted (CUM-279): no usage ledger there yet, so no editors.
+R"=====(
 function applyHostedUsage(){
   if(!HOSTED)return;
   try{const ps=$('pricesSec'),bs=$('budgetsSec');
@@ -3087,26 +3626,34 @@ applyHostedUsage();
 _syncChartBtns();
 _fillProvSelect($('bud_prov'),'openai');
 _fillProvSelect($('price_prov'),'openai');
+)====="
 // History loads lazily on the Usage tab (review: an unconditional page-load fetch
 // pulled the multi-KB bucket payload in EVERY mode, including Notifier).
+R"=====(
 function loadOrch(){if(!canPoll())return;fetch('/api/orch').then(r=>r.json()).then(applyOrch).catch(()=>{});}
+)====="
 // Connectors: GET is SANITIZED (secrets -> hasTok/hasOauth flags), shown as status
 // only; the textarea is for authoring and a save REPLACES the whole list (so a
 // round-trip can never silently strip a stored token).
+R"=====(
 function connEsc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+)====="
 // Which providers actually run this connector, and how, right now.
+R"=====(
 function connAvail(prov,host,keyed,auth,ws){
   if(prov==='any')prov=host||'openai';
   if(!keyed||!keyed[prov])return{cls:'unk',txt:prov+' key missing'};
   if(prov==='openai')return host==='openai'?{cls:'ok',txt:'live on your turns'}:{cls:'ext',txt:'via sessions'};
   if(prov==='anthropic')return{cls:'ext',txt:'via sessions'};
   if(prov==='mistral'){
+)====="
     // A Mistral Studio connector authenticates in the owner's Mistral account (auth==2: not
     // connected there yet), so say exactly that. Once connected it runs on Mistral turns or a
     // spawned Mistral sub-session (core connectorScope SubsessionsOnly). CUM-537: until the
     // device's post-save workspace check lands it is unchecked, not missing. Lane CONN: a head
     // that refuses built-in connectors (mistral-large-4-0) never runs them on its own turns,
     // so even a connected one is via sessions.
+R"=====(
     if(ws==='checking')return{cls:'unk',txt:'checking your Mistral workspace'};
     if(ws==='unchecked')return{cls:'unk',txt:'Mistral workspace not checked'};
     if(auth===2)return{cls:'unk',txt:'connect it in Mistral'};
@@ -3114,33 +3661,43 @@ function connAvail(prov,host,keyed,auth,ws){
   }
   return{cls:'unk',txt:'configured'};
 }
+)====="
 // The kind a connector attaches as depends on the chosen provider.
+R"=====(
 var MISTRAL_BUILTINS={web_search:1,web_search_premium:1,code_interpreter:1,image_generation:1,document_library:1};
 function connKindFor(prov,k){
   if(prov==='mistral')return MISTRAL_BUILTINS[k.id]?'builtin':'connector'; // hosted tool vs Studio connector
   if(prov==='openai'&&k.cid)return 'connector';                            // OpenAI first-party connector_id
   return 'mcp';                                                            // BYO remote MCP by URL (+ token)
 }
+)====="
 // The connector_id to prefill: Mistral's own workspace id (gcal -> google_calendar)
 // when Mistral runs it, else the OpenAI first-party default.
+R"=====(
 function connCidDefault(prov,k){ return prov==='mistral'?(k.mcid||k.id):(k.cid||''); }
 function loadConnectors(poll){
+)====="
   // A poll (the timer below, poll===true) stops once signed out or paused, like
   // every poller. Any other call (tab open, save, a handler's event) loads in full.
+R"=====(
   if(poll===true&&!canPoll())return;
   fetch('/api/connectors').then(r=>r.json()).then(d=>{
   if(Array.isArray(d))d={configured:d,known:[],keyed:{},host:''};       // legacy-shape guard
   const cfg=d.configured||[],keyed=d.keyed||{},host=d.host||'';let known=d.known||[];
   const byId={};cfg.forEach(c=>{byId[c.type||c.name]=c;if(!byId[c.name])byId[c.name]=c;});
   const knownIds={};known.forEach(k=>knownIds[k.id]=1);
+)====="
   // Code Interpreter is the Code sandbox switch under Tools, never a card here.
+R"=====(
   const CS='code_interpreter';
   const extra=cfg.filter(c=>!knownIds[c.type]&&!knownIds[c.name]&&c.type!==CS&&c.name!==CS);
   known=known.filter(k=>k.id!==CS);
   const cards=known.map(k=>[k,byId[k.id]]).concat(extra.map(c=>[{id:c.name,name:c.name,providers:c.prov,kind:c.kind,cid:c.cid||'',cred:'Credential / token',desc:'Custom connector.',docs:''},c]));
+)====="
   // CUM-537: a poll refreshes only each card's status badge. Rebuilding the cards
   // would wipe a token being typed or a provider being picked (focused or not); a
   // card that is new since the last full load waits for the next one.
+R"=====(
   window._connWs={miss:d.wsMiss,recheck:d.wsRecheckS};
   window._connRefuses=!!d.hostRefuses;
   connWarn(d.mistralTools|0,d.mistralToolsAdvised||2);
@@ -3159,20 +3716,26 @@ function loadConnectors(poll){
     connRestoreDrafts();
   }
   $('connstat').textContent=cfg.length?(cfg.length+' configured'):'';
+)====="
   // CUM-537: while the workspace check runs, refresh the badges so they turn to
   // their real state without a reload. Bounded (~7 min) to cover the device's retries.
+R"=====(
   clearTimeout(window._connPoll);
   if(d.wsChecking&&(window._connPolls=(window._connPolls||0)+1)<=100)window._connPoll=setTimeout(()=>loadConnectors(true),4000);
   else if(!d.wsChecking)window._connPolls=0;
 }).catch(()=>{});}
 function connProvs(k){const p=(k.providers||'').split(',').filter(Boolean);if(!p.length)p.push('any');return p;}
+)====="
 // Too many tools on one Mistral request make its turns slow (each rides the same
 // synchronous call the device stops waiting for at about a minute).
+R"=====(
 function connWarn(n,adv){const w=$('connwarn');if(!w)return;
   w.textContent=n>adv?(n+' Mistral connectors and built-ins are on. Mistral answers slowly with more than '+adv+' at once, so turn off the ones you don\'t use.'):'';
   w.style.display=n>adv?'block':'none';}
+)====="
 // The workspace line under a Mistral connector's badge: why it is not confirmed yet,
 // when the device checks again, and a Check Now button that queues the check alone.
+R"=====(
 var CONN_MISS={memory:'the device was low on memory',busy:'the assistant was busy',network:'the connection was busy',noanswer:'Mistral did not answer'};
 function connWsLine(k,c){
   if(!c||c.prov!=='mistral'||c.kind!=='connector'||!(c.en==1||c.en===true))return '';
@@ -3191,7 +3754,9 @@ function connCheckNow(id){
     toast(x.j.queued?'Checking workspace':'Already confirmed');window._connPolls=0;loadConnectors();
   }).catch(failToast);
 }
+)====="
 // One card's status badge (its own span, so a poll can refresh it alone).
+R"=====(
 function connStatus(k,c,keyed,host){
   const set=!!c,en=set&&(c.en==1||c.en===true);
   if(!set)return '<span class="badge vfy unk">not set</span>';
@@ -3210,36 +3775,44 @@ function connCard(k,c,keyed,host,provPick){
   h+='<div class=hint id="cc_'+connEsc(id)+'_ws" style="margin:4px 0">'+connWsLine(k,c)+'</div>';
   h+='<p class=cx style="margin:6px 0">'+connEsc(k.desc||'')+(k.docs?(' <a href="https://ristllin.github.io/Nimbus/guides/connectors#'+connEsc(k.docs)+'" target=_blank>setup&rarr;</a>'):'')+'</p>';
   h+='<div class=row style="margin-top:6px">'+provSel+'</div>';
+)====="
   // Mistral connectors (Studio connectors + hosted built-ins) carry NO credential on
   // this device: they are authorized in the owner's Mistral account, and the device
   // only references them by name. Enabling the checkbox here is not enough, so say the
   // real step plainly - otherwise it reads as "on but broken" (the gcal confusion).
+R"=====(
   if(curProv==='mistral'&&kind!=='mcp'){
     h+='<p class=hint style="margin:6px 0;color:var(--amber)">'+(kind==='builtin'
       ?'This runs inside Mistral with your Mistral key. There is nothing to paste here.'
       :'This runs on Mistral. Authorize '+connEsc(k.name)+' in Mistral\'s console (Studio &rsaquo; Connectors), then enable it here with Mistral as the provider: it is referenced by name, so there is nothing to paste.')+'</p>';
   }
+)====="
   // token field only for remote MCP (a pasted PAT/bearer). Mistral connectors carry
   // no device secret (Studio-auth); OpenAI first-party needs the OAuth block (helper
   // script / raw editor), not a single token.
+R"=====(
   const showUrl=kind==='mcp',showCid=kind==='connector',showTok=kind==='mcp';
   h+='<div class=row id="cc_'+id+'_urlrow" style="margin-top:6px;display:'+(showUrl?'flex':'none')+'"><input id="cc_'+id+'_url" placeholder="MCP server URL (e.g. https://api.githubcopilot.com/mcp/)" value="'+connEsc(set?(c.url||''):'')+'"></div>';
   h+='<div class=row id="cc_'+id+'_cidrow" style="margin-top:6px;display:'+(showCid?'flex':'none')+'"><input id="cc_'+id+'_cid" placeholder="Connector name or ID" value="'+connEsc(set&&c.cid?c.cid:connCidDefault(curProv,k))+'"></div>';
   const ph=(set&&c.hasTok)?'•••• saved - leave blank to keep':(k.cred||'Credential / token');
   h+='<div class=row id="cc_'+id+'_tokrow" style="margin-top:6px;display:'+(showTok?'flex':'none')+'"><input id="cc_'+id+'_tok" type=password placeholder="'+connEsc(ph)+'"></div>';
+)====="
   // MCP OAuth sign-in (CUM-256): for a saved MCP server that signs in through the
   // browser (no pasted token), offer Sign in. The device runs the flow and shows a
   // link + code here; the owner approves on their phone/laptop on the same network.
+R"=====(
   if(showTok&&set&&c.url){
     h+='<div class=row id="cc_'+id+'_oauthrow" style="margin-top:6px;align-items:center;gap:8px">';
     h+='<button type=button onclick="mcpOauthStart(\''+connEsc(c.name)+'\',\''+connEsc(id)+'\')">Sign in</button>';
     h+='<span class=hint>For a hosted server that signs in through your browser.</span></div>';
     h+='<div class=hint id="cc_'+id+'_oauth" style="margin-top:4px"></div>';
   }
+)====="
   // MCP device-dialed server approval (per CUM-33): a "dev" mcp server is only
   // dialed once the owner approves it. Render its approval state + Approve/Deny,
   // which flip the connectors-blob "appr" bit through the existing owner-gated
   // write. Enforcement + persistence live in N4's lane; this only renders + writes.
+R"=====(
   if(set&&(c.dev==1||c.dev===true)){
     const appr=(c.appr==1||c.appr===true);
     h+='<div class=row style="margin-top:6px;align-items:center;gap:8px">';
@@ -3256,9 +3829,11 @@ function connCard(k,c,keyed,host,provPick){
   h+='</div>';
   return '<div class=tile id="cc_'+connEsc(id)+'_tile" style="margin:8px 0" oninput="connDraftNote(\''+connEsc(id)+'\')" onchange="connDraftNote(\''+connEsc(id)+'\')">'+h+'</div>';
 }
+)====="
 // Unsaved edits per card (wf_plan 4c): a Save or Remove on one card rebuilds every
 // card, and a provider switch redraws its own card - neither may throw away what
 // the owner typed or picked on a card they have not saved yet.
+R"=====(
 window._connDrafts=window._connDrafts||{};
 function connDraftRead(id){const g=s=>{const e=$('cc_'+id+'_'+s);return e?e.value:'';};
   const en=$('cc_'+id+'_en');return {prov:g('prov'),url:g('url'),cid:g('cid'),tok:g('tok'),en:en?en.checked:false};}
@@ -3273,13 +3848,17 @@ function connRestoreDrafts(){const ctx=window._connCtx||{cards:{}};
     if(!e||!$('cc_'+id+'_tile'))return;
     if(d.prov&&$('cc_'+id+'_prov')&&$('cc_'+id+'_prov').value!==d.prov)connRedraw(id,d.prov);
     connDraftApply(id,d);});}
+)====="
 // Redraw one card for a provider: its hint, fields and badge follow the choice.
+R"=====(
 function connRedraw(id,prov){const ctx=window._connCtx,e=ctx&&ctx.cards[id],tile=$('cc_'+id+'_tile');
   if(!e||!tile)return false;
   tile.outerHTML=connCard(e.k,e.c,ctx.keyed,ctx.host,prov);return true;}
+)====="
 // Flip the mcp "appr" bit through the owner-gated connectors write (per CUM-33).
 // A patch-upsert preserves omitted fields (incl. the saved token); the device
 // reconciles on its next turn (discovers on approve, retracts tools on deny).
+R"=====(
 function mcpApprove(name,id,bit){
   run({status:'cc_'+id+'_apprmsg',pending:(bit?'Approving ':'Denying ')+name+'…',
     work:()=>fetch('/api/connectors',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
@@ -3289,8 +3868,10 @@ function mcpApprove(name,id,bit){
       return (bit?'Approved ':'Denied ')+name+'. The device applies this on its next turn.';},
     error:e=>saveFailText(e,'Couldn\'t update '+name+(e?(' ('+e+')'):'')+' - try again.')});
 }
+)====="
 // MCP OAuth sign-in (CUM-256): arm the flow on the device, then poll status and
 // render the link + code + QR the owner opens on their phone/laptop.
+R"=====(
 function mcpOauthStart(name,id){
   var el=$('cc_'+id+'_oauth');if(el)el.textContent='Starting sign-in…';
   fetch('/api/connectors/oauth/start',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
@@ -3317,8 +3898,10 @@ function connFindKnown(id){return (window._connKnown||[]).find(k=>k.id===id)||{i
 function connProvChange(id){
   const k=connFindKnown(id),prov=$('cc_'+id+'_prov').value,kind=connKindFor(prov,k);
   const was=connDraftRead(id);
+)====="
   // Redraw the whole card for the new provider (its hint, fields and badge), then put
   // back what the owner typed; the id takes this provider's default unless typed.
+R"=====(
   if(!connRedraw(id,prov)){
     const set=(row,on)=>{const e=$('cc_'+id+'_'+row);if(e)e.style.display=on?'flex':'none';};
     set('urlrow',kind==='mcp');set('cidrow',kind==='connector');set('tokrow',kind==='mcp');}
@@ -3348,9 +3931,11 @@ function saveConnectors(){
    .catch(failToast);
 }
 function orchApply(body){
+)====="
   // Resolves to true/false (never rejects) - see apply() / audit P1.5.
   // QW5: a key or token in the wrong slot is refused here with where it goes, for
   // every caller (the device refuses it too; a Virtual Nimbus relies on this).
+R"=====(
   for(const f in body){const err=slotError(f,String(body[f]));
     if(err){_refuseErr=err;_lastFail=400;failToast(400);return Promise.resolve(false);}}
   return fetch('/api/orch',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
@@ -3358,27 +3943,35 @@ function orchApply(body){
    .then(jok).then(()=>{toast('Saved');loadOrch();return true;})
    .catch(e=>{failToast(e);return false;});
 }
+)====="
 // Per-provider row message (below the key row). Warn=amber guidance, else teal.
+R"=====(
 function setProvMsg(p,t,warn){const m=$('pmsg_'+p);
   if(m){m.textContent=t||''; m.style.color=t?(warn?'#e0b870':'#7fd1c8'):'';}}
 function saveAndVerify(p){
   const inp=$('key_'+p), body={};
   setProvMsg(p,'');
+)====="
   // Misplaced-key guidance (CUM-201 item 3): a cumulo_sk_ key belongs in the Cumulo
   // Nimbus slot. Pasted into a direct provider it would be checked against that third
   // party and come back a bare "key rejected"; catch it here and point to the row.
+R"=====(
   const val=inp?inp.value.trim():'';
   if(val && p!=='cumulo' && val.indexOf('cumulo_sk_')===0){
     setProvMsg(p,'That looks like a Cumulo Nimbus key - use the Cumulo Nimbus provider above.',true);
     return;
   }
+)====="
   // QW5: every other key the page can place (key_home.h rules): say exactly where it
   // goes instead of saving it here to be rejected (the device refuses it too).
+R"=====(
   const notHere=val?slotError(keyField(p),val):'';
   if(notHere){setProvMsg(p,notHere,true);return;}
   if(inp&&inp.value) body[keyField(p)]=inp.value;
+)====="
   // Hosted (CUM-279): no cheap verify path, but the key applies in-app immediately
   // (device parity, via the same /api/orch seam). Save and report; no dead spinner.
+R"=====(
   if(HOSTED){
     const had=Object.keys(body).length;
     (had?orchApply(body):Promise.resolve()).then(ok=>{
@@ -3387,10 +3980,12 @@ function saveAndVerify(p){
       if(inp)inp.value=''; loadOrch();});
     return;
   }
+)====="
   // In Notifier mode the live TLS verify can't get enough free RAM, so just SAVE the
   // key (writing NVS works in any mode) and tell the user to verify from Orchestrator.
   // (Lexical ORCH, not window.ORCH - a top-level `let` never creates a window
   // property, so the old guard was ALWAYS false and this branch was unreachable.)
+R"=====(
   if(ORCH && !ORCH.running){
     const had=Object.keys(body).length;
     (had?orchApply(body):Promise.resolve()).then(ok=>{
@@ -3402,30 +3997,38 @@ function saveAndVerify(p){
   $('vfy_'+p).textContent='Checking…'; $('vfy_'+p).disabled=true;
   const prevTs=ORCH.providers[p].vts;
   const go=Object.keys(body).length?orchApply(body):Promise.resolve();
+)====="
   // A key that did not save must not be "verified": that would check the OLD key.
+R"=====(
   go.then(ok=>{if(ok===false){setProvMsg(p,lastFailText('Couldn\'t save - try again.'),true);throw 0;}
     return fetch('/api/verify',{method:'POST',
       headers:{'Content-Type':'application/x-www-form-urlencoded'},
       body:'provider='+encodeURIComponent(p)});})
     .then(r=>{
+)====="
       // QW5: a refused start says why (the poll below would otherwise wait 40 s for a
       // check that never ran). A reply in flight or low memory still lands a verdict.
+R"=====(
       if(r.status===409)r.json().catch(()=>({})).then(j=>{
         if(j.why==='turn')setProvMsg(p,'The assistant is finishing a reply. The key is checked right after.');
         else if(j.why!=='low-memory')setProvMsg(p,'Waiting for another check to finish…');});
       clearInterval(VPOLL[p]); let tries=0;   // clear only THIS provider's poll
       VPOLL[p]=setInterval(()=>{
         fetch('/api/orch').then(r=>r.json()).then(d=>{
+)====="
           // Landed = a NEW verdict time (a key save resets it to 0 first).
+R"=====(
           const vts=d.providers[p].vts, landed=!!vts&&vts!==prevTs;
           if(landed||++tries>20){
             clearInterval(VPOLL[p]);
             setProvMsg(p,landed?'':'The check did not finish. Tap Verify to try again.',!landed);
+)====="
             // Re-enable BEFORE applyOrch: with the P1.1 in-place sync (no full
             // rebuild) a disabled button is deliberately left alone, so the old
             // "rebuild recreates it enabled" no longer happens implicitly. Clear
             // the typed key too (it was saved to NVS before the verify) - the old
             // rebuild used to wipe it implicitly.
+R"=====(
             const vb=$('vfy_'+p); if(vb)vb.disabled=false;
             if(inp)inp.value='';
             applyOrch(d);
@@ -3440,10 +4043,12 @@ $('sfxLvlO').onchange=()=>orchApply({sfxLvlO:$('sfxLvlO').value});
 $('sfxTheme').onchange=()=>orchApply({sfxTheme:$('sfxTheme').value});
 if($('tchCalSave'))$('tchCalSave').onclick=()=>{
   const v=$('tchCal').value.trim();
+)====="
   // Mirror the device parser's rules EXACTLY (nimbus/touch_cal.h). A shape-only
   // check let min>=max and out-of-range values through: the device rejected them
   // and the page still said "Saved", so the owner was told a change happened
   // that did not.
+R"=====(
   if(v){
     const p=v.split(',').map(x=>x.trim());
     if(p.length<4||p.length>5||p.some(x=>!/^\d+$/.test(x))){toast('Need 4 or 5 numbers');return;}
@@ -3459,28 +4064,34 @@ $('sfxVol').onchange=()=>orchApply({sfxVol:$('sfxVol').value});
 $('sfxPlay').onclick=()=>{const b=new URLSearchParams();b.set('slug',$('sfxSlug').value);
   fetch('/api/audio/sfx',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b})
   .then(r=>toast(r.ok?('Playing '+$('sfxSlug').value):'Play failed')).catch(()=>toast('Play failed'));};
+)====="
 // Prominent, HONEST save feedback (audit P1.5): success only in the success
 // branch (orchApply resolves true/false now), failure named explicitly, and the
 // verdict is styled + persistent until the next action (the 1.4s toast + tiny
 // gray hint were both easy to miss and reported "Saved." even on failure).
+R"=====(
 function saveVerdict(ok,okMsg){
   const m=$('orchmsg'); if(!m)return;
   m.textContent=ok?('✓ '+okMsg):'✗ '+lastFailText('Save failed - nothing was stored. Check the connection and try again.');
   m.style.cssText=ok?'color:#7fd1c8;font-weight:bold':'color:#e77;font-weight:bold';
 }
+)====="
 // Primary provider: saved on change (like the voice providers). A stored value the
 // list does not offer (the router keys run as fallbacks, not as the primary) is shown
 // as a disabled "(stored)" entry, so the select never reads blank or lies.
+R"=====(
 function _orchHostSync(v){const oh=$('orchHost');if(!oh)return;
   if(v&&![].some.call(oh.options,o=>o.value===v)){const o=document.createElement('option');
     o.value=v;o.disabled=true;o.textContent=(PROVLBL[v]||v)+' (stored)';oh.appendChild(o);}
   if(!oh.dataset.wired){oh.dataset.wired='1';
     oh.onchange=()=>{oh.dataset.dirty='1';orchApply({orchHost:oh.value}).then(()=>{delete oh.dataset.dirty;});};}
   if(document.activeElement!==oh&&!oh.dataset.dirty)oh.value=v;}
+)====="
 // The Models and the Tools "Save Changes" (CUM-163) both persist the whole orch field
 // set: every input is read by id and stays in the DOM while hidden. provPrio/subPrio are
 // deliberately NOT here: the #provPrioList/#subPrioList lists save per interaction
 // (renderPrio), and a stale $('provPrio') read threw and stored nothing.
+R"=====(
 function _orchSavePayload(){
   if(HOSTED)return {orchLoop:$('orchLoop').checked?1:0,orchTrace:$('orchTrace').checked?1:0};   // the rest is fixed here
   return {custBase:$('custBase').value,custKey:$('custKey').value,
@@ -3494,8 +4105,10 @@ function _orchSavePayload(){
     tlsVerify:$('tlsVerify').checked?1:0,
     capProbe:$('capProbe')?$('capProbe').value:1,
     capProbeH:($('capProbeH')&&$('capProbeH').value)?$('capProbeH').value:24};}
+)====="
 // The Tools "Save Changes" stores only the Tool use fields: never the Telegram
 // token or a provider field from another subtab.
+R"=====(
 function _toolUsePayload(){const a=_orchSavePayload();
   ['custBase','custKey','custConv','custModel','tgToken'].forEach(k=>delete a[k]);return a;}
 $('orchsave').onclick=()=>{
@@ -3503,10 +4116,12 @@ $('orchsave').onclick=()=>{
   orchApply(_orchSavePayload())
   .then(ok=>{saveVerdict(ok,'Orchestrator settings saved.');
     if(ok){const hadTok=!!$('tgToken').value;$('custKey').value='';$('tgToken').value='';
+)====="
       // The device runs a getMe verify on the arbited task (~a few s). Re-poll a few
       // times so the "verifying… → verified/rejected" verdict lands without a refresh.
       // _tgVerifyWatch makes applyOrch RESOLVE this message when the verdict arrives
       // (owner: "it never clears the verifying message").
+R"=====(
       if(hadTok){saveVerdict(true,'Saved - verifying the Telegram token…');
         _tgVerifyWatch=true;
         [1500,3500,7000,15000].forEach(t=>setTimeout(loadOrch,t));}}});
@@ -3522,14 +4137,18 @@ $('savedir').onclick=()=>{
   if(m)m.textContent='';
   orchApply({sysPrompt:v}).then(ok=>saveVerdict(ok,'Directive saved - applies from the next turn.'));
 };
+)====="
 // Revert clears the stored directive so the shipped default takes over (an empty
 // value means "use the default"), then shows that default in the box.
+R"=====(
 $('revertdir')&&($('revertdir').onclick=()=>orchApply({sysPrompt:''}).then(ok=>{
   if(ok){$('directive').value=window.__dirDefault||'';const m=$('dirmsg');if(m)m.textContent='Reverted to the default.';}
 }));
+)====="
 // ---- Standing rules (lane J): the list under the Directive box, plus add /
 // approve / remove. The assistant's own saves arrive as pending when the turn
 // read outside content; approving is the owner's one click here.
+R"=====(
 let _prefsSeen='';
 function loadPrefs(){
   const box=$('prefslist'); if(!box||HOSTED)return;
@@ -3540,8 +4159,10 @@ function loadPrefs(){
     _prefsSeen=now;
     const items=d.items||[];
     if(!items.length){box.innerHTML='<span class=hint>No standing rules yet. Add one below, or ask in chat.</span>';return;}
+)====="
     // A rule moved to memory at boot (it read as a dated fact) is listed apart with
     // Restore; every rule shows its age when the device knows it.
+R"=====(
     box.innerHTML=items.map(r=>'<div class=row style="margin:2px 0">'
       +'<span style="flex:1">'+_fesc(r.text)
       +(r.state==='pending'?' <b style="color:#e0a349">waits for your approval</b>':'')
@@ -3565,12 +4186,16 @@ $('prefsadd')&&($('prefsadd').onclick=()=>{
   const t=$('prefsnew').value.trim(), m=$('prefsmsg'); if(m)m.textContent='';
   if(!t){if(m)m.textContent='Type a rule first.';return;}
   const fd=new FormData();fd.append('action','add');fd.append('text',t);
+)====="
   // The device answers with its own plain-words reason on a refusal (a number
   // alone would not help the owner), so read it here rather than through jok.
+R"=====(
   fetch('/api/prefs',{method:'POST',body:fd}).then(async r=>{
     const j=await r.json().catch(()=>({}));
     if(!r.ok){const m=$('prefsmsg');if(m)m.textContent=j.error||('Save failed ('+r.status+').');return;}
+)====="
     // A full list made room: the device says which older rule retired.
+R"=====(
     if(j.retired&&j.retired.length){const m=$('prefsmsg');if(m)m.textContent=(j.message||'Saved.')+' '+j.retired.join(' · ');}
     $('prefsnew').value='';loadPrefs();
   }).catch(()=>{const m=$('prefsmsg');if(m)m.textContent='Could not reach the device - try again.';});
@@ -3584,15 +4209,19 @@ $('clearconv')&&($('clearconv').onclick=()=>{
     orchApply({clearConv:1}).then(ok=>{if(ok)toast('Conversation cleared');}); });
 });
 
+)====="
 // ---- Wi-Fi: saved networks, scan, join (P3: BOUNDED, visible timeout, explicit verdicts) ----
 // Every wait is capped with a live countdown and ends in an explicit verdict. List CRUD
 // like Routines: loadWifi() renders what is saved, each button posts ONE action to
 // /api/wifi, then the list is re-read. No password is ever read back.
+R"=====(
 let timer;
 let _wifiSaved=[];              // SSIDs already remembered - marks the scan rows
 function _wesc(s){return (s||'').replace(/[<>&"]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));}
+)====="
 // One action -> one verdict. A 4xx body carries the sentence to show, so failures
 // say what happened instead of a generic "failed" (and a 401 still trips the shim).
+R"=====(
 function wifiPost(action,extra){
  const fd=new FormData(); fd.append('action',action);
  Object.keys(extra||{}).forEach(k=>fd.append(k,extra[k]));
@@ -3607,8 +4236,10 @@ function loadWifi(){
   const nets=d.networks||[];
   _wifiSaved=nets.map(n=>n.ssid);
   if($('wifiCount'))$('wifiCount').textContent=nets.length+' of '+(d.max||5);
+)====="
   // Signal is a station fact from /api/state, cached each poll; badge it on the in-use
   // row (proposal §3). The live figure is refreshed by applyState between reloads.
+R"=====(
   const rssi=(window._rssi!==undefined)?(window._rssi+' dBm'):'';
   if(!nets.length)box.innerHTML='<span class=hint>No saved networks yet. Add one below.</span>';
   else box.innerHTML='<table><tbody>'+nets.map((n,i)=>
@@ -3623,15 +4254,19 @@ function loadWifi(){
   box.querySelectorAll('button[data-wcon]').forEach(b=>b.onclick=()=>wifiConnect(b.dataset.wcon));
   box.querySelectorAll('button[data-wfor]').forEach(b=>b.onclick=()=>wifiForget(b.dataset.wfor,!!b.dataset.wcur));
   box.querySelectorAll('button[data-wup]').forEach(b=>b.onclick=()=>wifiReorder(b.dataset.wup,+b.dataset.wto));
+)====="
   // The honest connection line: named current network + address + signal when up, else
   // whether the setup hotspot is the way in. All from the existing /api/wifi shape.
+R"=====(
   const cur=nets.find(n=>n.current);
   const cline=d.sta
    ?('Connected'+(cur?(' to "'+cur.ssid+'"'):'')+(d.staIp?(' at '+d.staIp):'')+(rssi?(' ('+rssi+')'):''))
    :(d.apUp?'Not connected. The setup hotspot is up for recovery.':'Not connected. Trying saved networks.');
   if($('wifiConnState'))$('wifiConnState').textContent=cline;
+)====="
   // Setup Wi-Fi network + password are shown ONLY when the hotspot is the way in - up and
   // the station is down (CUM-200). A connected device hides them as clutter (proposal §1).
+R"=====(
   if($('cxSetupAp'))$('cxSetupAp').style.display=(d.apUp&&!d.sta)?'':'none';
   if($('wifiApMsg'))$('wifiApMsg').textContent=d.apUp
    ?('Temporary setup hotspot "'+(d.apSsid||'')+'" is available at '+(d.apIp||'')+'.')
@@ -3640,8 +4275,10 @@ function loadWifi(){
      :'The setup hotspot dropped and is coming back on its own. Reconnect to the setup network in a moment, then reload this page. No restart needed.');
  }).catch(()=>{box.innerHTML='<span class=hint>Couldn\'t load saved networks. Try again.</span>';});
 }
+)====="
 // WATCH the join with a bounded countdown (12 x 2.5 s = 30 s): poll /api/state for
 // sta=true instead of leaving an eternal "Saving...".
+R"=====(
 function wifiWatchJoin(ssid){
  let left=12;
  const done=v=>{clearInterval(w);$('savewifi').disabled=false;$('msg').textContent=v;loadWifi();};
@@ -3669,8 +4306,10 @@ function wifiForget(ssid,inUse){
   loadWifi();
  }).catch(e=>{$('msg').textContent=e.message;});});
 }
+)====="
 // Minimal reorder wiring (CUM-207): move a saved network one slot higher. Priority is a
 // tie-break hint for equal-signal networks; a later join still promotes what worked.
+R"=====(
 function wifiReorder(ssid,index){
  wifiPost('reorder',{ssid:ssid,index:index}).then(()=>loadWifi())
   .catch(e=>{$('msg').textContent=e.message;});
@@ -3681,8 +4320,10 @@ function scan(){
  let left=12;                                       // 12 x 2.5 s = 30 s cap
  $('msg').textContent='Scanning… up to 30s';
  const stop=v=>{clearInterval(timer);timer=null;$('scan').disabled=false;$('msg').textContent=v;};
+)====="
  // ?scan=1 returns the saved list AND the radio scan together, so "saved" can
  // never be marked from a stale list.
+R"=====(
  const poll=()=>fetch('/api/wifi?scan=1').then(jok).then(d=>{
   const sc=d.scan||{};
   _wifiSaved=(d.networks||[]).map(n=>n.ssid);
@@ -3690,15 +4331,19 @@ function scan(){
    if(--left<=0)return stop('Scan timed out (30 s) - try again.');
    $('msg').textContent='Scanning… ~'+Math.ceil(left*2.5)+'s left';return;
   }
+)====="
   // The device now DISTINGUISHES "the scan failed" from "the scan found nothing"
   // - that distinction is the entire point of the scan-hang fix. Dropping the
   // error here re-merged them and printed 'No networks found.' at someone
   // surrounded by access points, which is not just unhelpful, it asserts the
   // opposite of the truth.
+R"=====(
   if(sc.error)return stop(sc.error);
+)====="
   // Dedup by SSID keeping the strongest (dual-AP networks list the same name twice),
   // like every phone's Wi-Fi picker (CUM-233). Hidden ('') SSIDs are all kept. seen has
   // NO prototype so an SSID named "constructor" / "__proto__" is not spuriously seen.
+R"=====(
   const seen=Object.create(null);
   const list=(sc.networks||[]).sort((a,b)=>b.rssi-a.rssi).filter(n=>{const k=n.ssid||'';if(!k)return true;if(seen[k])return false;seen[k]=1;return true;});
   stop('Found '+list.length+' network(s).');
@@ -3708,15 +4353,19 @@ function scan(){
    nm.textContent=(n.ssid||'(hidden)')+(n.enc?' (lock)':'')+(_wifiSaved.indexOf(n.ssid)>=0?' - saved':'');
    const bars=document.createElement('span');bars.className='bars';bars.textContent=n.rssi+' dBm';
    el.appendChild(nm);el.appendChild(bars);
+)====="
    // Manual name/password live in the "Add a hidden network" disclosure now; picking a
    // scanned network opens it and prefills the name so the password field is ready.
+R"=====(
    el.onclick=()=>{const s=$('ssid');if(s){const dt=s.closest('details');if(dt)dt.open=true;s.value=n.ssid;}$('pass').focus();};
    $('nets').appendChild(el);});
   if(!list.length)$('nets').textContent='No networks found.';
  }).catch(()=>{if(--left<=0)stop('Scan failed - device unreachable.');});
+)====="
  // The POST starts the radio scan; the GET above only reads it. Ordering them
  // keeps exactly one scan request in flight, and `timer` is set synchronously so
  // a second click is still refused while the first is being kicked off.
+R"=====(
  timer=setInterval(poll,2500);
  wifiPost('scan').catch(()=>{}).then(poll);
 }
@@ -3726,10 +4375,12 @@ $('savewifi').onclick=()=>{
  if(!ssid){$('msg').textContent='Enter a network name.';return}
  $('savewifi').disabled=true;
  $('msg').textContent='Saving…';
+)====="
  // The device SAVES without switching when it is already online (adding a backup
  // must not drop the connection you are adding it from), and joins immediately
  // only when it is offline - first-time setup. Report whichever actually happened
  // rather than always promising a join.
+R"=====(
  wifiPost('add',{ssid:ssid,pass:pass}).then(d=>{
    $('pass').value='';
    if(d&&d.saved){
@@ -3739,23 +4390,29 @@ $('savewifi').onclick=()=>{
    } else { wifiWatchJoin(ssid); }
  }).catch(e=>{$('savewifi').disabled=false;$('msg').textContent=e.message;});
 };
+)====="
 // The escape hatch: stop joining and guarantee the setup network, so this page
 // stays reachable however wrong the saved credentials are.
+R"=====(
 (function(){
  const b=$('wifiAp'); if(b)b.onclick=()=>{
   uiConfirm('Publish the setup network?\n\nThe device stops joining Wi-Fi until you resume and shows the setup network on its screen. A page open over your Wi-Fi disconnects; join the setup network to keep going.',{ok:'Publish Network'}).then(ok=>{ if(!ok)return;
+)====="
   // CUM-452: the result states the next step. Over the home Wi-Fi this page loses the
   // device a second later, so the message says so and names the network to join, and
   // no list reload replaces it; on the setup network itself the page stays.
+R"=====(
   const m=$('wifiApMsg'), say=t=>{if(m)m.textContent=t;};
   b.disabled=true; say('Publishing the setup network\u2026');
   wifiPost('publishap').then(d=>{b.disabled=false;toast('Setup network published');
    if(d.onAp){say('The device screen now shows the setup network. Joining is paused until you resume.');setTimeout(loadWifi,1500);return;}
    say('The device screen now shows the setup network; this page will disconnect.'+(d.apSsid?(' Join "'+d.apSsid+'" and follow the steps on the device screen.'):''));
   }).catch(e=>{b.disabled=false;
+)====="
    // A network-level failure (fetch rejects with a TypeError) right after a publish
    // most likely means the device already left this network; say so, with the next
    // step, rather than a raw "Failed to fetch". A reply from the device is its error.
+R"=====(
    say(e instanceof TypeError?'Lost the device. If it is publishing its setup network, the device screen shows it; join that network to keep going.':e.message);});});};
  const c=$('wifiResume'); if(c)c.onclick=()=>{
   wifiPost('resume').then(()=>{toast('Joining resumed');
@@ -3767,17 +4424,23 @@ $('savewifi').onclick=()=>{
 loadState();
 setInterval(loadState,3000);
 
+)====="
 // ---- Health panel (Home tab, P5): live component status + probe buttons ----
+R"=====(
 const HCLR={ok:'#1d3a1d',degraded:'#3a2f15',absent:'#3a1d1d',unknown:'#26333f'};
 const HFG ={ok:'#5c5',degraded:'#e0b870',absent:'#c55',unknown:'#8cf'};
+)====="
 // Skeleton (heading + list + probe buttons + result line) is built ONCE; loadHealth
 // only rewrites #hphead/#healthlist. The old whole-panel innerHTML rebuild destroyed
 // #hpmsg right after every test (owner: "it writes something for a millisecond but
 // nothing really changes") - and the 8 s poll wiped it again anyway.
+R"=====(
 function healthSkeleton(box){
  if($('healthlist'))return;
+)====="
  // Audio/SD probe buttons are dead on a hosted instance (no mic, speaker, or SD),
  // so omit them and their wiring; the honest "absent" rows still say why (CUM-279).
+R"=====(
  const probes=HOSTED?'':(
   '<div class=row style="margin-top:8px"><button id=hpMic type=button>Mic Test</button>'+
   '<button id=hpBeep type=button>Speaker Tone</button><button id=hpLb type=button>Loopback Test</button>'+
@@ -3803,8 +4466,10 @@ function loadHealth(){
     ' degraded &middot; '+(d.absent||0)+' absent';
   let h='';
   (d.components||[]).forEach(c=>{
+)====="
    // Provider degraded (no key) gets a resolve link to Models, not just a red badge
    // (CUM-279 item 2). Wired after render; harmless on a device.
+R"=====(
    const fix=(c.label==='Provider'&&c.state==='degraded')
      ?' <a href="#" data-fix=llm style="color:#7fd1c8;text-decoration:underline">Set up a provider &rsaquo;</a>':'';
    h+='<div class=row style="margin:4px 0"><span style="min-width:130px;color:'+(HFG[c.state]||'#ccc')+
@@ -3820,21 +4485,27 @@ function loadHealth(){
 }
 loadHealth();
 setInterval(loadHealth,8000);
+)====="
 // ---- Memory dashboard (Part B Ph3/Ph4) ----
+R"=====(
 function loadMemStats(){
   if(!canPoll())return;
   fetch('/api/mem/stats').then(cardJson).then(d=>{
     cardBusyNote('tierbanner',false);
     window._sdMissing=!!d.sdMissing;
+)====="
     // CUM-405: when a card likely holds the real store but was not detected, report
     // sd=absent, not "0 memories" (which reads as data loss).
+R"=====(
     $('memstat').textContent=d.sdMissing
       ? 'SD not detected: memories are on the card'
       : d.vectors+' memories · '+d.scratchItems+' scratch · '+
         (d.store||'')+' (cap '+(d.maxVectors||0)+') · '+(d.embedAvailable?'memory on':'memory off');
     const es=$('embstate'); if(es){const t=embStateText(d);es.textContent=t.txt;es.style.color=t.warn?'#e0b870':'';}
+)====="
     // Storage-tier banner: sdMissing -> loud "card not detected, data is on it";
     // no card at all -> degraded on flash; flashFull -> persist paused.
+R"=====(
     const tb=$('tierbanner');
     if(tb){ if(d.sdMissing){tb.style.display='block';tb.className='warnbox';
         tb.textContent='SD card not detected. Your saved memories are safe on the card, not lost. Reseat the card and restart the device to see them again.';}
@@ -3849,21 +4520,27 @@ function loadMemStats(){
     if(document.activeElement!==$('emb_provider'))set('emb_provider',d.embed.provider);
     populateEmbModels($('emb_provider').value,d.embed.model);
     set('emb_dims',d.embed.dims);
+)====="
     // Live destructive-change warning: while locked, changing any embed field means the
     // Save will invalidate the stored vectors - surface that inline, not only at Save.
+R"=====(
     ['emb_provider','emb_model','emb_dims'].forEach(id=>{const e=$(id); if(e)e.oninput=e.onchange=(ev)=>{
       if(ev&&ev.target&&ev.target.id==='emb_provider')populateEmbModels($('emb_provider').value,'');
       embWarn();};});
     embWarn();
   }).catch(e=>{
+)====="
     // Busy: the last figures stay; a first load says so in the badge too.
+R"=====(
     if(onCardBusy(e,'memstats',loadMemStats,'tierbanner')&&!$('memstat').textContent)$('memstat').textContent='SD card busy';
   });
 }
+)====="
 // Memory's embeddings in plain words (QW5: the panel read "embed no key", and a
 // device with no OpenAI key had memory off with nothing saying so). The device picks
 // a keyed provider that can embed (nimbus/orch/embed_pick.h), so "off" here means no
 // Cumulo Nimbus, OpenAI or Mistral key can serve this memory.
+R"=====(
 function embStateText(d){
   const prov=d.embed&&d.embed.provider, lbl=PROVLBL[prov]||prov||'';
   const pv=ORCH&&ORCH.providers&&ORCH.providers[prov];
@@ -3878,8 +4555,10 @@ function embStateText(d){
   }
   return {warn:true,txt:'Long-term memory is off: it needs a Cumulo Nimbus, OpenAI or Mistral key to search by meaning (Anthropic and Z.ai can\'t create embeddings). New memories are kept as text and found by keyword until you add one on Assistant > Models. Chat works without it.'};
 }
+)====="
 // Supported embedding providers/models (owner: dropdown, not free text - only show
 // what the device can actually call). Curated; the live verify on save is the real gate.
+R"=====(
 const EMB_MODELS={
   cumulo:[{id:'text-embedding-3-small',note:'1536-d · fast, cheap'},{id:'text-embedding-3-large',note:'3072-d · most accurate'}],
   openai:[{id:'text-embedding-3-small',note:'1536-d · fast, cheap'},{id:'text-embedding-3-large',note:'3072-d · most accurate'}],
@@ -3904,9 +4583,11 @@ function renderMemList(d){
     const row=document.createElement('div'); row.className='row'; row.style.alignItems='flex-start';
     const t=document.createElement('div'); t.style.flex='1';
     const imp=Math.round((e.importance||0)*100);
+)====="
     // Lifecycle line: hours-resolution wall clock; "now" derives from the same
     // /api/state clock the badge uses (epoch/3600 == the store's nowHours once
     // synced). Unsynced clock -> no honest ago/left math, show placeholders.
+R"=====(
     const nowH=(window.CLOCK&&window.CLOCK.synced)?Math.floor(window.CLOCK.epoch/3600):0;
     const ago=h=>{if(!nowH||!h)return null;const d=nowH-h;
       return d<1?'just now':d<48?(d+'h ago'):(Math.round(d/24)+'d ago');};
@@ -3922,8 +4603,10 @@ function renderMemList(d){
     const lx=left(); if(lx)bits.push(lx);
     if(e.lastRecallHours!==undefined)
       bits.push(e.lastRecallHours?('last used '+(ago(e.lastRecallHours)||'-')):'never used');
+)====="
     // Which conversation owns this memory (CUM-232). Browse rows carry nsLabel;
     // search hits don't, so the chip only shows where it's known.
+R"=====(
     const esc=s=>(s||'').replace(/</g,'&lt;');
     const nsChip=e.nsLabel?'<span class=badge title="Conversation this memory belongs to">'+esc(e.nsLabel)+'</span> ':'';
     t.innerHTML='<div>'+nsChip+esc(e.content)+'</div>'+
@@ -3945,12 +4628,16 @@ function loadMemList(){
   const url='/api/mem/vector?limit='+_memPageN+(q?('&query='+encodeURIComponent(q)):('&offset='+_memOffset));
   fetch(url)
     .then(cardJson).then(d=>{cardBusyNote('memlist',false);$('memvmsg').textContent=d.error?('Embedding error: '+d.error):'';window._memTotal=d.total||0;
+)====="
       // Row deletes can shrink the total below our browse offset, stranding the view
       // on an empty page - clamp to the last real page and refetch once (the offset
       // guard stops it looping when we're already clamped).
+R"=====(
       if(d.mode==='browse'&&d.total>0&&d.offset>=d.total){var _c=Math.max(0,(Math.ceil(d.total/_memPageN)-1)*_memPageN);if(_c!==d.offset){_memOffset=_c;loadMemList();return;}}
       renderMemList(d);
+)====="
       // Pagination controls apply to browse only (search returns the top matches).
+R"=====(
       const pg=$('mempage'),pv=$('memprev'),nx=$('memnext');
       if(pg&&pv&&nx){
         if(d.mode==='browse'){
@@ -3964,7 +4651,9 @@ function loadMemList(){
     .catch(e=>{if(onCardBusy(e,'memlist',loadMemList,'memlist')){$('memvmsg').textContent='';return;}
       $('memvmsg').textContent='Search failed - try again.';});
 }
+)====="
 // Per-namespace usage rollup (CUM-232): entries + pins per conversation vs quota.
+R"=====(
 function loadNsUsage(){
   const host=$('nsUsage'); if(!host)return;
   fetch('/api/mem/nsusage').then(cardJson).then(d=>{
@@ -3972,7 +4661,9 @@ function loadNsUsage(){
     const ns=d.namespaces||[];
     if(!ns.length){host.textContent='No memories yet.';return;}
     const esc=s=>(s||'').replace(/</g,'&lt;');
+)====="
     // "8 / 50" when a limit is set, plain "8" when unlimited (0 = no limit).
+R"=====(
     const vs=(n,max,word)=>n+(max>0?(' / '+max):'')+' '+word;
     host.innerHTML=ns.map(u=>{
       const mem=vs(u.count,u.maxVectors,u.count===1?'memory':'memories');
@@ -4022,8 +4713,10 @@ $('cfgsave').onclick=()=>{
       '&max_vectors='+(+$('cfg_mv').value)})
     .then(jok).then(()=>{toast('Saved');loadMemCfg();}).catch(failToast);
 };
+)====="
 // Per-provider budget: composite "prov:tokenLimit:callLimit:resetDay:centsLimit" -> /api/orch.
 // The $ field is dollars in the UI, CENTS on the wire (integer, no float drift).
+R"=====(
 if($('budsave'))$('budsave').onclick=()=>{
   const prov=$('bud_prov').value, tok=+$('bud_tok').value||0, call=+$('bud_call').value||0;
   const cents=Math.round((+$('bud_usd').value||0)*100);
@@ -4043,14 +4736,18 @@ $('embsave').onclick=()=>{
     .then(jok).then(()=>{toast(reset?'Memory reset and saved':'Saved');msg.textContent=reset?'Memories erased - new model saved.':'Saved.';loadMemStats();loadMemList();})
     .catch(e=>{failToast(e);msg.textContent=saveFailText(e,'Save failed - try again.');});
   btn.disabled=true; msg.textContent='Verifying the model…';
+)====="
   // Step 1: verify the CANDIDATE model actually works before we save/wipe anything.
+R"=====(
   fetch('/api/mem/embedverify',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body})
     .then(r=>r.json().then(j=>({ok:r.ok,j})))
     .then(({ok,j})=>{
       btn.disabled=false;
       if(!ok||!j.ok){msg.textContent='✗ '+(j.error||'verification failed')+' - not saved.';toast('Verify failed');return;}
       msg.textContent='✓ Verified ('+j.dims+'-d). ';
+)====="
       // Step 2: if this invalidates existing vectors, make the destruction explicit.
+R"=====(
       if(changed){
         uiConfirm('Switch the embedding model?\n\nYour '+_embState.vectors+' stored memories become incomparable and must be erased and re-learned from scratch.',{ok:'Switch Model',danger:true}).then(go=>{
           if(!go){msg.textContent='Cancelled - current model kept.';return;}
@@ -4061,7 +4758,9 @@ $('embsave').onclick=()=>{
     .catch(e=>{btn.disabled=false;failToast(e);msg.textContent=saveFailText(e,'Couldn\'t verify - try again.');});
 };
 function loadMemDash(){loadMemStats();loadMemList();loadNsUsage();loadScratch();loadMemCfg();loadPrefs();loadFold();}
+)====="
 // Conversation summary card (docs/architecture/fold-ladder.md): re-read while a summary runs, waits or cools down.
+R"=====(
 let _fc='',_fs='',_ft=0;
 function renderFold(d){
   _fc=d.chat;const st=d.state,h=d.summaryAgeH,w=d.nextTryInS,b=$('foldBadge'),run=$('foldRun'),r=d.running&&d.rung?d.rung.split('/'):0;
@@ -4072,8 +4771,9 @@ function renderFold(d){
   if(d.thruDate)l.push('It covers the conversation up to '+d.thruDate+'.');
   if(d.uncovered)l.push('Some older messages are not in it yet.');
   if(d.failedCycles&&!d.running)l.push('The last '+(d.failedCycles>1?d.failedCycles+' tries':'try')+' did not finish.'+(w?' It tries again '+(w<120?'in a moment':w<7200?'in '+Math.round(w/60)+' minutes':'in about '+Math.round(w/3600)+' hours')+'.':''));
-  l.push('Summary requests today: '+d.paidToday+' (automatic ones stop at '+d.cap+').');
-  $('foldInfo').innerHTML=l.map(x=>'<div>'+_fesc(x)+'</div>').join('');
+  if(d.engine!==2)l.push('Summary requests today: '+d.paidToday+' (automatic ones stop at '+d.cap+').');
+  else{if(st==='busy')l.length=0;(d.lines||[]).forEach(x=>l.push(x));}   // engine 2: its own lines (E2-P-SURF)
+  $('foldInfo').innerHTML=l.map(x=>'<div>'+_fesc(x)+'</div>').join('')+(d.summary?'<pre style="white-space:pre-wrap;word-break:break-word;font-size:11px;max-height:260px;overflow:auto;margin:6px 0 0">'+_fesc(d.summary)+'</pre>':'');
   run.disabled=!d.canRun;run.style.opacity=d.canRun?'':'.5';
   $('foldMsg').textContent=r?'Summarizing now: provider '+r[0]+' of '+r[1]+(d.rungHost?' ('+d.rungHost+')':'')+'.':d.canRun?'':d.why||'';
 }
@@ -4095,25 +4795,31 @@ $('foldRun').onclick=()=>{
   }).catch(()=>no('Could not reach the device. Try again.'));
 };
 
+)====="
 // ---- Files (E1 artifact store): browse /mem/files, download, delete, upload ----
+R"=====(
 function _fbytes(n){n=n||0;return n<1024?n+' B':n<1048576?(n/1024).toFixed(1)+' KB':(n/1048576).toFixed(1)+' MB';}
 function _fesc(s){return (s||'').replace(/[<>&"]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));}
+)====="
 // Which files the explorer offers a preview for. Kept in step with the server's
 // inlineViewable() allowlist, which is the ACTUAL gate - a file uploaded by
 // anyone the device talks to must never render as HTML or SVG on this origin,
 // where the page's access token lives. This function only decides whether to
 // show the link.
+R"=====(
 function _fviewable(name){
   const n=(name||'').toLowerCase();
   if(/\.(png|jpe?g|gif|webp)$/.test(n))return 'img';
   if(/\.(txt|md|log|csv)$/.test(n))return 'txt';
   return '';
 }
+)====="
 // Header-only download (CUM-45): the token rides the X-Nimbus-Token header via
 // the fetch shim, never a ?t= query param, so nothing token-bearing lands in
 // browser/download history or server logs. Fetches the file as a Blob and hands
 // it to the browser through an object URL, then revokes it. Returns a promise so
 // callers can render pending/result feedback.
+R"=====(
 function dlFile(project,name){
   const url='/api/files/dl?project='+encodeURIComponent(project)+'&name='+encodeURIComponent(name);
   return cardFetch(url,busyToast).then(r=>r.ok?r.blob():Promise.reject(r.status)).then(b=>{
@@ -4123,10 +4829,12 @@ function dlFile(project,name){
     setTimeout(()=>URL.revokeObjectURL(u),0);
   });
 }
+)====="
 // Show a file in place. Images load through the img tag; text is fetched and
 // inserted with textContent, never innerHTML - the whole point is that file
 // contents are data, not markup. The image bytes are fetched (token in the
 // header) and shown from an object URL, so no ?t= appears in an <img src>.
+R"=====(
 function _fpreview(project,name,kind){
   const box=$('filePrev'); if(!box)return;
   const url='/api/files/dl?inline=1&project='+encodeURIComponent(project)+
@@ -4148,8 +4856,10 @@ function _fpreview(project,name,kind){
     img.style.cssText='max-width:100%;max-height:60vh;border-radius:8px;display:block';
     img.alt=name;
     box.appendChild(img);
+)====="
     // Fetch the bytes (token in the header) and show them from an object URL, so
     // the <img src> never carries a ?t= token.
+R"=====(
     cardFetch(url,busyToast).then(r=>r.ok?r.blob():Promise.reject(r.status)).then(b=>{
       const u=URL.createObjectURL(b);img.onload=()=>URL.revokeObjectURL(u);img.src=u;
     }).catch(()=>{box.appendChild(document.createTextNode('Couldn\'t load that image.'));});
@@ -4161,8 +4871,10 @@ function _fpreview(project,name,kind){
   pre.textContent='Loading...';
   box.appendChild(pre);
   cardFetch(url,()=>{pre.textContent=busyWhat()+' Waiting...';}).then(r=>r.ok?r.text():Promise.reject(r.status)).then(t=>{
+)====="
     // A preview, not a file manager: 64 KB is far past what anyone reads in a
     // panel, and the rest is one click away via "get".
+R"=====(
     const CAP=65536;
     pre.textContent=t.length>CAP
       ? t.slice(0,CAP)+'\n\n--- truncated, use "get" for the whole file ---'
@@ -4170,11 +4882,13 @@ function _fpreview(project,name,kind){
   }).catch(()=>{pre.textContent='Couldn\'t load that file.';});
 }
 
+)====="
 // ---- Telegram archive: browse by chat and day, open an item, export a day -----
 // Every Telegram message and file the bot sees is kept on the SD card (the
 // archive). This group lists the chats and their days, shows a day's items, opens
 // a record or a photo in place, and saves a whole day as a ZIP. Every read carries
 // the token in the header (the fetch shim), never in a link.
+R"=====(
 function _tgArcGet(url){return cardFetch(url,busyToast).then(r=>r.ok?r.blob():Promise.reject(r.status));}
 function _tgArcSave(url,name){return _tgArcGet(url).then(b=>{const u=URL.createObjectURL(b);
   const a=document.createElement('a');a.href=u;a.download=name;document.body.appendChild(a);a.click();a.remove();
@@ -4198,8 +4912,10 @@ function _tgArcOpen(chat,day,name){const v=$('tgArcView');if(!v)return;
   _tgArcSave(_tgArcItemUrl(chat,day,name,0),name).catch(failToast);}
 function _tgArcLink(label,chat,day,name){const b=document.createElement('button');b.type='button';
   b.textContent=label;b.style.fontSize='11px';b.onclick=()=>_tgArcOpen(chat,day,name);return b;}
+)====="
 // An item's file status in plain words ("" when it is saved, or it has no file).
 // The device folds each status line into its item, so st says what the card holds.
+R"=====(
 function _tgArcState(r){const st=r.st||'';
   if(st.indexOf('not archived: ')===0)return 'Not saved: '+st.slice(14);
   if(!r.file)return '';
@@ -4209,7 +4925,9 @@ function _tgArcState(r){const st=r.st||'';
   if(st==='incomplete')return 'Not saved: the memory card refused it';
   if(st==='missing')return 'Not on the memory card';
   return 'Not saved';}
+)====="
 // A busy retry repaints only the chat (and day) still selected.
+R"=====(
 function _tgArcShown(chat,day){const c=$('tgArcChat'),d=$('tgArcDay');
   return !!c&&c.value===chat&&(day===undefined||(!!d&&d.value===day));}
 function tgArcRows(chat,day,from){
@@ -4273,7 +4991,9 @@ function loadFiles(){
     if($('filesStat'))$('filesStat').textContent=d.present
       ?((d.count||0)+' files · '+_fbytes(d.bytes)+' used'+(d.freeBytes!==undefined?(' · '+_fbytes(d.freeBytes)+' free'):''))
       :'No SD card - insert a card to store files';
+)====="
     // Real card size/free + the file quota with a caption (CUM-68, N5 payload).
+R"=====(
     if($('filesQuota')){const c=d.card||{},q=d.quota||{},_mb=n=>n>=1024?((n/1024).toFixed(1)+' GB'):(Math.round(n)+' MB');
       const parts=[];
       if(c.sizeMB!==undefined)parts.push('Card: '+_mb(c.freeMB||0)+' free of '+_mb(c.sizeMB));
@@ -4283,16 +5003,22 @@ function loadFiles(){
     else if(!(d.files||[]).length)box.innerHTML='<span class=hint>No files in '+_fesc(proj)+'</span>';
   }).catch(e=>{if(!onCardBusy(e,'files',loadFiles,box))box.innerHTML='<span class=hint>Files unavailable</span>';});
 }
+)====="
 // Lane FSCAP: the listing is paged server-side (the store has no entry cap), so the
 // panel fetches one page at a time and offers "Show more" while the server's
 // nextOffset < listCount (store rows only; archive rows never inflate them).
+R"=====(
 let filesOffset=0;
 function _fileRow(f){
+)====="
   // "view" only for what the device is willing to render inline (the server
   // decides; this just avoids offering a link that would download anyway).
+R"=====(
   const v=_fviewable(f.name);
   const view=v?('<a href="#" data-vp="'+_fesc(f.project)+'" data-vn="'+_fesc(f.name)+'" data-vk="'+v+'">view</a> &middot; '):'';
+)====="
   // "get" is a header-only download (dlFile), never a token-bearing link.
+R"=====(
   return '<tr><td style="word-break:break-all">'+_fesc(f.project)+'/'+_fesc(f.name)+'</td><td>'+_fesc(f.kind||'')+
     '</td><td style="white-space:nowrap">'+_fbytes(f.bytes)+'</td><td style="white-space:nowrap">'+view+
     '<a href="#" data-dlp="'+_fesc(f.project)+'" data-dln="'+_fesc(f.name)+'">get</a> &middot; <a href="#" data-rmp="'+_fesc(f.project)+'" data-rmn="'+_fesc(f.name)+'">delete</a></td></tr>';
@@ -4311,16 +5037,20 @@ function _filesPage(box,proj,offset,append){
   const q='?limit=1000&offset='+offset+(proj?('&project='+encodeURIComponent(proj)):'');
   return fetch('/api/files/list'+q).then(jok).then(d=>{
     const all=d.files||[];
+)====="
     // The server appends the Telegram archive's read-only rows to every page as
     // a fixed suffix: render them on the first page only, never re-append them.
+R"=====(
     const files=append?all.filter(f=>!f.readOnly):all;
     let tb=box.querySelector('tbody');
     if(!append||!tb) box.innerHTML='<table><tbody>'+files.map(_fileRow).join('')+'</tbody></table>';
     else files.forEach(f=>tb.insertAdjacentHTML('beforeend',_fileRow(f)));
     tb=box.querySelector('tbody');
     _bindFileRows(box);
+)====="
     // The server pages on STORE rows only: nextOffset/more/listCount come from
     // the store page, never inflated by the archive rows (review fix).
+R"=====(
     filesOffset=(d.nextOffset!==undefined)?d.nextOffset:offset+(d.shown||0);
     const listCount=(d.listCount!==undefined)?d.listCount:(d.count||0);
     const more=d.more!==undefined?d.more:(filesOffset<listCount);
@@ -4336,7 +5066,9 @@ function _filesPage(box,proj,offset,append){
 }
 $('filesRefresh')&&($('filesRefresh').onclick=loadFiles);
 $('filesProj')&&$('filesProj').addEventListener('keydown',e=>{if(e.key==='Enter')loadFiles();});
+)====="
 // Delete a whole project/folder - the project named in the filter box.
+R"=====(
 $('filesRmProj')&&($('filesRmProj').onclick=()=>{
   const p=($('filesProj').value||'').trim();
   if(!p){toast('Type a project name in the filter first');return;}
@@ -4345,6 +5077,7 @@ $('filesRmProj')&&($('filesRmProj').onclick=()=>{
   fetch('/api/files/rmproject',{method:'POST',body:fd}).then(r=>r.ok?r.json():Promise.reject(r.status))
     .then(o=>{toast('Deleted '+((o&&o.removed)||0)+' files');loadFiles();})
     .catch(s=>toast(s===404?'No such folder':'Couldn\'t delete - try again'));});});
+)====="
 // Upload one file with a real progress bar. Over the cloud tunnel the API streams the
 // body to the device in chunks and reports the DEVICE-acked offset, so the bar reflects
 // bytes actually saved, not bytes optimistically pushed. XHR upload events drive the bar
@@ -4354,20 +5087,25 @@ $('filesRmProj')&&($('filesRmProj').onclick=()=>{
 // the HTTP status (or 0 on a network error). Reused by the chat drag-and-drop (CUM-57).
 // The name Files takes: printable ASCII with no space, at most 48 characters, the
 // extension kept. Hosted files keep every name a browser can give them this way.
+R"=====(
 function _safeFileName(name,max){
   const m=String(name||'file').match(/^(.*?)(\.[A-Za-z0-9]{1,8})?$/), clean=s=>s.replace(/[^\x21-\x7e]+/g,'-').replace(/[\/\\?%*:|"<>]+/g,'-').replace(/^[-.]+|-+$/g,'');
   const ext=m[2]||''; return (clean(m[1])||'file').slice(0,(max||48)-ext.length).replace(/-+$/,'')+ext;
 }
+)====="
 // A photo on its way to one turn: its own unique name, so two "image.jpg" never overwrite,
 // under the prefix the server removes once the turn has the bytes.
+R"=====(
 function _chatPhotoFile(f){
   const tag=Date.now().toString(36).slice(-6)+Math.random().toString(36).slice(2,6);
   return new File([f],_safeFileName('att-'+tag+'-'+f.name),{type:f.type});
 }
 function uploadFile(file, proj, onPct){
   if(HOSTED&&_safeFileName(file.name)!==file.name)file=new File([file],_safeFileName(file.name),{type:file.type});
+)====="
   // The page is served under "/d/<id>/" over the tunnel and "/" on the local network;
   // XHR is not wrapped by the fetch base-rewriter, so prefix the app base by hand.
+R"=====(
   const base=location.pathname.replace(/\/[^/]*$/,'');
   const isMp3=/\.mp3$/i.test(file.name);
   const uploadId='u'+Date.now().toString(36)+Math.random().toString(36).slice(2,8);
@@ -4380,9 +5118,11 @@ function uploadFile(file, proj, onPct){
     x.open('POST',url);
     try{x.setRequestHeader('X-Nimbus-Token',nimbusTok());}catch(e){}
     x.upload.onprogress=e=>{if(onPct&&e.lengthComputable)onPct(Math.round(e.loaded/e.total*100));};
+)====="
     // Over the tunnel, poll the server-acked offset for honest progress. Harmless on the
     // local network (no such route there -> the poll just stops). fetch() adds the base +
     // token; the session cookie authorizes it.
+R"=====(
     let poll=null;
     if(base){poll=setInterval(()=>{fetch('/__upload_status?u='+uploadId).then(r=>r.ok?r.json():null)
       .then(p=>{if(p&&p.known&&p.total>0&&onPct)onPct(Math.min(100,Math.round(p.acked/p.total*100)));}).catch(()=>{});},400);}
@@ -4403,7 +5143,9 @@ $('upBtn')&&($('upBtn').onclick=()=>{
     ok:()=>{inp.value='';loadFiles();return 'Uploaded '+f.name+'.';},
     error:s=>'Upload failed'+(s?(' ('+s+')'):'')+' - check the file and try again.'});
 });
+)====="
 // ---- Skills (lane I): list, edit, staged revisions and the approve switch ----
+R"=====(
 function loadSkills(){
   const box=$('skList'); if(!box)return;
   fetch('/api/skills/list').then(jok).then(d=>{
@@ -4413,8 +5155,10 @@ function loadSkills(){
     const auto=$('skAuto'); if(auto)auto.checked=!!d.auto;
     const sk=d.skills||[];
     if(!sk.length){box.innerHTML='<span class=hint>No skills yet</span>';return;}
+)====="
     // Join only the metadata a skill actually carries, so a skill with no title/
     // origin never renders a lone separator with nothing around it (CUM-214).
+R"=====(
     box.innerHTML=sk.map(s=>{
       const meta=[];
       if(s.title)meta.push(_fesc(s.title));
@@ -4441,7 +5185,9 @@ function loadSkills(){
     skOp('a[data-skdiscard]','/api/skills/discard','Edit discarded');
   }).catch(e=>{if(!onCardBusy(e,'skills',loadSkills,box))box.innerHTML='<span class=hint>Skills unavailable</span>';});
 }
+)====="
 // The D-4 switch: "the assistant may approve its own skill changes".
+R"=====(
 $('skAuto')&&($('skAuto').onchange=()=>{
   const fd=new FormData();fd.append('on',$('skAuto').checked?'on':'off');
   fetch('/api/skills/auto',{method:'POST',body:fd}).then(jok)
@@ -4503,8 +5249,10 @@ function loadTools(){
       h.textContent=GRPLBL[g]||g;host.appendChild(h);
       byG[g].forEach(t=>host.appendChild(mkRow(t)));
     });
+)====="
     // Skills panel (owner R7: #skillspanel was dead - skills hid inside the flat
     // tool list). Card per capsule; the model reads them via skill.get.
+R"=====(
     const sp=$('skillspanel');
     if(sp){sp.innerHTML='';
       if(byG.skill&&byG.skill.length){
@@ -4523,9 +5271,11 @@ function loadTools(){
   }).catch(e=>{if(onCardBusy(e,'tools',loadTools,'toollist'))return;$('toolstat').textContent='Unavailable';});
 }
 
+)====="
 // --- Audio diagnostics (Device tab): mic VU meter + speaker beep + acoustic loopback.
 // All POST so the auth token rides automatically. The meter polls a short mic capture;
 // beep/loopback are one-shot. Every call is device-actuating, so a 401 just prompts auth.
+R"=====(
 (function(){
   let micTimer=null; const bar=$('vubar'), msg=$('audiomsg');
   const poll=()=>fetch('/api/audio/mic',{method:'POST'}).then(r=>r.json()).then(d=>{
@@ -4548,14 +5298,18 @@ function loadTools(){
         (d.tonePresent?'':' (the microphone works; check the speaker)');
     }).catch(()=>msg.textContent='Loopback test failed - try again.');};
 })();
+)====="
 // ---- Telegram access (P8): chips + first-message approval + public mode ----
+R"=====(
 function tgPost(u,b,okMsg){return fetch(u,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
   body:new URLSearchParams(b).toString()}).then(jok).then(()=>{if(okMsg)toast(okMsg);loadTelegram();}).catch(failToast);}
+)====="
 // v3.7.0 people: role + limits per chat, fetched alongside the allowlist.
 // These three were REFERENCED by the panel below and never defined - the
 // ReferenceError threw inside the forEach, rejected the enclosing promise, and
 // the whole Telegram panel rendered "Telegram unavailable". Caught by review,
 // not by the API tests, which never opened the page.
+R"=====(
 let tenantRoles={},tenantQuota={};
 function loadTenants(){
   if(!canPoll())return Promise.resolve();
@@ -4571,11 +5325,15 @@ function loadTenants(){
 function loadTelegram(){
   if(!canPoll())return;
   if(!$('tgChips'))return;
+)====="
   // Token-gated GET (previews are owner-only) - attach the token explicitly since
   // the global fetch wrapper only adds it to mutating requests.
+R"=====(
   fetch('/api/telegram').then(jok).then(d=>{
     $('tgPublic').checked=!!d.public;
+)====="
     // pending approvals (highlighted)
+R"=====(
     const pb=$('tgPending');pb.innerHTML='';
     (d.pending||[]).forEach(p=>{
       const row=document.createElement('div');row.className='sec';row.style.cssText='border-color:#e0b870;padding:8px;margin:6px 0';
@@ -4587,8 +5345,10 @@ function loadTelegram(){
       no.onclick=()=>tgPost('/api/telegram/deny',{id:p.chatId});
       row.appendChild(ok);row.appendChild(no);pb.appendChild(row);
     });
+)====="
     // allowed chips - the NAME is click-to-rename (owner ask: label who sent what;
     // the unified chat + the model both read this sidecar).
+R"=====(
     const cb=$('tgChips');cb.innerHTML='';TGNAMES={};
     (d.allow||[]).forEach(a=>{
       if(a.name)TGNAMES[a.id]=a.name;
@@ -4602,9 +5362,11 @@ function loadTelegram(){
       chip.appendChild(nm);
       chip.appendChild(document.createTextNode(' ('+a.id+') '));
       const role=document.createElement('a');role.href='#';
+)====="
       // v3.7.0 RBAC: click cycles admin -> user -> guest. The device refuses to
       // demote its last admin (409), and the reason is shown rather than the
       // click silently doing nothing.
+R"=====(
       const cur=(tenantRoles[a.id]||(a.owner?'admin':'user'));
       const STYLE={admin:'background:rgba(240,180,40,.18);color:#e0a020',
                    user:'background:rgba(90,160,220,.18);color:#5aa0dc',
@@ -4648,11 +5410,13 @@ $('tgPublic').onchange=()=>{
 };
 loadTenants().then(loadTelegram);
 setInterval(()=>loadTenants().then(loadTelegram),7000);
+)====="
 // Unified persistent chat (owner 2026-07-16): EVERY channel's turns (web, Telegram,
 // voice, serial) are auto-captured to the episodic store on-device - the pane renders
 // that store, so history survives refresh and Telegram/voice conversations appear
 // here labeled by channel + sender. Sending still POSTs /api/chat (one real turn).
 // CUM-995 (lane MD51): assistant bubbles render a safe Markdown subset; model text only ever becomes text nodes, never innerHTML. User bubbles stay plain.
+R"=====(
 const _E=t=>document.createElement(t),_A=(p,c)=>p.appendChild(c);
 function _mdInline(el,s){const n=s.length;let i=0;
   while(i<n){const c=s[i];
@@ -4681,23 +5445,29 @@ function _chatBubble(who,text,meta){const log=$('chatLog');const d=document.crea
   who==='a'?_mdInto(tx,text):tx.textContent=text;
   d.appendChild(tx); d._tx=tx;
   log.appendChild(d); log.scrollTop=log.scrollHeight; return d;}
+)====="
 // Sender label per row: tags "from:<name>" captured at message time; for Telegram
 // prefer the CURRENT display name from the allowlist sidecar (renames re-label
 // history retroactively). TGNAMES fills in loadTelegram().
+R"=====(
 let TGNAMES={};
+)====="
 // Row tags are a COMMA LIST ("from:roy", "via:telegram,turn:m0000a3f2",
 // "turn:m…,tool:memory.search,err"). Always read a value through this - the old
 // indexOf('from:')===0 + slice(5) broke the moment a second tag was appended.
+R"=====(
 function _tagVal(tags,key){
   const parts=String(tags||'').split(',');
   for(let i=0;i<parts.length;i++){const p=parts[i].trim();
     if(p.indexOf(key)===0)return p.slice(key.length);}
   return '';
 }
+)====="
 // A turn id is a row id ("m" + hex). Pre-v4.2.0 rows carry the OLD boot-relative
 // tag ("turn:t2"), which is NOT addressable - no dossier, no stable identity - so
 // it must fall back to the legacy adjacency path rather than render a "Turn
 // anatomy" button that can only ever answer "removed to save space".
+R"=====(
 function _turnId(m){
   const t=_tagVal(m&&m.tags,'turn:');
   return /^m[0-9a-f]+$/.test(t)?t:'';
@@ -4707,22 +5477,30 @@ function _chatMeta(m){
   if(m.channel==='telegram'){const n=TGNAMES[m.session]||sender||m.session;return 'telegram · '+n;}
   return m.channel;   // web / voice / serial - the channel IS the sender
 }
+)====="
 // Glass-box disclosure (A4): tool calls + thinking captured between two chat
 // messages group into one collapsed <details> block under the turn. Chronological
 // grouping - no tag join needed; rows already arrive in insertion order.
 // Compact token count for the turn chip: 1234 -> "1.2k".
+R"=====(
 function _tok(n){n=+n||0;return n>=1000?(n/1000).toFixed(1)+'k':String(n);}
+)====="
 // Per-turn summary chip under the reply (Glass Box P2), from the ev:turnend row.
 // `tools` is the EXECUTED TOOL-CALL count, not provider rounds - labeled as such.
+R"=====(
 function _turnChip(bubble,row){
   let d={};try{d=JSON.parse(row.text)||{};}catch(e){return;}
   const bits=[];
+)====="
   // Served-by disclosure (CUM-236): d.host/d.model are the failover-final head, so
   // annotate them "served by ... (fallback)" when the turn substituted.
+R"=====(
   if(d.host)bits.push((d.fallback?'served by ':'')+d.host+(d.model?' · '+d.model:'')+(d.fallback?' (fallback)':''));
+)====="
   // More than one provider billed this turn (a switch mid-turn): say which and how much.
   // A row the device had to shrink drops the model: [host,in,out] instead of
   // [host,model,in,out,...] (orch_failure_rows.cpp addVia).
+R"=====(
   if(Array.isArray(d.via)&&d.via.length>1)
     bits.push('via '+d.via.map(v=>{const m=v.length>3?v[1]:'',i=v.length>3?2:1;
       return String(v[0]||'')+(m?' · '+m:'')+' '+_tok(v[i])+'/'+_tok(v[i+1]);}).join(', '));
@@ -4754,7 +5532,9 @@ function _traceGroup(log,rows){
     pre.style.cssText='white-space:pre-wrap;word-break:break-word;background:var(--raise2);border:1px solid var(--line);border-radius:8px;padding:7px 9px;margin:5px 0;font-size:10.5px';
     pre.textContent=(x.kind==='llm_response'?'💭 ':'')+x.text;   // textContent - tool output is untrusted
     det.appendChild(pre);
+)====="
     // The row text is clipped; the full call + result is parked as a blob (P4).
+R"=====(
     if(x.blob){const a=document.createElement('button');
       a.type='button';a.className='qh';a.style.cssText='font-size:10px;margin:0 0 6px';
       a.textContent='Show full result';
@@ -4764,8 +5544,10 @@ function _traceGroup(log,rows){
           .catch(e=>{a.disabled=false;a.textContent=String(e&&e.message||e)||'Not available';});};
       det.appendChild(a);}
   });
+)====="
   // Turn anatomy (P3): the exact system prompt, per-turn input, raw model output
   // and the tool-loop transcript for THIS turn - fetched on demand, never inline.
+R"=====(
   const tid=rows.length?_turnId(rows[0]):'';
   if(tid){const b=document.createElement('button');
     b.type='button';b.className='qh';b.style.cssText='font-size:10px;margin:0 0 6px';
@@ -4779,18 +5561,24 @@ function _traceGroup(log,rows){
     det.appendChild(b);}
   log.appendChild(det);
 }
+)====="
 // Older pages the owner loaded with Load Older (oldest first, each newest-first as
 // the device returns it) and the reply that gave the last of them: its cursor and
 // how far back it searched (19 Oct triage: the pane showed a day with five hours
 // missing and never said older history was still being indexed).
+R"=====(
 let _chatOlder=[],_chatOlderMeta=null;
 function _chatLoadOlder(cursor,btn){
+)====="
   // The device's own cursor, passed back unchanged (never one computed here).
+R"=====(
   fetch('/api/mem/episodic?limit=200&before='+encodeURIComponent(cursor)).then(jok).then(o=>{
     _chatOlder.unshift(o.messages||[]);_chatOlderMeta=o;loadChatHistory();
   }).catch(e=>{if(btn)btn.disabled=false;failToast(e);});   // a failed load can be tried again
 }
+)====="
 // The indexing divider, the Load Older control and how far back the page searched.
+R"=====(
 function _chatHistoryEdges(log,d){
   const meta=_chatOlderMeta||d;
   const line=(t)=>{const dv=document.createElement('div');
@@ -4806,36 +5594,46 @@ function _chatHistoryEdges(log,d){
   if(d.indexComplete===false){const dv=line('Older history is still being indexed: '+(d.total||0)+' rows so far.');
     dv.id='chatIndexing';log.insertBefore(dv,log.firstChild);}
 }
+)====="
 // What the owner sent, for their own bubble: a stored photo's label reads as a photo, not
 // its content hash, and the turn's framing around their words goes.
+R"=====(
 function _chatSaid(t){
   return String(t==null?'':t).replace(/\[(image|file) [^\]]*ref=[0-9a-f]{16}[^\]]*\]/g,(m,k)=>k==='image'?'[photo]':'[file]').replace(/\]\s*They wrote: /g,'] ');
 }
 function loadChatHistory(){
   const log=$('chatLog'); if(!log||_chatBusy)return;
+)====="
   // No kind filter: message rows render as bubbles, tool_output/llm_response rows
   // fold into per-turn disclosures. The 'system' session (device timeline) and
   // media/log rows stay out of the chat pane.
+R"=====(
   fetch('/api/mem/episodic?limit=200').then(jok).then(d=>{
     cardBusyNote(log,false);
+)====="
     // Store pages return newest-first; older pages (Load Older) go before, once each.
+R"=====(
     const seen={},ms=[];
     _chatOlder.concat([d.messages||[]]).forEach(pg=>pg.slice().reverse().forEach(m=>{
       if(m.id&&seen[m.id])return;if(m.id)seen[m.id]=1;ms.push(m);}));
     log.innerHTML='';
+)====="
     // Group by TURN ID, not adjacency: every trace row carries "turn:<user row
     // id>" and the turn's reply row carries the same tag, so an interleaved
     // Telegram/voice turn can no longer dump its tool calls under a web bubble.
     // Rows with no turn: tag are pre-v4.2 history - they keep the old
     // chronological accumulator so old conversations still render.
+R"=====(
     const byTurn={},endByTurn={};
     ms.forEach(m=>{
       if(m.session==='system')return;
       if(m.kind==='tool_output'||m.kind==='llm_response'||m.kind==='log'){
         const t=_turnId(m);
         if(!t)return;   // legacy/untagged -> adjacency path below
+)====="
         // The turn-summary row is a chip under the reply, not a trace <pre> -
         // and must not be counted as a sub-agent event in the disclosure.
+R"=====(
         if(_tagVal(m.tags,'ev:')==='turnend'){endByTurn[t]=m;return;}
         (byTurn[t]=byTurn[t]||[]).push(m);
       }
@@ -4849,18 +5647,24 @@ function loadChatHistory(){
       }
       if(m.kind!=='message')return;   // audio/file/etc. keep their own surfaces
       if(trace.length){_traceGroup(log,trace);trace=[];}
+)====="
       // A /clear boundary (CUM-511) is a divider: the conversation above it is
       // still the owner's record, but the assistant starts fresh below it.
+R"=====(
       if(_tagVal(m.tags,'ev:')==='clear'){const dv=document.createElement('div');
         dv.style.cssText='align-self:center;font-size:10.5px;color:var(--ink3);padding:6px 0;letter-spacing:.04em';
         dv.textContent=m.text; log.appendChild(dv); any=true; return;}
+)====="
       // What started a turn nobody typed (results arrived, a routine ran): the same quiet
       // line, never an assistant bubble, and the turn's summary chip stays for its reply.
+R"=====(
       if(_tagVal(m.tags,'ev:')==='trigger'){const dv=document.createElement('div');
         dv.style.cssText='align-self:center;font-size:10.5px;color:var(--ink3);padding:6px 0;letter-spacing:.04em';
         dv.textContent=String(m.text||'').replace(/^\[|\]$/g,''); log.appendChild(dv); any=true; return;}
+)====="
       // A user row's OWN id is its turn id; the reply row carries turn:<that id>.
       // Trace renders just above the reply it produced.
+R"=====(
       const tid=m.role==='user'?m.id:_turnId(m);
       if(m.role==='user')liveTid=m.id;   // newest user row wins: the turn that may still be in flight
       if(m.role!=='user'&&tid&&byTurn[tid]){_traceGroup(log,byTurn[tid]);delete byTurn[tid];}
@@ -4869,17 +5673,20 @@ function loadChatHistory(){
       any=true;
     });
     if(trace.length)_traceGroup(log,trace);
+)====="
     // Float ONLY the newest owner turn if it is still in flight (its user row is the
     // last on the page and no reply has landed yet, so its bucket survived line 3653).
     // Every other leftover bucket is a context-free orphan - a reply-less/errored turn
     // or a seedless routine/synthesis turn with no chat bubble - and is dropped, not
     // stacked as a wall of collapsed "N tool calls" rows the owner cannot place.
+R"=====(
     if(liveTid&&byTurn[liveTid])_traceGroup(log,byTurn[liveTid]);
     if(!any)log.innerHTML=HOSTED?'<p class=hint>No conversation yet - say something below, or message the bot on Telegram.</p>':'<p class=hint>No conversation yet - say something below, message the bot on Telegram, or hold the mic button to talk.</p>';
     _chatHistoryEdges(log,d);
     if(!_chatOlder.length)log.scrollTop=log.scrollHeight;
   }).catch(e=>{onCardBusy(e,'chathist',loadChatHistory,log);});
 }
+)====="
 // Async results (CUM-482): a sub-agent synthesis, spawn acks and raw fallbacks are
 // delivered BETWEEN turns, into the chat history - never as any turn's reply. Poll
 // GET /api/chat?watch=1 (activity only: no history read, consumes nothing) and
@@ -4887,15 +5694,20 @@ function loadChatHistory(){
 // appears without the owner sending another message. Every 4 s while background
 // work may still deliver; otherwise every 30 s, so a reminder or routine that fires
 // into an idle open page (CUM-505) still shows up on its own.
+R"=====(
 let _chatWatchT=0,_chatAsync=-1,_chatWatchUntil=0;
 function _chatWatch(d,arm){
   if(!d||typeof d.busy!=='number')return;
+)====="
   // Re-render once the delivery's history row has surely landed. A finished turn
   // (arm) re-renders through its own completion, so it only re-baselines here.
+R"=====(
   if(!arm&&_chatAsync>=0&&d.async!==_chatAsync)setTimeout(loadChatHistory,1500);
   _chatAsync=d.async;
+)====="
   // Fast for 90 s past the last sign of work: covers spawns still queued and a
   // deferred synthesis (its raw fallback lands 60 s after the batch ends).
+R"=====(
   if(arm||d.busy>0)_chatWatchUntil=Date.now()+90000;
   _chatWatchNext();
 }
@@ -4908,10 +5720,12 @@ function _chatWatchPoll(){
   fetch('/api/chat?watch=1').then(r=>r.ok?r.json():Promise.reject(r.status))
     .then(d=>_chatWatch(d,false)).catch(_chatWatchNext);
 }
+)====="
 // Rapid taps must never be lost or mismatched (CUM-218). Every send gets its own
 // user bubble + dim pending bubble IMMEDIATELY - even mid-turn - and is queued.
 // The pump POSTs one turn at a time and polls GET /api/chat?turn=<id> so each reply
 // fills ITS OWN bubble; a prior turn's reply can never render under a newer message.
+R"=====(
 let _chatQ=[];        // FIFO of {text,pend} awaiting their POST + poll cycle
 let _chatBusy=false;  // a turn is mid POST+poll (one outstanding at a time)
 let _chatAtt=[];      // hosted: "project/name" of photos the next message brings
@@ -4922,8 +5736,10 @@ function _chatPump(){
   _chatBusy=true;
   const job=_chatQ.shift(),pend=job.pend;
   $('chatMsg').textContent=_chatQ.length?('Thinking… '+(_chatQ.length+1)+' queued'):'Thinking… a reply can take 5–30 s';
+)====="
   // Done with this turn: free the slot, re-sync from the canonical store only when
   // nothing is queued behind us (so a still-pending bubble is never wiped), pump next.
+R"=====(
   const done=resync=>{_chatBusy=false; if(resync&&!_chatQ.length)setTimeout(loadChatHistory,900); _chatPump();};
   const form={text:job.text}; if(job.att)form.att=job.att;
   fetch('/api/chat',{method:'POST',body:new URLSearchParams(form)})
@@ -4934,20 +5750,28 @@ function _chatPump(){
       let tries=0; const poll=()=>{tries++;
         fetch(url).then(r=>r.json()).then(d=>{
           if(d.reply){_mdInto(pend._tx,d.reply);pend.style.opacity=1;
+)====="
             // Served-by disclosure (CUM-236): a fallback reply says so under the bubble.
+R"=====(
             if(d.fallback&&d.servedBy){const f=document.createElement('div');
               f.style.cssText='font-size:9.5px;color:var(--ink3);margin-top:4px;opacity:.85';
               f.textContent='served by '+d.servedBy+' (fallback)';pend.appendChild(f);}
             _chatWatch(d,true); done(true);}
+)====="
           // Answered with nothing to show (a turn that only started sub-agents) or an
           // id the device no longer knows: drop the placeholder - the history it
           // re-renders from is canonical, and the watcher brings the async results.
+R"=====(
           else if(d.done||d.gone){pend.remove(); _chatWatch(d,true); done(true);}
+)====="
           // Keep polling while IN FLIGHT (d.pending). A tool-using turn can run for
           // minutes, so poll up to the ~13 min budget with a 40-try floor for quick
           // turns even if pending flips off in a race.
+R"=====(
           else if((d.pending||tries<40)&&tries<520){setTimeout(poll,1500);}
+)====="
           // Gave up: re-sync from the store so a late reply still appears.
+R"=====(
           else{pend.style.opacity=1;
             pend.textContent='(Still working - reloading the conversation. If nothing appears, check the provider key.)';
             done(true);}
@@ -4969,6 +5793,7 @@ loadChatHistory();
 _chatWatchPoll();   // research already running when the page opened
 $('chatInput')&&$('chatInput').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendChatTurn();}});
 
+)====="
 // ---- Chat file upload: file picker + drag-and-drop (CUM-57) -----------------
 // Files upload to the shared artifact store (/api/files/upload) with a real
 // progress bar via the feedback helper, and land as a chat bubble so the
@@ -4976,6 +5801,7 @@ $('chatInput')&&$('chatInput').addEventListener('keydown',e=>{if(e.key==='Enter'
 // A hosted photo larger than one image part is sent as a smaller JPEG: a phone photo is
 // many megabytes, and the head reads text at this size. A format the browser cannot
 // draw (HEIC) goes as it is, and the assistant says why it could not read it.
+R"=====(
 function _chatShrink(f){
   const max=450*1024; if(f.size<=max)return Promise.resolve(f);
   return new Promise(res=>{const u=URL.createObjectURL(f),im=new Image();
@@ -4993,8 +5819,10 @@ function _chatShrink(f){
 function chatUpload(files){
   const list=Array.from(files||[]).filter(Boolean); if(!list.length)return;
   const proj='chat';
+)====="
   // Upload sequentially so the single status line reads clearly; each result is
   // announced in the chat log so nothing "disappears".
+R"=====(
   let i=0;
   const next=()=>{
     if(i>=list.length)return;   // leave the last file's result state on screen
@@ -5003,7 +5831,9 @@ function chatUpload(files){
     run({status:'chatUpMsg',pending:'Uploading '+f.name+'…',
       work:()=>(photo?_chatShrink(f).then(_chatPhotoFile):Promise.resolve(f)).then(up=>{name=up.name;uploadFile.why='';
         return uploadFile(up,proj,pct=>fbState('chatUpMsg','pending','Uploading '+f.name+'… '+pct+'%',pct));}),
+)====="
       // Hosted: a photo goes to the assistant as an image with the next message.
+R"=====(
       ok:()=>{if(photo)_chatAtt.push(proj+'/'+name);
         if(typeof _chatBubble==='function')_chatBubble('u',photo?'Attached '+f.name+'. It goes with your next message.':'Attached '+f.name+' (in Files > '+proj+'). Ask me about it.','web');
         return 'Attached '+f.name+'.';},
@@ -5028,6 +5858,7 @@ loadTools();
 loadSkills();
 setInterval(()=>{loadMemStats();loadScratch();},6000);
 
+)====="
 // ===================== First-run onboarding wizard =====================
 // Shown over the SPA when /api/state.needsOnboarding is true (a fresh or
 // factory-reset device, or a wizard left before it finished). Two hard-gated steps
@@ -5036,6 +5867,7 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
 // QW5: every check shows its real outcome (runVerify/vfyOutcome), a key pasted
 // under the wrong provider is moved to its own, the timezone comes from this
 // browser, and the place in the wizard survives a reload (per device).
+R"=====(
 (function(){
   const STEPS=[
     {id:'welcome',t:'Welcome'},
@@ -5053,18 +5885,22 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
   const stepIdx=id=>STEPS.findIndex(x=>x.id===id);
   let idx=0, wifiOk=false, provOk=false, pendingMode=null, curMode=0, scanTimer=null, voiceCap='';
   let handoffProbe=null, tzSet='', dir=1;
+)====="
   // Display step: bootDisp is the display the device booted with. A unit whose
   // stored setting still reads the deprecated value is nudged to its touch panel
   // here. dispSel is the owner's saved choice.
+R"=====(
   let bootDisp='tft', dispSel=null;
   const dispChanged=()=>dispSel!==null&&dispSel!==bootDisp;
   const el=id=>document.getElementById(id);
   const msg=t=>{el('onbMsg').textContent=t||'';};
   function esc(s){return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
   function show(){el('onbov').style.display='';render();}
+)====="
   // Where the wizard was, per DEVICE: every device in setup mode answers at
   // 192.168.4.1, so a per-origin key resumed a second device mid-wizard. The key
   // carries a hash of this device's sign-in code (new after a factory reset too).
+R"=====(
   function stepKey(){const t=nimbusTok()||'';let h=2166136261;
     for(let i=0;i<t.length;i++){h^=t.charCodeAt(i);h=Math.imul(h,16777619)>>>0;}
     return 'nimbusOnboardStep:'+h.toString(16);}
@@ -5125,15 +5961,19 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
       '<div class=hint id=onb_summary></div>';
     return '';
   }
+)====="
   // Steps with nothing to offer right now: voice without a voice-capable provider,
   // and the assistant's extras once Notifier is chosen (Wi-Fi and the page go off).
+R"=====(
   function skipped(s){
     if(pendingMode===0&&(s.id==='telegram'||s.id==='voice'||s.id==='directive'))return true;
     return s.id==='voice'&&!voiceCap;
   }
   function render(){
+)====="
     // Move past a skipped step in the direction of travel, so Back is never bounced
     // forward again by a step that skips itself.
+R"=====(
     while(skipped(STEPS[idx])&&idx+dir>=0&&idx+dir<STEPS.length)idx+=dir;
     const s=STEPS[idx];
     el('onbTitle').textContent=s.t;
@@ -5147,8 +5987,10 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
   }
   function go(d){ dir=d;idx=Math.max(0,Math.min(idx+d,STEPS.length-1));rememberStep();render(); }
   const next=()=>go(1);
+)====="
   // The monthly spend ceiling as it really stands (QW5): the 20 USD line used to
   // show whether or not the ceiling was in force.
+R"=====(
   function ceilingLine(sp){
     if(!sp)return '';
     if(sp.active===false)return 'Monthly spend ceiling: off'+((sp.providers&&sp.providers.length)?'. Your per-provider limits apply instead (Assistant &rarr; Usage)':' (turn it on in Assistant &rarr; Usage)');
@@ -5157,8 +5999,10 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
     if(sp.loaded===false)return 'Monthly spend ceiling: '+amt+'. It starts counting once the device clock has synced with the internet, usually within a minute of joining Wi-Fi';
     return 'Monthly spend ceiling: '+amt+' (change it on Assistant &rarr; Usage)';
   }
+)====="
   // Long-term memory needs an embeddings key; the device picks a keyed provider
   // that can embed (Cumulo Nimbus, OpenAI or Mistral). Say plainly when none can.
+R"=====(
   function memLine(cb){
     fetch('/api/mem/stats').then(cardJson).then(m=>{   // busy: no line rather than a wrong one
       const prov=m&&m.embed&&m.embed.provider;
@@ -5167,16 +6011,20 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
     }).catch(()=>cb(''));
   }
   function showMem(){memLine(t=>{const mm=el('onb_memmsg');if(mm)mm.innerHTML=t;});}
+)====="
   // The device's own defaults line when the ceiling it promises is in force (the
   // structured spend.active / spend.loaded say so); otherwise the page's own line,
   // never an edit of the device's sentence.
+R"=====(
   function defaultsHtml(st){
     const sp=st.spend;
     if(!sp||(sp.active!==false&&sp.loaded!==false))return esc(st.setupDefaults);
     return 'Each provider starts on cost-conscious default models (change them on Assistant &rarr; Models). '+ceilingLine(sp)+'.';
   }
   function wireProvider(){
+)====="
     // Per-provider setup guidance, updated as the selection changes.
+R"=====(
     const pv=el('onb_prov'),pg=el('onb_provguide'),k=el('onb_key');
     const offline=location.hostname==='192.168.4.1';   // still on the setup network: no internet here
     const G={cumulo:'Cumulo Nimbus (recommended): one key and one prepaid balance for every provider, voice included. Create a key at app.cumulo-nimbus.ai under API keys.',
@@ -5189,15 +6037,19 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
       k.placeholder=PH[pv.value]||('Paste your '+(PROVLBL[pv.value]||'')+' API key');};
     pv.onchange=upd;upd();
     el('onb_provsave').onclick=doProvider;
+)====="
     // Resume: a provider verified before a reload or a restart counts (the field was
     // cleared, and the key is never shown again).
+R"=====(
     fetch('/api/state').then(r=>r.json()).then(st=>{
       const d=el('onb_defaults'),pm=el('onb_provmsg');
       if(st.provVerified&&pm&&!pm.textContent){provOk=true;pm.textContent='A provider is already verified. Continue, or add another key.';showMem();}
       if(d&&st.setupDefaults)d.innerHTML=defaultsHtml(st);
     }).catch(()=>{});
   }
+)====="
   // The confirm line for a saved zone, from the device's clock (c) once it applies.
+R"=====(
   function tzConfirmText(label,c,compare){
     if(!c||!c.synced)return 'Saved: '+label+'. The device shows its local time once its clock syncs with the internet.';
     if(!compare||tzMatchesBrowser(c))return 'Saved: '+label+'. Device time is '+c.local.slice(11)+(compare?', the same as this computer.':'.');
@@ -5206,8 +6058,10 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
   function wireTimezone(){
     const tz=tzFromBrowser(), det=el('onb_tzdetect'), m=el('onb_tzmsg');
     const say=t=>{const e=el('onb_tzmsg');if(e)e.textContent=t;};
+)====="
     // The device applies a new zone on its assistant task, a moment after the save:
     // read its clock until it shows this computer's time (or 10 s pass).
+R"=====(
     const confirmTz=(label,compare,n)=>setTimeout(()=>fetch('/api/state').then(r=>r.json()).then(st=>{
       const c=st&&st.clock;
       if(compare&&c&&c.synced&&!tzMatchesBrowser(c)&&n<8)return confirmTz(label,compare,n+1);
@@ -5223,8 +6077,10 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
     else{det.textContent='This browser does not report a timezone. Choose yours below.';el('onb_tzuse').style.display='none';}
     el('onb_tzsave').onclick=()=>{const v=el('onb_tzother').value.trim();
       if(!v){m.textContent='Pick or type a timezone first.';return;}
+)====="
       // A zone name like Europe/London is not the device's format: use the detected
       // rule when it names this computer's zone, else ask for the POSIX form.
+R"=====(
       if(v.indexOf('/')>0&&!/[0-9]/.test(v)){
         if(tz&&tz.iana===v)return save(tz.posix,v,true);
         m.textContent=v+' is a zone name, and the device needs its rule (POSIX form, like GMT0BST,M3.5.0/1,M10.5.0). Pick a suggestion from the list, or use this computer\'s zone above.';
@@ -5236,7 +6092,9 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
       b.classList.toggle('on',+b.dataset.m===(pendingMode!==null?pendingMode:curMode));
       b.onclick=()=>{const m=+b.dataset.m;
         if(m!==0||curMode===0){pendingMode=m;render();return;}
+)====="
         // Notifier switches Wi-Fi and this page off: confirm before choosing it.
+R"=====(
         uiConfirm('Use Notifier?\n\nWhen you finish, the device restarts as a Bluetooth status light. Wi-Fi and this web page turn off. To come back to Orchestrator, use Settings > Mode on the device\'s screen.',{ok:'Use Notifier'})
           .then(go=>{if(go){pendingMode=0;render();}});};
     });
@@ -5255,8 +6113,10 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
       });};
   }
   function wireVoice(){
+)====="
     // Only mistral/openai do on-device voice. Offer ONLY the provider the owner
     // verified; without one this step is skipped (skipped(): nothing here would work).
+R"=====(
     const cap=voiceCap, lbl=cap==='mistral'?'Mistral':'OpenAI';
     el('onb_stt').innerHTML='<option value='+cap+'>'+lbl+'</option>';
     el('onb_tts').innerHTML='<option value='+cap+'>'+lbl+'</option>';
@@ -5264,8 +6124,10 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
       .then(ok=>{el('onb_voicemsg').textContent=ok?'Saved ✓':lastFailText('Rejected');});
   }
   function wireDirective(){
+)====="
     // Pre-fill the shipped default from the server (single source); keeping it is
     // the zero-effort path - just click Next. Editing + Save persists an override.
+R"=====(
     const ta=el('onb_dir'),m=el('onb_dirmsg');let def='',mx=1500;
     fetch('/api/orch').then(r=>r.json()).then(d=>{def=d.directiveDefault||'';mx=d.directiveMax||1500;
       ta.value=(d.directive&&d.directive.length)?d.directive:def;}).catch(()=>{});
@@ -5275,10 +6137,12 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
     el('onb_dirreset').onclick=()=>{ta.value=def;m.textContent='Reverted to default - Save to keep, or just continue.';};
   }
   function wireDisplay(){
+)====="
     // The display is a color touch panel; a unit whose stored setting still
     // reads the deprecated value is set to its touch panel here so its own
     // screen can render. Then the 180-degree flip for upside-down mounts
     // applies live.
+R"=====(
     if(bootDisp!=='tft'){orchApply({scrModel:'tft'}).then(ok=>{if(ok)dispSel='tft';});}
     const fl=el('onb_flip');
     if(fl){fl.onchange=()=>{const fd=new FormData();fd.append('scrFlip',fl.checked?'1':'0');
@@ -5292,10 +6156,12 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
     return tzSet||st.clock.tz;
   }
   function wireDone(){
+)====="
     // Derive the summary from LIVE server state, not page-load-local flags: wifiOk
     // resets across the setup-AP -> LAN handoff (the page reloads on the new IP), so
     // a client flag would claim "not connected" while browsing over that Wi-Fi
     // (CUM-233). The headline is conditional on the same live truth.
+R"=====(
     let memTxt='';
     const paint=(st)=>{
       const wifi=st?!!st.sta:wifiOk, prov=st?!!st.provVerified:provOk;
@@ -5311,9 +6177,11 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
         (dispChanged()?'<br>&bull; Display: touch screen - the device restarts when you finish to apply it':'');
     };
     paint(null);
+)====="
     // Paint from live state only; do NOT mutate the wizard-scoped wifiOk/provOk here -
     // a transient false would wrongly re-arm the Back-step advance gates. Finish is
     // server-authoritative regardless.
+R"=====(
     let last=null;
     fetch('/api/state').then(r=>r.json()).then(st=>{last=st;paint(st);}).catch(()=>{});
     memLine(t=>{memTxt=t;paint(last);});
@@ -5338,10 +6206,12 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
       if(d.scanning){if(--left<=0)return stop('Scan timed out - try again.');return;}
       if(d.error)return stop(d.error);   // same gap as the Settings scan - say what happened
       stop('');
+)====="
       // Dedup by SSID keeping the strongest (dual-AP networks report the same name
       // twice at different RSSI) - like every phone's Wi-Fi list (CUM-233). Hidden
       // ('') SSIDs are all kept. seen has NO prototype so an SSID named "constructor"
       // / "__proto__" / "toString" is not spuriously seen before insertion.
+R"=====(
       const seen=Object.create(null);
       const list=(d.networks||[]).sort((a,b)=>b.rssi-a.rssi).filter(n=>{const k=n.ssid||'';if(!k)return true;if(seen[k])return false;seen[k]=1;return true;});
       if(!list.length){nets.textContent='No networks found.';return;}
@@ -5369,10 +6239,12 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
   }
   function beginWifiHandoff(st,b,ssid){
     if(handoffProbe)return;
+)====="
     // Already on the device's LAN origin - the handoff has happened. Re-firing it
     // (e.g. navigating Back to the Wi-Fi step) would POST /api/wifi/handoff again
     // and bounce the user straight back to the provider step, making the Wi-Fi
     // step unreachable on TFT boards. Nothing to do here.
+R"=====(
     if(location.hostname===st.staIp){const m=el('onb_wifimsg');if(m)m.textContent='Connected: '+st.staIp;return;}
     const tok=nimbusTok(),dest=new URL('http://'+st.staIp+'/');
     dest.searchParams.set('t',tok);dest.searchParams.set('onboard','provider');
@@ -5382,10 +6254,12 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
     box.innerHTML='<b>Switching to your Wi-Fi…</b><br>Nimbus must close this setup network to protect the TFT. Your computer should rejoin <b>'+esc(ssid)+'</b> automatically. Setup will continue at <a id=onb_handoff_link></a> - keep this page open.';
     const link=el('onb_handoff_link');link.href=url;link.textContent='http://'+st.staIp;
 
+)====="
     // An image is a header-free cross-origin reachability probe. Start only after
     // the AP-drop grace so a response via the AP cannot trigger a premature move;
     // once the host rejoins its normal Wi-Fi, the exact-IP logo loads and we carry
     // the token + next wizard step into that new browser origin.
+R"=====(
     const probeAfter=delay=>{
       handoffProbe=setTimeout(function tryLan(){
         const img=new Image();let settled=false;
@@ -5397,8 +6271,10 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
     fetch('/api/wifi/handoff',{method:'POST'})
       .then(r=>r.ok?r.json():Promise.reject(r.status))
       .then(d=>probeAfter((d.dropInMs||4000)+1200))
+)====="
       // The device has a 20 s fallback teardown even if acknowledgement failed.
       // Keep the exact-IP link visible and begin probing after that fallback.
+R"=====(
       .catch(()=>probeAfter(21200));
   }
   function refreshWifiState(){fetch('/api/state').then(r=>r.json()).then(st=>{if(st.sta&&st.staIp){wifiOk=true;const m=el('onb_wifimsg');
@@ -5411,22 +6287,28 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
     const k=el('onb_key');if(k)k.value='';
     showMem();
   }
+)====="
   // Check provider p (its key is saved): show the outcome in plain words. lead is the
   // sentence that says the key was moved to its provider, kept in front of the result.
+R"=====(
   function verifyProvider(p,lead,afterSave){
     const b=el('onb_provsave'),out=t=>provOut(lead+t);
     b.disabled=true;out('Verifying…');
     runVerify(p,out,(o,st)=>{b.disabled=false;out(o.txt);
       if(o.ok)provVerified(p);
+)====="
       // A low-memory deferral retries by itself, and a slow check is still running:
       // keep watching, so the page continues when the verdict lands.
+R"=====(
       else if(o.wait)watchVerdict(p,out,0,st?st.vts:0);},afterSave);
   }
   function watchVerdict(p,out,n,lastVts){
     if(n>40||provOk)return;
     setTimeout(()=>fetch('/api/orch').then(r=>r.json()).then(d=>{const st=vfyState(d,p);
       if(st&&st.verify===1){out('Verified ✓');provVerified(p);return;}
+)====="
       // A new verdict that is not another deferral is the answer: say it and stop.
+R"=====(
       if(st&&st.vts&&st.vts!==lastVts&&st.vfyReason!=='low-memory'){out(vfyOutcome(p,st).txt);return;}
       watchVerdict(p,out,n+1,st?st.vts:lastVts);},()=>watchVerdict(p,out,n+1,lastVts)),4000);
   }
@@ -5434,7 +6316,9 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
     const sel=el('onb_prov'),key=el('onb_key').value.trim();
     let p=sel.value;
     if(!key){
+)====="
       // A key saved before a reload or restart is checked as it is (never shown again).
+R"=====(
       fetch('/api/orch').then(r=>r.json()).then(d=>{const pv=d.providers&&d.providers[p];
         if(pv&&pv.hasKey)verifyProvider(p,'',false);else provOut('Paste an API key.');},()=>provOut('Paste an API key.'));
       return;}
@@ -5443,13 +6327,17 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
     let lead='';
     const choose=h=>{p=h;sel.value=h;if(sel.onchange)sel.onchange();};
     if(home&&home!==p&&PROVNOUN[home]&&keyHomeSure(key)){
+)====="
       // A key whose published prefix names its provider: save it there.
+R"=====(
       lead='That is '+PROVNOUN[home]+', so it is saved under '+PROVLBL[home]+'. ';
       choose(home);
     } else if(home&&home!==p&&PROVNOUN[home]&&p==='cumulo'){
+)====="
       // A shape alone (Mistral, Z.ai, an unfamiliar sk- key) is only a guess: point at
       // the provider, never move a key on a guess. Under another provider the owner's
       // choice stands and that provider's check gives the verdict.
+R"=====(
       choose(home);
       provOut('That looks like '+PROVNOUN[home]+'. '+PROVLBL[home]+' is now selected above: tap Save & Verify again.');return;
     } else if(p==='cumulo'&&home!=='cumulo'){
@@ -5467,12 +6355,16 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
     .then(res=>{
       try{localStorage.removeItem(stepKey());localStorage.setItem('nimbusJustOnboarded','1');}catch(e){}
       const mn=pendingMode!==null?pendingMode:curMode;
+)====="
       // The server decides whether the display change needs a restart (stored
       // panel vs the driver bound at boot) - robust to the TFT Wi-Fi handoff
       // reloading this page, which would lose a client-side dispChanged().
+R"=====(
       const needDisplayRestart=res&&res.restart===true;
       if(pendingMode!==null&&pendingMode!==curMode){
+)====="
         // The mode switch reboots the device, which also applies a display change.
+R"=====(
         msg('Setup complete - switching mode and restarting…');
         apply({mode:mn}).then(()=>setTimeout(()=>location.reload(),4000));
       } else if(needDisplayRestart){
@@ -5493,9 +6385,11 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
     if(s.id==='provider'&&!provOk){msg('Add and verify a provider key to continue.');return;}
     next();
   };
+)====="
   // Where to (re)start: the handoff's deep link, else this device's saved step,
   // never past a required step that is not done (a reload, a restart, a factory
   // reset or another device all land on the first step still to do).
+R"=====(
   function startIdx(st){
     const q=new URLSearchParams(location.search);
     let i=stepIdx(q.get('onboard')||'');
@@ -5506,11 +6400,15 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
     if(!st.provVerified)i=Math.min(i,stepIdx('provider'));
     return i;
   }
+)====="
   // Kick off: only when we have a token (a fresh AP device gets one via /?t=).
+R"=====(
   function maybeStart(){
     if(!nimbusTok())return;
     fetch('/api/state').then(r=>r.json()).then(s=>{curMode=s.mode||0;bootDisp=s.scrModel||'tft';if(!s.needsOnboarding)return;
+)====="
       // Resume: the required gates and the voice step's provider come from the device.
+R"=====(
       wifiOk=!!(s.sta&&s.staIp);provOk=!!s.provVerified;
       idx=startIdx(s);
       const begin=()=>{rememberStep();show();};

@@ -73,6 +73,14 @@ namespace digest_text {
 inline constexpr char kDaySep[] = ": ";     // "Tue 17 Nov 2026: <summary>"
 inline constexpr char kWhenOpen[] = " (";   // "notes/boat.md (Tue 17 Nov 2026 13:02)"
 inline constexpr char kWhenClose[] = ")";
+// The cumulative summary's section titles (lane RB-C3), in section order, and its device lines.
+inline constexpr char kFacts[] = "Facts and standing preferences:";
+inline constexpr char kDecisions[] = "Decisions:";
+inline constexpr char kQuantities[] = "Quantities and dates as stated:";
+inline constexpr char kOpen[] = "Open items:";
+inline constexpr char kFiles[] = "Files changed:";
+inline constexpr char kArchived[] = "Older lines of this summary were archived; search finds what was said.";
+inline constexpr char kNothingYet[] = "Nothing to keep yet.";
 }  // namespace digest_text
 
 struct DigestEntry {
@@ -87,8 +95,117 @@ struct RecentFile {
   uint64_t lastWrite = 0;   // epoch seconds; 0 = not known
 };
 
-// The block cap of a profile: tight 2,048, lean 4,096, standard and wide 6,144 B.
+// The block cap of a profile: tight 2,048, lean 4,096, standard and wide 6,144 B (day digests only;
+// the cumulative summary has its own budget, the summary setting, and its hard cap kSummaryMaxBytes).
 uint32_t blockCapFor(Profile profile);
+
+// ---- the cumulative summary (owner rulings 105 and 106; lane RB-C3) -----------------------------
+// After a compaction the request carries ONE cumulative structured summary of everything before thru.
+// It is stored as an s item like a day digest; its text is several lines and always ends with '\n'
+// (a day digest is one clean line and never does), so the two are told apart by the text alone:
+//
+//   Facts and standing preferences:
+//   F1 <one line>
+//   Decisions:
+//   D2 <one line>
+//   Quantities and dates as stated:
+//   Q3 <one line>
+//   Open items:
+//   O4 <one line>
+//   Files changed:
+//   P5 notes/boat.md (Tue 17 Nov 2026 13:02)
+//   Older lines of this summary were archived; search finds what was said.
+//
+// A section with no line is left out; an empty summary is kNothingYet. Ids are a letter (the section)
+// and a number unique in the summary. A compaction UPDATES it: the summarizer answers changes only
+// (parseSummaryEdits: "+F text" adds, "=Q3 text" replaces, "-O4" drops, "=" changes nothing) and code
+// applies them (applySummaryEdits), so a line no change names stays byte for byte and the summary is
+// never rebuilt from nothing. Files lines are the device's (noteSummaryFile), never the model's. Over
+// its budget, fitSummary moves lines out by section share, oldest first. Every line that leaves
+// (dropped, replaced, over budget) goes to the chat's month archive (archiveSummaryLines) with its day.
+enum class SummarySection : uint8_t { Facts = 0, Decisions = 1, Quantities = 2, Open = 3, Files = 4 };
+inline constexpr size_t kSummarySections = 5;
+// The share of the budget each section keeps before it loses lines to the others (percent).
+inline constexpr uint32_t kSummaryShare[kSummarySections] = {30, 20, 25, 15, 10};
+inline constexpr uint32_t kSummaryLineMaxBytes = 400;   // one line's text (its id not counted)
+// The hard ceiling of a stored summary whatever the setting (8,000 tokens at 4 B a token): a
+// summary over it is not valid, and the block never shows more.
+inline constexpr uint32_t kSummaryMaxBytes = 32768;
+
+struct SummaryLine {
+  SummarySection section = SummarySection::Facts;
+  uint32_t id = 0;
+  std::string text;      // one clean line, at most kSummaryLineMaxBytes
+};
+struct Summary {
+  std::vector<SummaryLine> lines;   // section order; oldest first inside a section
+  bool archived = false;            // some line has left for the archive
+  uint32_t nextId() const;          // one more than the highest id (1 when empty)
+};
+char summaryLetter(SummarySection s);   // 'F', 'D', 'Q', 'O', 'P'
+// Is `text` a stored cumulative summary (several lines ending with '\n')?
+bool isSummaryText(const std::string& text);
+// The stored text (ends with '\n'). InvalidArgument for a line that is not one clean line under
+// kSummaryLineMaxBytes, an id 0 or used twice, lines out of section order, or a text over
+// kSummaryMaxBytes.
+Status encodeSummary(const Summary& s, std::string& out);
+// Back from encodeSummary's text. InvalidArgument for anything encodeSummary does not write.
+Status parseSummary(const std::string& text, Summary& out);
+// One line of summary text from what a model wrote: one line (oneLine's rule), cut to `cap` at a
+// sentence end, else a space, else a whole character. Empty when nothing visible is left.
+std::string summaryLineText(const std::string& raw, size_t cap);
+
+enum class SummaryOp : uint8_t { Add = 0, Replace = 1, Drop = 2 };
+struct SummaryEdit {
+  SummaryOp op = SummaryOp::Add;
+  SummarySection section = SummarySection::Facts;   // Add: the section; Replace and Drop: the id's letter
+  uint32_t id = 0;                                  // Replace and Drop
+  std::string text;                                 // Add and Replace: as written (applySummaryEdits cleans it)
+  uint32_t named = 0;      // Add: the number right after the letter when a separator follows ("+F1 text"); 0: none
+  uint8_t namedLen = 0;    // Add: that number and its ':' at the head of `text` (left out only for a numbered answer)
+};
+struct SummaryEdits {
+  std::vector<SummaryEdit> edits;
+  size_t unread = 0;     // lines that are no change (prose, a rewrite, a Files line, an unknown op)
+  bool none = false;     // the answer says "=": nothing to change
+  size_t numbered = 0;   // adds whose numbers were read as the answer's own numbering and left out
+  // Lines that repeat a line of the summary's own frame and hold no fact (lane E2-FIX9): a section title
+  // or a device line, alone, with or without one leading change sign or its ':' ("=Facts and standing
+  // preferences:", the shape a summarizer writes for "nothing to change" when the summary follows the
+  // prompt's last "="). Neither a change nor unread: they name no line, so they change nothing.
+  size_t frame = 0;
+  // The answer is taken: some change, or "=", or only frame lines (nothing unread). Anything else (prose,
+  // a rewrite) is never taken as the summary.
+  bool taken() const { return !edits.empty() || none || (frame && !unread); }
+};
+// The summarizer's answer as changes, one per line: "+F <text>", "+D", "+Q", "+O" add; "=Q3 <text>"
+// replaces; "-O4" drops; "=" alone: nothing. Leading spaces and a '*' bullet are skipped, letters may
+// be lower case. Digits right after an add's letter are its text ("+Q12 eggs", "+F2026-11-04 ..."), except
+// in an answer that numbers all its adds from 1 ("+F1 a", "+F2 b", "+D1 c"; lane E2-CMP's probes): there the
+// number and its separator are left out and counted in `numbered` (lane E2-FIX7).
+// A line of the summary's frame (a title, kArchived, kNothingYet) is counted in `frame` and changes nothing.
+// Never fails: what it cannot read is counted in `unread`.
+SummaryEdits parseSummaryEdits(const std::string& answer);
+// Apply `edits` in order. An add appends a new line (a text already in its section is not added
+// twice); a replace keeps the id and puts the old line in `left`; a drop moves the line to `left`. An
+// edit naming no line, a Files line, or an empty text counts in `unread`. `frame`, when set, wraps every
+// new text (the slice read outside content): frame(text) is the stored text, cleaned first.
+using SummaryFrame = std::string (*)(const std::string& clean);
+Status applySummaryEdits(Summary& s, const std::vector<SummaryEdit>& edits, SummaryFrame frame,
+                         std::vector<SummaryLine>& left, size_t& unread);
+// The device's Files line for `path` changed at `when` (photoWhen text, may be empty): the path's
+// line is replaced (moved to the section's end) or added; `deleted` drops it. The old line goes to
+// `left`. A path that is not one clean line under kRecentPathMaxBytes is ignored.
+void noteSummaryFile(Summary& s, const std::string& path, const std::string& when, bool deleted,
+                     std::vector<SummaryLine>& left);
+// Fit the encoded summary under `capBytes`: while over, the section furthest over its share
+// (bytes / kSummaryShare) loses its oldest line to `left`, and `archived` is set.
+Status fitSummary(Summary& s, size_t capBytes, std::vector<SummaryLine>& left);
+// Append each line that left to the chat's archive file of the month of `day`, as
+// "<day header>: <id> <text>" (archiveDigest's rule: once, a torn tail healed). Io at the first
+// refusal (the lines after it are not written).
+Status archiveSummaryLines(TxFiles& files, const std::string& chatKey, const std::string& day,
+                           const std::vector<SummaryLine>& left);
 
 // "Tue 17 Nov 2026" for a valid "YYYY-MM-DD" (InvalidArgument otherwise).
 Status dayHeader(const std::string& day, std::string& out);

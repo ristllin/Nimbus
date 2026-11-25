@@ -97,6 +97,7 @@ static ApplyDeps makeDeps(Rec& r, bool tts = false, bool withSinks = true) {
   d.providerHasKey = [](const std::string& p) { return p != "keyless"; };
   d.setOrchHostModel = [&r](const std::string& p, const std::string& m) {
     r.hostModelSet.push_back({p, m});
+    return true;
   };
   d.setModelMemory = [](const std::string&, const std::string&) { return false; };
   d.syncMemEcho = [] {};

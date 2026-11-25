@@ -11,7 +11,9 @@ This gate owns the CANONICAL config table (CONFIG_TABLE below) and asserts that
 EVERY source that maps a supported hardware config to an image agrees with it:
 
   * the web installer variant list          website/src/pages/flash.jsx
-  * the release build + naming + manifest    .github/workflows/release.yml
+  * the release build + naming + manifest    tools/release/variants.json, through the plan
+                                             .github/workflows/release.yml runs (it names
+                                             no variant itself)
   * the web-flash image/manifest builder     tools/release/make_webflash_manifest.py
   * the typed device-type slugs + families   lib/core/include/nimbus/ota/ota_logic.h
                                              lib/core/src/ota_logic.cpp
@@ -116,44 +118,49 @@ def parse_flash_variants(jsx: str) -> "list[str]":
     return re.findall(r"slug:\s*'([^']+)'", block.group(1))
 
 
-def parse_release_yml(yml: str) -> dict:
-    """Extract the release build's config->image and config->env wiring.
+def _load_publish_candidate():
+    """tools/release/publish_candidate.py: the plan release.yml runs (tools/release has no package)."""
+    sys.path.insert(0, os.path.join(ROOT, "tools", "release"))
+    import publish_candidate  # noqa: PLC0415
+
+    return publish_candidate
+
+
+def parse_release_yml(yml: str, table: "dict | None" = None) -> dict:
+    """The release build's config->image and config->env wiring, as release.yml runs it.
+
+    release.yml names no variant itself: its "Release plan" step runs
+    tools/release/publish_candidate.py plan, which renders every list from
+    tools/release/variants.json. So the wiring is read from the plan of a stable tag (a tag with
+    no candidate entry), and the workflow text is checked for the plan step and for any variant
+    literal left in it.
 
     Returns dict with:
-      built_envs   - envs passed to `pio run -e`
-      image_of_env - {env: image} from the `cp .pio/build/<env>/firmware.bin <image>` lines
-      manifest_pairs - {type: image} from the make_manifest `type=image` args
-      webflash_dir_of_type - {type: env} from the webflash `case "$v"` arms
-      webflash_lists - list of the `for v in ...` variant lists (must all agree)
+      built_envs   - envs the release builds (`pio run -e`)
+      image_of_env - {env: image} (the `cp .pio/build/<env>/firmware.bin <image>` copies)
+      manifest_pairs - {type: image} (the make_manifest `type=image` args)
+      webflash_dir_of_type - {type: env} (the web-flash build dirs)
+      webflash_lists - the web-flash variant lists (build and publish read one list)
+      published_assets - the images in the publish step's `files:`
+      runs_plan    - release.yml runs the plan into $GITHUB_ENV
+      literals     - every type, env, image or releases-repository name release.yml still spells out
     """
-    built = re.search(r"pio run((?:\s+-e\s+[\w-]+)+)", yml)
-    built_envs = re.findall(r"-e\s+([\w-]+)", built.group(1)) if built else []
-
-    image_of_env = {}
-    for env, image in re.findall(r"cp\s+\.pio/build/([\w-]+)/firmware\.bin\s+([\w.\-]+\.bin)", yml):
-        image_of_env[env] = image
-
-    manifest_pairs = dict(re.findall(r"^\s*([a-z0-9-]+)=([\w.\-]+\.bin)\s*\\?\s*$", yml, re.MULTILINE))
-
-    webflash_dir_of_type = {}
-    for slug, env in re.findall(r"([\w-]+)\)\s*dir=\.pio/build/([\w-]+)\s*;;", yml):
-        webflash_dir_of_type[slug] = env
-
-    webflash_lists = [m.split() for m in re.findall(r"for v in ([\w\s-]+?);\s*do", yml)]
-
-    # The `files:` publish block lists the OTA assets uploaded to the releases repo as
-    # `Nimbus/firmware-*.bin` (the `cp` targets above are bare names, so the `Nimbus/`
-    # prefix uniquely identifies the publish list). A device fetches these by URL from
-    # the manifest, so a config whose image is not uploaded here OTA-404s.
-    published_assets = re.findall(r"Nimbus/(firmware-[\w.\-]+\.bin)", yml)
-
+    pc = _load_publish_candidate()
+    plan = pc.make_plan(table if table is not None else pc.load_table(), "", pc.SOURCE_REPO)  # no candidate tag
+    rows = plan.rows
+    web = plan.webflash_rows
+    names = {getattr(r, k) for r in rows for k in ("type", "env", "image")}
+    names |= {getattr(c, k) for c in CONFIG_TABLE for k in ("type_slug", "env", "ota_image")}
+    names |= {pc.PUBLIC_RELEASES_REPO, plan.releases_repo}  # the fork guard reads the repo from the table
     return {
-        "built_envs": built_envs,
-        "image_of_env": image_of_env,
-        "manifest_pairs": manifest_pairs,
-        "webflash_dir_of_type": webflash_dir_of_type,
-        "webflash_lists": webflash_lists,
-        "published_assets": published_assets,
+        "built_envs": [r.env for r in rows],
+        "image_of_env": {r.env: r.image for r in rows},
+        "manifest_pairs": {r.type: r.image for r in rows},
+        "webflash_dir_of_type": {r.type: r.env for r in web},
+        "webflash_lists": [[r.type for r in web]] if web else [],
+        "published_assets": [r.image for r in rows],
+        "runs_plan": bool(re.search(r"publish_candidate\.py plan [^\n]*--github-env=\"\$\{GITHUB_ENV\}\"", yml)),
+        "literals": sorted(n for n in names if re.search(rf"(?<![\w.-]){re.escape(n)}(?![\w-])", yml)),
     }
 
 
@@ -308,15 +315,18 @@ def _check_slug_sets(table, flash_variants, rel, web, hdr_slugs, errs):
     cmp("flash.jsx VARIANTS", flash_variants)
     cmp("make_webflash_manifest KNOWN_VARIANTS", web["known"])
     cmp("ota_logic.h kType slugs", hdr_slugs)
-    cmp("release.yml manifest pairs", list(rel["manifest_pairs"].keys()))
-    cmp("release.yml webflash case arms", list(rel["webflash_dir_of_type"].keys()))
+    cmp("release plan manifest pairs", list(rel["manifest_pairs"].keys()))
+    cmp("release plan web-flash rows", list(rel["webflash_dir_of_type"].keys()))
     if not rel["webflash_lists"]:
-        # Fail closed: the `for v in ...` loops drive which per-variant web-flash images
-        # are built and pushed to the webflash branch. If the parser matched none (a
-        # reformat), do not skip the check silently.
-        errs.append("release.yml: no `for v in ...` web-flash variant loop parsed (reformatted?)")
+        # Fail closed: the web-flash list drives which per-variant web-flash images are
+        # built and pushed to the webflash branch. A table with none is a missing mapping.
+        errs.append("release plan: no web-flash variant list (tools/release/variants.json webflash)")
     for lst in rel["webflash_lists"]:
-        cmp("release.yml `for v in` list", lst)
+        cmp("release plan web-flash list", lst)
+    if not rel["runs_plan"]:
+        errs.append("release.yml: does not run tools/release/publish_candidate.py plan into $GITHUB_ENV")
+    if rel["literals"]:
+        errs.append(f"release.yml: names variants itself {rel['literals']} (read them from the plan)")
 
 
 def _check_one_config(c, rel, envs, errs):
@@ -331,10 +341,10 @@ def _check_one_config(c, rel, envs, errs):
         )
     if rel["image_of_env"].get(c.env) != c.ota_image:
         errs.append(
-            f"{c.type_slug}: release `cp` for env {c.env} produces {rel['image_of_env'].get(c.env)!r} != table image {c.ota_image!r}"
+            f"{c.type_slug}: release copy for env {c.env} produces {rel['image_of_env'].get(c.env)!r} != table image {c.ota_image!r}"
         )
     if c.env not in rel["built_envs"]:
-        errs.append(f"{c.type_slug}: env {c.env} is not built by the release `pio run -e` step")
+        errs.append(f"{c.type_slug}: env {c.env} is not built by the release plan")
     if c.ota_image not in rel["published_assets"]:
         errs.append(
             f"{c.type_slug}: image {c.ota_image!r} is not in the release `files:` publish list (device OTA would 404)"
@@ -428,7 +438,11 @@ def run(table: "tuple[Config, ...]" = CONFIG_TABLE) -> "tuple[bool, list[str]]":
 
 def main(argv: "list[str] | None" = None) -> int:
     print("RELEASE GATE - hardware-config <-> image mapping (CUM-388)")
-    ok, errs = run()
+    try:
+        ok, errs = run()
+    except Exception as e:  # noqa: BLE001 - a malformed table or an unreadable source fails the gate
+        print(f"  FAIL: {type(e).__name__}: {e}")
+        return 1
     for e in errs:
         print(f"  FAIL: {e}")
     if ok:

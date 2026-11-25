@@ -200,23 +200,160 @@ def test_identity_only_scans_a_real_elf(tmp_path):
         assert elf.main(["--elf", elf_path, "--bin", bin_path, "--identity-only"]) == want, name
 
 
-def test_release_workflow_runs_the_full_elf_gate_on_every_shipped_image():
-    """release.yml: every env the release builds is ELF-gated, every variant it signs
-    is among them, and no gate call passes --identity-only (which skips the e-paper
-    and plumbing checks)."""
+def _release_job_run_blocks(text):
+    """{step name: its run: script} for the release job of release.yml (stdlib parser)."""
+    import re
+
+    job = re.search(r"^  release:\n(.*?)(?=^  [A-Za-z0-9_-]+:\s*$)", text, re.M | re.S).group(1)
+    out = {}
+    for chunk in re.split(r"^      - ", job, flags=re.M)[1:]:
+        name = re.search(r"name: (.+)", chunk)
+        run = re.search(r"^        run: \|\n((?:          .*\n|\s*\n)+)", chunk, re.M) or re.search(
+            r"^        run: (.+)\n", chunk, re.M
+        )
+        if name and run:
+            out[name.group(1).strip()] = "\n".join(
+                ln[10:] if ln.startswith(" " * 10) else ln for ln in run.group(1).splitlines()
+            )
+    return out
+
+
+def _executed_commands(text, env_text, tmp_path):
+    """Run the build, ELF-gate and signing steps of release.yml under the $GITHUB_ENV text the plan step
+    writes, every tool stubbed to print its command line; one line list per step."""
+    import subprocess
+
+    env = {"PATH": "/usr/bin:/bin", "GITHUB_REF_NAME": "v5.2.0", "GITHUB_REPOSITORY": "ristllin/Nimbus"}
+    lines = env_text.splitlines()
+    i = 0
+    while i < len(lines):  # KEY=VALUE, or KEY<<DELIM ... DELIM
+        key, sep, value = lines[i].partition("=")
+        if not sep:
+            key, _, delim = lines[i].partition("<<")
+            end = lines.index(delim, i + 1)
+            value, i = "\n".join(lines[i + 1 : end]), end
+        env[key] = value
+        i += 1
+    env["OTA_SIGNING_KEY"] = "stub"
+    stubs = 'for c in python3 pio pip cp xz git; do eval "$c() { echo \\"$c \\$*\\"; }"; done\n'
+    blocks = _release_job_run_blocks(text)
+    out = {}
+    for key, name in (
+        ("build", "Build firmware (every image of the plan)"),
+        ("gate", "Release gate - ELF symbols + identity per variant, stage the ELF archive"),
+        ("sign", "Sign + build typed OTA manifest (schema 2)"),
+    ):
+        script = blocks[name].replace("/tmp/ota_priv.pem", str(tmp_path / "k"))
+        r = subprocess.run(["bash", "-e", "-c", stubs + script], cwd=tmp_path, env=env, capture_output=True, text=True)
+        assert r.returncode == 0, (name, r.stderr)
+        out[key] = r.stdout.splitlines()
+    return out
+
+
+def _expected_from_the_table(tag):
+    """(built envs, signed type=image pairs) read from tools/release/variants.json itself, not from the plan."""
+    import json
+    import pathlib
+
+    t = json.loads((pathlib.Path(elf.REPO) / "tools" / "release" / "variants.json").read_text())
+    images = {r["type"]: r["image"] for r in t["variants"]}
+    rows = t["candidate"]["variants"] if t["candidate"]["tag"] == tag else t["variants"]
+    return {r["env"] for r in rows}, {f"{r['type']}={images[r['type']]}" for r in rows}
+
+
+def _ran(cmds):
+    """(built envs, envs the full ELF gate ran on, signed type=image pairs, a call skipping checks)."""
+    import re
+
+    built = {e for ln in cmds["build"] if ln.startswith("pio run") for e in re.findall(r"-e (\S+)", ln)}
+    full = set(re.findall(r"check_elf_symbols\.py --elf \.pio/build/([^/]+)/", "\n".join(cmds["gate"])))
+    signed = {w for ln in cmds["sign"] if "make_manifest.py" in ln for w in ln.split() if "=firmware-" in w}
+    return built, full, signed, any("--identity-only" in ln for ln in cmds["gate"])
+
+
+def workflow_gate_errors(text, tmp_path):
+    """Every image the release builds and signs passed the full ELF gate (no --identity-only), each
+    list read from the one plan step; the expectation is built from variants.json directly."""
+    import pathlib
+    import re
+    import sys
+
+    sys.path.insert(0, str(pathlib.Path(elf.REPO) / "tools" / "release"))
+    import publish_candidate as pc
+
+    errs = []
+    blocks = _release_job_run_blocks(text)
+    lists = r"REL_(ENVS|GATES|MANIFEST_PAIRS)\s*=|publish_candidate\.py plan"
+    writers = [n for n, b in blocks.items() if re.search(lists, b)]
+    if writers != ["Release plan (tools/release/variants.json)"]:
+        errs.append(f"the build, gate and signing lists must come from the one plan step, written by {writers}")
+    want_envs, want_pairs = _expected_from_the_table("v5.2.0")
+    env_text = pc.make_plan(pc.load_table(), "v5.2.0", pc.SOURCE_REPO).env_text()
+    built, full, signed, skips = _ran(_executed_commands(text, env_text, tmp_path))
+    for what, got, want in (
+        ("built", built, want_envs),
+        ("full ELF gate ran on", full, want_envs),
+        ("signed", signed, want_pairs),
+    ):
+        if got != want:
+            errs.append(f"{what} {sorted(got)}, the table ships {sorted(want)}")
+    if skips:
+        errs.append("an ELF gate call skips checks (--identity-only)")
+    return errs
+
+
+def test_release_workflow_runs_the_full_elf_gate_on_every_shipped_image(tmp_path):
+    """release.yml: every env the release builds passed the full ELF gate, every variant it signs is
+    among them, and no gate call passes --identity-only (which skips the e-paper and plumbing checks).
+    The workflow's steps are executed with every tool stubbed and compared with variants.json."""
+    import pathlib
+
+    text = (pathlib.Path(elf.REPO) / ".github" / "workflows" / "release.yml").read_text()
+    assert workflow_gate_errors(text, tmp_path) == []
+
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "old,new",
+    [
+        ('read -r -a pairs <<< "$REL_MANIFEST_PAIRS"', 'read -r -a pairs <<< "$REL_WEBFLASH"'),
+        (
+            'IFS=: read -r v env dram engine <<< "$g"\n',
+            'IFS=: read -r v env dram engine <<< "$g"\n            [ "$v" = freenove-35 ] && continue\n',
+        ),
+        ('read -r -a gates <<< "$REL_GATES"', 'REL_GATES="${REL_GATES% *}"; read -r -a gates <<< "$REL_GATES"'),
+        ('pio run "${pio_args[@]}"', 'pio run "${pio_args[@]}" -e esp32s3-cyd-e2'),
+        ("--variant \"$v\" --sha-out", "--identity-only --variant \"$v\" --sha-out"),
+    ],
+)
+def test_the_full_elf_gate_check_catches_a_skipped_or_rerouted_list(tmp_path, old, new):
+    import pathlib
+
+    text = (pathlib.Path(elf.REPO) / ".github" / "workflows" / "release.yml").read_text()
+    assert text.count(old) == 1, old
+    assert workflow_gate_errors(text.replace(old, new), tmp_path) != []
+
+
+def test_release_workflow_builds_and_gates_the_plan_lists():
+    """The workflow half of the rule above: the build reads REL_ENVS, the gate loop reads
+    REL_GATES, calls the full ELF gate and adds --engine1-absent, and no call skips checks."""
     import pathlib
     import re
 
     text = (pathlib.Path(elf.REPO) / ".github" / "workflows" / "release.yml").read_text()
-    build = re.search(r"^\s*pio run((?: -e \S+)+)\s*$", text, re.M)
-    assert build, "the release build line (pio run -e ...) moved: update this test"
-    built = set(re.findall(r"-e (\S+)", build.group(1)))
-    loop = re.search(r"for pair in ([^;]+); do\n(?P<body>.*?)\n\s*done", text, re.S)
+    assert re.search(
+        r'^\s*read -r -a envs <<< "\$REL_ENVS"\n(?:.*\n){0,2}\s*pio run "\$\{pio_args\[@\]\}"\s*$', text, re.M
+    ), "the release build (pio run over REL_ENVS) moved: update this test"
+    loop = re.search(
+        r'read -r -a gates <<< "\$REL_GATES"\n\s*for g in "\$\{gates\[@\]\}"; do\n(?P<body>.*?)\n\s*done', text, re.S
+    )
     assert loop and "check_elf_symbols.py" in loop.group("body"), "the per-variant ELF gate loop moved"
-    pairs = dict(pair.split(":") for pair in loop.group(1).split())
-    assert set(pairs.values()) == built, f"built {sorted(built)} but ELF-gated {sorted(pairs.values())}"
-    signed = set(re.findall(r"^\s*([a-z0-9-]+)=firmware-[a-z0-9-]+\.bin", text, re.M))
-    assert signed and signed <= set(pairs), f"signed variants {sorted(signed)} not all ELF-gated"
+    assert re.search(
+        r'if \[ "\$engine" = 2 \]; then\n\s*python3 tools/release_gate/check_elf_symbols\.py --engine1-absent --elf "\.pio/build/\$env/firmware\.elf"\n\s*fi',
+        loop.group("body"),
+    ), "an engine-2 image must also get --engine1-absent"
     commands = re.sub(r"\\\n\s*", " ", text).splitlines()  # one line per shell command
     calls = [ln for ln in commands if "check_elf_symbols.py" in ln and not ln.lstrip().startswith("#")]
     assert calls, "no ELF gate call in release.yml"

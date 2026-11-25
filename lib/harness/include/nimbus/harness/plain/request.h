@@ -6,6 +6,7 @@
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/harness/plain/turn.h"
 #include "nimbus/harness/plain/wire.h"
+#include "nimbus/orch/tx/rules.h"   // BoundTools (E2-FIX5)
 
 namespace nimbus {
 namespace orch {
@@ -45,6 +46,7 @@ struct RequestFacts {
   std::string skillsIndex;     // one line per approved skill, newest used first
   std::string digestBlock;     // tx::digestBlock
   std::string recentFiles;     // tx::recentFilesList
+  std::vector<std::string> toolServersWaiting;   // the owner's tool servers not yet approved (owner's turn only)
   std::string timeZone;        // IANA name ("Europe/London"); "" when not set
   bool admin = false;          // the person is the owner
   bool shortHost = false;      // the head host answers within 60 s (write_file 4,096 B)
@@ -64,6 +66,9 @@ Status composeSystem(const RequestFacts& facts, SystemBlocks& out);
 // kToolsBytesCeiling, or when an allocation is refused (`out` is left empty: no partial
 // array is ever sent).
 Status toolManifest(const RequestFacts& facts, std::vector<ToolSpec>& out);
+// Lane E2-FIX5: the tools a stub, an omission line or an import note may name: `search` and `view`
+// when the registry holds a tool of that name (none without a registry).
+nimbus::orch::tx::BoundTools boundTools(const nimbus::orch::ToolRegistry* reg);
 
 // The declaration of an always-on tool (description and schema as the manifest shows
 // them) or of a tool declared here for its group behind more (kBehindMore), or nullptr. A

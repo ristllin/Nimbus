@@ -78,11 +78,12 @@ struct ProviderBudget {
   // own in/out rates are both set, so a ledger from before the upgrade keeps its
   // numbers to the cent.
   uint64_t estCents() const {
+    const uint64_t w1h = cacheWrite1h < cacheWrite ? cacheWrite1h : cacheWrite;   // never wraps (E2-FIX6)
     return tokensIn * centsPerMIn / 1000000ULL +
            tokensOut * centsPerMOut / 1000000ULL +
            cacheRead * centsPerMIn / 10000000ULL +          // 0.1x input rate
-           (cacheWrite - cacheWrite1h) * centsPerMIn * 5ULL / 4000000ULL +  // 1.25x
-           cacheWrite1h * centsPerMIn / 500000ULL +         // 2x input rate (R3)
+           (cacheWrite - w1h) * centsPerMIn * 5ULL / 4000000ULL +  // 1.25x
+           w1h * centsPerMIn / 500000ULL +         // 2x input rate (R3)
            (uint64_t)calls * centsPerKCalls / 1000ULL;
   }
 };
@@ -548,6 +549,7 @@ struct DayUsage {
   uint32_t    calls = 0;
   char        model[kModelKeyCap] = {0};   // "" = unattributed (or recorded before 2026-10)
   uint64_t    cacheR = 0, cacheW = 0;
+  uint64_t    cacheW1h = 0;   // the 1-hour-TTL part of cacheW (2x input; lane E2-FIX6)
 };
 
 class UsageHistory {

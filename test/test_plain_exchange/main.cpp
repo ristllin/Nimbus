@@ -7,8 +7,11 @@
 #include <unity.h>
 
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <initializer_list>
 #include <string>
 #include <vector>
 
@@ -17,7 +20,10 @@
 #include "../support/scripted_provider/scripted_provider.h"
 #include "nimbus/harness/platform.h"
 #include "nimbus/harness/plain/exchange.h"
+#include "nimbus/harness/plain/route.h"
+#include "nimbus/orch/psram_alloc.h"
 #include "nimbus/orch/wire_limits.h"
+#include "nimbus/tg_html.h"
 #include "nimbus/utf8.h"
 
 namespace sp = harness_test::scripted;
@@ -92,6 +98,7 @@ struct TestWire : plain::WireCodec {
     }
     const std::string stop = doc["stop_reason"] | "";
     out.stop = stop == "max_tokens" ? plain::StopReason::MaxTokens
+               : stop == "model_context_window_exceeded" ? plain::StopReason::Context
                : stop == "tool_use" ? plain::StopReason::ToolUse
                : stop == "refusal"  ? plain::StopReason::Refusal
                                     : plain::StopReason::EndTurn;
@@ -436,6 +443,38 @@ static void test_inputs_are_checked() {
   TEST_ASSERT_EQUAL(0, (int)rig.model.requests().size() + (int)rig2.model.requests().size());
 }
 
+// Lane E2-STACK2: the exchange's state lives in the working set, not on the stack. When that
+// allocation fails the exchange says so and sends nothing; the state is given back on success.
+static void* gNoMemory(std::size_t) { return nullptr; }
+static int gLive = 0;
+static void* gCounting(std::size_t n) {
+  ++gLive;
+  return std::malloc(n);
+}
+static void gCountingFree(void* p) {
+  if (p) --gLive;
+  std::free(p);
+}
+static void test_the_exchange_state_is_allocated_and_given_back() {
+  Rig rig;
+  rig.model.push(sp::say("It is sunny."));
+  nimbus::orch::setWorkingAllocators(gNoMemory, nullptr);
+  const plain::Status st = rig.run();
+  nimbus::orch::setWorkingAllocators(nullptr, nullptr);
+  TEST_ASSERT_TRUE(st.err == plain::Err::TooLarge);
+  TEST_ASSERT_EQUAL_STRING("plain::runExchange.noMemory", st.where);
+  TEST_ASSERT_EQUAL(0, (int)rig.model.requests().size());
+  Rig ok;
+  ok.model.push(sp::say("It is sunny."));
+  gLive = 0;
+  nimbus::orch::setWorkingAllocators(gCounting, gCountingFree);
+  const plain::Status st2 = ok.run();
+  nimbus::orch::setWorkingAllocators(nullptr, nullptr);
+  expectOk(st2);
+  TEST_ASSERT_EQUAL(0, gLive);
+  TEST_ASSERT_EQUAL_STRING("It is sunny.", ok.out.step.text.c_str());
+}
+
 static void test_a_plain_answer_is_one_request() {
   Rig rig;
   rig.model.push(sp::say("It is sunny."));
@@ -472,6 +511,127 @@ static void test_a_custom_messages_host_sends_an_output_cap() {
   chat.model.push(sp::say("ok"));
   expectOk(chat.run());
   TEST_ASSERT_EQUAL(0, (int)chat.out.maxTokens);
+}
+
+// ---- lane E2-R4a: the route and the pre-flight ---------------------------------------------------------
+
+// A routed Claude head (the router's host, a bare or prefixed selector) is its Anthropic upstream's: a
+// real output cap (before the route every routed Claude request carried 0 and the codec refused it),
+// the deadline header, the router's path and the bearer key.
+static void test_a_routed_claude_head_gets_a_cap_and_the_deadline_header() {
+  for (const char* model : {"claude-sonnet-5-5", "anthropic/claude-sonnet-5-5"}) {
+    Rig r("cumulo", model);
+    r.model.push(sp::say("ok"));
+    expectOk(r.run());
+    TEST_ASSERT_TRUE_MESSAGE(r.out.err == ExchangeErr::None, model);
+    TEST_ASSERT_TRUE_MESSAGE(r.sentMaxTokens(0) > 0, model);
+    uint32_t deadline = 0;
+    for (const auto& h : r.model.requests()[0].req.headers)
+      if (h.first == "x-cumulo-deadline-ms") deadline = (uint32_t)std::atol(h.second.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(deadline > 0 && deadline + 5000 <= 90000, model);   // the routed ceiling less 5 s
+    plain::Route route;
+    expectOk(plain::resolveRoute(r.head, r.turn, route));
+    TEST_ASSERT_EQUAL_STRING("anthropic", route.provider.c_str());
+    TEST_ASSERT_EQUAL_STRING("claude-sonnet-5-5", route.model.c_str());
+    TEST_ASSERT_EQUAL_STRING("/router/anthropic/v1/messages", route.path.c_str());
+    TEST_ASSERT_TRUE(route.auth == nimbus::orch::caps::Auth::Bearer && route.routed && route.bodyCap > 0);
+  }
+  Rig direct;   // a direct head carries no deadline header
+  direct.model.push(sp::say("ok"));
+  expectOk(direct.run());
+  for (const auto& h : direct.model.requests()[0].req.headers) TEST_ASSERT_TRUE(h.first != "x-cumulo-deadline-ms");
+}
+
+// A full window (StopReason::Context) climbs one rung and is sent once more, never cut-retried; full
+// again, or no rung left, the kept answer is delivered as a cut whose calls never run.
+static void test_a_full_window_climbs_one_rung_instead_of_the_cut_retry() {
+  auto full = [] {
+    sp::Step s = sp::call("ledger_write", R"({"day":"2026-11-24"})", "Logging");
+    s.finish = sp::Finish::Context;
+    return s;
+  };
+  Rig climbs;
+  climbs.model.push(full());
+  climbs.model.push(sp::say("done"));
+  expectOk(climbs.run());
+  TEST_ASSERT_TRUE(climbs.out.err == ExchangeErr::None);
+  TEST_ASSERT_EQUAL(2, (int)climbs.model.requests().size());
+  TEST_ASSERT_EQUAL(1, climbs.ladder.refusedAsked);
+  TEST_ASSERT_FALSE(climbs.out.cutRetried);
+  TEST_ASSERT_EQUAL_STRING("done", climbs.out.step.text.c_str());
+  for (int rungs : {3, 0}) {   // full twice; no rung to climb
+    Rig r;
+    r.ladder.maxRungs = rungs;
+    r.model.push(full());
+    r.model.push(full());
+    expectOk(r.run());
+    TEST_ASSERT_TRUE(r.out.err == ExchangeErr::Cut);
+    TEST_ASSERT_EQUAL(rungs ? 2 : 1, (int)r.model.requests().size());
+    TEST_ASSERT_FALSE(r.out.cutRetried);
+    TEST_ASSERT_EQUAL(1, (int)r.out.step.calls.size());
+    TEST_ASSERT_FALSE(r.out.step.calls[0].complete);
+  }
+}
+
+// A caller's read window above the route's is lowered to it; a shorter one stands.
+static void test_a_timeout_above_the_read_window_is_lowered() {
+  for (uint32_t asked : {600000u, 30000u}) {
+    Rig r;
+    r.req.timeoutMs = asked;
+    r.req.deadlineMs = 900000;
+    r.model.push(sp::say("ok"));
+    expectOk(r.run());
+    TEST_ASSERT_EQUAL_UINT32(asked < 120000 ? asked : 120000, r.model.requests()[0].req.timeoutMs);
+  }
+}
+
+// A 400 that names a refused optional field is resent once without it, and the pre-flight records what
+// it left out; the boot's memory keeps the next exchange from asking again.
+static void test_a_refused_field_is_resent_once_without_it() {
+  const char* refused =
+      R"({"type":"error","error":{"type":"invalid_request_error","message":"Unsupported parameter: 'effort' is not supported with this model."}})";
+  nimbus::orch::caps::RefusedFields mem;
+  Rig r;
+  r.model.push(sp::raw(400, refused));
+  r.model.push(sp::say("ok"));
+  plain::ExchangeDeps deps;
+  deps.transport = &r.model;
+  deps.platform = &gPlatform;
+  deps.refused = &mem;
+  expectOk(plain::runExchange(deps, r.req, r.out));
+  TEST_ASSERT_TRUE(r.out.err == ExchangeErr::None);
+  TEST_ASSERT_EQUAL(2, (int)r.model.requests().size());
+  TEST_ASSERT_TRUE(r.model.requests()[0].body.find("\"effort\"") != std::string::npos);
+  TEST_ASSERT_TRUE(r.model.requests()[1].body.find("\"effort\"") == std::string::npos);
+  TEST_ASSERT_EQUAL(plain::dropped::kEffort, r.out.dropped);
+  TEST_ASSERT_EQUAL(plain::dropped::kEffort, r.out.ref.dropped);
+  Rig again;   // the same refusal twice is one resend, never a loop
+  for (int i = 0; i < 3; ++i) again.model.push(sp::raw(400, refused));
+  expectOk(again.run());
+  TEST_ASSERT_EQUAL(2, (int)again.model.requests().size());
+  TEST_ASSERT_TRUE(again.out.err == ExchangeErr::Other);
+}
+
+// No codec is asked for an output cap of 0 on a row that requires one; a caller's ceiling clamps it.
+static void test_a_required_cap_is_never_zero_and_a_ceiling_clamps_it() {
+  plain::Route route;
+  Rig r;
+  expectOk(plain::resolveRoute(r.head, r.turn, route));
+  plain::PreflightState own;
+  plain::RenderInput in = r.in;
+  in.maxTokens = 0;
+  TEST_ASSERT_EQUAL(0, plain::preflight(route, 0, own, in));
+  TEST_ASSERT_TRUE(in.maxTokens > 0);
+  TEST_ASSERT_TRUE(in.route == &route);
+  in = r.in;
+  in.maxTokens = 32000;
+  TEST_ASSERT_EQUAL(plain::dropped::kCapClamped, plain::preflight(route, 4096, own, in));
+  TEST_ASSERT_EQUAL_UINT32(4096, in.maxTokens);
+  Rig ceiling;
+  ceiling.req.capCeiling = 4096;
+  ceiling.model.push(sp::say("ok"));
+  expectOk(ceiling.run());
+  TEST_ASSERT_EQUAL_UINT32(4096, ceiling.sentMaxTokens(0));
 }
 
 static void test_the_output_cap_fits_the_body_and_the_time() {
@@ -632,6 +792,51 @@ static void test_a_key_or_billing_refusal_parks_and_is_never_retried() {
     TEST_ASSERT_EQUAL(c.first, rig.out.httpStatus);
     expectOnePlainLine(rig.out);
   }
+}
+
+// The router's error order (lane E2-R5, ROUTER-DESIGN.md section 9) reaches the exchange with
+// the head's own marker rows: billing words in a code field park before 429, an error object in
+// a 2xx is retried as the provider's class, a refusal or unknown model is never retried, and the
+// router reasons engine 1 lacks are read from the cloud contract.
+static void test_the_provider_markers_decide_the_class() {
+  struct Case {
+    const char* host;
+    const char* model;
+    int status;
+    const char* body;
+    ExchangeErr err;
+    int sent;
+  };
+  const Case cases[] = {
+      {"openai", "gpt-5.6-sol", 429, R"({"error":{"message":"Project spend limit exceeded.","code":"project_spend_limit_exceeded"}})",
+       ExchangeErr::KeyRefused, 1},
+      {"anthropic", "claude-sonnet-5-5", 200, R"({"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}})",
+       ExchangeErr::Server, 3},
+      {"openai", "gpt-0.0-nope", 404, R"({"error":{"message":"The model does not exist","code":"model_not_found"}})",
+       ExchangeErr::Other, 1},
+      // Lane E2-R4a: a provider's refusal code is the model's refusal answer (nothing to run).
+      {"zai", "glm-5.3-flash", 400, R"({"error":{"code":"1301","message":"unsafe or sensitive content"}})",
+       ExchangeErr::None, 1},
+      {"zai", "glm-5.3-flash", 429, R"({"error":{"code":"1113","message":"Your account is in arrears"}})",
+       ExchangeErr::KeyRefused, 1},
+  };
+  for (const Case& c : cases) {
+    Rig rig(c.host, c.model);
+    for (int i = 0; i < 3; ++i) rig.model.push(sp::raw(c.status, c.body));
+    expectOk(rig.run());
+    TEST_ASSERT_TRUE_MESSAGE(rig.out.err == c.err, c.body);
+    TEST_ASSERT_EQUAL_MESSAGE(c.sent, (int)rig.model.requests().size(), c.body);
+    const bool refusal = c.err == ExchangeErr::None;
+    TEST_ASSERT_TRUE_MESSAGE(!refusal || (rig.out.step.stop == plain::StopReason::Refusal && rig.out.step.calls.empty() &&
+                                          rig.out.step.refusal == "unsafe or sensitive content"),
+                             c.body);
+    // An unknown model is marked unusable for the caller (lane E2-R4a).
+    TEST_ASSERT_EQUAL_MESSAGE(c.status == 404, rig.out.modelUnusable, c.body);
+  }
+  TEST_ASSERT_TRUE(plain::classifyAnswer(413, R"({"reason":"large_body_busy","retryable":true,"retryAfterMs":2000})",
+                                         true) == ExchangeErr::RateLimited);
+  TEST_ASSERT_TRUE(plain::classifyAnswer(504, R"({"reason":"deadline_too_short","retryable":false})", true) ==
+                   ExchangeErr::Other);
 }
 
 // A refused file reference (an expired or unknown photo id, lane RB-W1b): the caller forgets it
@@ -956,6 +1161,315 @@ static void test_every_error_class_has_one_plain_line() {
   TEST_ASSERT_TRUE(plain::exchangeLine(ExchangeErr::None, "anthropic", 200).empty());
 }
 
+// Lane E2-FIX11: a refusal's line carries the provider's own reason (the person cannot act on "HTTP 400"
+// alone), bounded, on one line, and never a key. One class test over the provider's known error types.
+static std::string anthropicError(const char* type, const std::string& message) {
+  JsonDocument d;
+  d["type"] = "error";
+  d["error"]["type"] = type;
+  d["error"]["message"] = message;
+  std::string out;
+  serializeJson(d, out);
+  return out;
+}
+
+static std::string refusedLine(int status, const std::string& body) {
+  Rig rig;
+  for (int i = 0; i < 8; ++i) rig.model.push(sp::httpError(status, body));
+  expectOk(rig.run());
+  TEST_ASSERT_TRUE(rig.out.err != ExchangeErr::None);
+  expectOnePlainLine(rig.out);
+  const std::string& l = rig.out.errorLine;
+  TEST_ASSERT_TRUE_MESSAGE(l.size() <= 60 + 160, l.c_str());   // the status words, and a reason of at most 160 bytes
+  TEST_ASSERT_TRUE_MESSAGE(l.find(" sk-") == std::string::npos, l.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(l.find("test-key") == std::string::npos, l.c_str());
+  for (unsigned char c : l) TEST_ASSERT_TRUE_MESSAGE(c >= 0x20 && c < 0x7f, l.c_str());   // printable ASCII only
+  // What may be kept is the line without the provider's words (F4).
+  TEST_ASSERT_EQUAL_STRING(plain::exchangeLine(rig.out.err, "anthropic", rig.out.httpStatus).c_str(), rig.out.errorLineStored.c_str());
+  return l;
+}
+
+static const char* const kRefused400 = "No reply: Anthropic refused the request (HTTP 400).";
+
+static std::string reasonLine(const std::string& reason) {
+  return std::string("No reply: Anthropic refused the request (HTTP 400): ") + reason;
+}
+
+static void test_a_refusal_line_names_the_providers_reason() {
+  const char* limit = "You have reached your specified API usage limits. You will regain access on 2026-12-01 at 00:00 UTC.";
+  TEST_ASSERT_EQUAL_STRING(reasonLine(limit).c_str(), refusedLine(400, anthropicError("invalid_request_error", limit)).c_str());
+  // The other known types: each line stays true for its class and carries no key.
+  const std::string auth = refusedLine(401, anthropicError("authentication_error", "invalid x-api-key"));
+  TEST_ASSERT_TRUE(auth.find("refused the key") != std::string::npos);
+  const std::string perm = refusedLine(403, anthropicError("permission_error", "Your API key does not have permission."));
+  TEST_ASSERT_TRUE(perm.find("refused the key") != std::string::npos);
+  const std::string rate = refusedLine(429, anthropicError("rate_limit_error", "Number of request tokens has exceeded."));
+  TEST_ASSERT_TRUE(rate.find("limiting requests") != std::string::npos);
+  const std::string over = refusedLine(529, anthropicError("overloaded_error", "Overloaded"));
+  TEST_ASSERT_TRUE(over.find("server error") != std::string::npos);
+  // No readable message: the line is what it was.
+  TEST_ASSERT_EQUAL_STRING(kRefused400, refusedLine(400, "<html>Bad Request</html>").c_str());
+  TEST_ASSERT_EQUAL_STRING(kRefused400, refusedLine(400, "{}").c_str());
+  TEST_ASSERT_TRUE(plain::refusalReason("").empty());   // an empty body names nothing
+  TEST_ASSERT_TRUE(plain::refusalReason(std::string(20000, ' ')).empty());
+  // A 5,000-byte message is cut to 160 bytes with the cut marker (each two-byte character is one '?').
+  std::string wide;
+  for (int i = 0; i < 2500; ++i) wide += "\xC3\xA9";
+  const std::string big = refusedLine(400, anthropicError("invalid_request_error", wide));
+  TEST_ASSERT_EQUAL_STRING(reasonLine(std::string(157, '?') + "...").c_str(), big.c_str());
+  const std::string longAscii = refusedLine(400, anthropicError("invalid_request_error", std::string(5000, 'a') + " b"));
+  TEST_ASSERT_TRUE_MESSAGE(longAscii == kRefused400, longAscii.c_str());   // a 5,000-letter word reads as a token
+  std::string words;
+  while (words.size() < 5000) words += "word ";
+  const std::string longWords = refusedLine(400, anthropicError("invalid_request_error", words));
+  TEST_ASSERT_EQUAL_MESSAGE(52 + 160, (int)longWords.size(), longWords.c_str());   // 157 bytes, then "..."
+  TEST_ASSERT_TRUE(longWords.compare(longWords.size() - 5, 5, "wo...") == 0);
+  // Control characters become single spaces: one line.
+  const std::string ctl = refusedLine(400, anthropicError("invalid_request_error", "first\nsecond\r\n\tthird\x01 end"));
+  TEST_ASSERT_EQUAL_STRING(reasonLine("first second third end.").c_str(), ctl.c_str());
+  // The stored form never carries the reason (F4).
+  Rig rig;
+  rig.model.push(sp::httpError(400, anthropicError("invalid_request_error", limit)));
+  expectOk(rig.run());
+  TEST_ASSERT_EQUAL_STRING(reasonLine(limit).c_str(), rig.out.errorLine.c_str());
+  // E2-CFIX1: the key's usage limit is a billing refusal (parked); the kept form is the billing line.
+  TEST_ASSERT_TRUE(rig.out.parkHost);
+  TEST_ASSERT_EQUAL_STRING("No reply: Anthropic refused the key or the account has no credit (HTTP 400). Check the key and credit.",
+                           rig.out.errorLineStored.c_str());
+}
+
+// F2, F6: only printable ASCII reaches the line. Line separators, NEL and C1 controls are a space;
+// bidi controls, zero-width and every other non-ASCII code point one '?'.
+static void test_a_refusal_reason_is_printable_ascii_on_one_line() {
+  struct Case {
+    const char* message;
+    const char* reason;
+  } cases[] = {
+      {"Bad request\xE2\x80\xA8No reply: Anthropic is out of credit.", "Bad request No reply: Anthropic is out of credit."},
+      {"one\xE2\x80\xA9two\xC2\x85three\xC2\x80" "four", "one two three four."},
+      {"see \xE2\x80\xAE" "004 PTTH\xE2\x80\xAC here", "see ?004 PTTH? here."},
+      {"zero\xE2\x80\x8Bwidth \xE2\x81\xA6isolate\xE2\x81\xA9", "zero?width ?isolate?"},   // ends in '?': no '.'
+
+      {"caf\xC3\xA9 \xF0\x9F\x98\x80 ok", "caf? ? ok."},
+      {"\xE2\x80\xA8\xE2\x80\xA8 trimmed \xC2\x85", "trimmed."},
+  };
+  for (const Case& c : cases) {
+    const std::string l = refusedLine(400, anthropicError("invalid_request_error", c.message));
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(reasonLine(c.reason).c_str(), l.c_str(), c.reason);
+    for (unsigned char ch : l) TEST_ASSERT_TRUE_MESSAGE(ch >= 0x20 && ch < 0x7f, l.c_str());
+  }
+}
+
+// Fake credentials from split literals: no key-shaped literal sits in the repository.
+static std::string fake(std::initializer_list<const char*> parts) {
+  std::string s;
+  for (const char* p : parts) s += p;
+  return s;
+}
+
+// F3, F5: ordinary refusals show their reason; anything key-like drops the whole reason.
+static void test_the_key_rule_keeps_ordinary_reasons_and_drops_keys() {
+  const char* shown[] = {
+      "model: claude-sonnet-4-5-20250929",
+      "max_tokens: 64001 > 64000, which is the maximum allowed number of output tokens for claude-sonnet-4-5-20250929",
+      "messages.1.content.0.tool_result.tool_use_id: String should match pattern",
+      "This task-level risk-free check failed",
+  };
+  for (const char* m : shown)
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(reasonLine(std::string(m) + ".").c_str(),
+                                     refusedLine(400, anthropicError("invalid_request_error", m)).c_str(), m);
+  // Backticks are shown as plain quotes (item F1), and the dated model id stays.
+  TEST_ASSERT_EQUAL_STRING(reasonLine("The model 'gpt-4o-mini-2024-07-18' does not exist.").c_str(),
+                           refusedLine(400, anthropicError("invalid_request_error", "The model `gpt-4o-mini-2024-07-18` does not exist")).c_str());
+  const std::string dropped[] = {
+      "Invalid key " + fake({"sk", "-ant-", "api03-", "Xq7pL2mN", "9vB4kR8t", "Y1wE5zA3", "sD6fG0hJ", "-", "u8iO2pK4", "lM6nB9vC", "1xZ3_qW5", "eR7tY9uA"}),
+      fake({"bad header Author", "ization: Bea", "rer abc"}),
+      "token " + fake({"9f8e7d6c", "5b4a3928", "1706f5e4", "d3c2b1a0"}) + " rejected",
+      "token " + fake({"abcdefab", "cdefabcd", "efabcdef", "abcdefab"}) + " rejected",   // 32 letters, no digit
+      "jwt " + fake({"eyJhbGci", "OiJIUzI1", "NiJ9", ".", "eyJzdWIi", "OiIxMjM0", "NTY3ODkw", "In0", ".", "dozjgNry", "P4J3jVmN", "Hl0w5N_X", "gL0n3I9P", "lFUP0THs", "R8U"}),
+      "bot " + fake({"123456789", ":", "AAHdqTcv", "CH1vGWJx", "fSeofSAs", "0K5PALDs", "-aw"}),
+      fake({"the sk", "-proj-abc key"}),
+  };
+  for (const std::string& m : dropped)
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(kRefused400, refusedLine(400, anthropicError("invalid_request_error", m)).c_str(), m.c_str());
+}
+
+// F1: no markup of the reason is read. Each row is one construct nimbus::tgHtml maps (lib/core/src/tg_html.cpp)
+// and the tag it would emit; the first check proves the row is live against the real mapper, so the
+// table cannot drift from it silently. Then the finished line through tgHtml carries no tag at all.
+static void test_no_markup_in_a_reason_is_read() {
+  struct Construct {
+    const char* sample;
+    const char* tag;
+  } table[] = {
+      {"[Renew here](https://evil.example/pay)", "<a href"},
+      {"**bold**", "<b>"},
+      {"say *this* now", "<i>"},
+      {"say _this_ now", "<i>"},
+      {"`code`", "<code>"},
+      {"```\nblock\n```", "<pre>"},
+      {"# heading", "<b>"},
+      {"- bullet", "\xE2\x80\xA2"},
+  };
+  const char* noTag[] = {"<a", "<b", "<i", "<code", "<pre", "<s", "<u", "<blockquote", "<tg-", "<span", "\xE2\x80\xA2"};
+  auto expectLiteral = [&](const std::string& message) {
+    const std::string line = refusedLine(400, anthropicError("invalid_request_error", message));
+    const std::string html = nimbus::tgHtml(line);
+    for (const char* t : noTag) TEST_ASSERT_TRUE_MESSAGE(html.find(t) == std::string::npos, html.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(html.find('<') == std::string::npos, html.c_str());   // any tag tgHtml may emit later
+  };
+  for (const Construct& c : table) {
+    TEST_ASSERT_TRUE_MESSAGE(nimbus::tgHtml(c.sample).find(c.tag) != std::string::npos, c.sample);
+    expectLiteral(c.sample);
+    expectLiteral(std::string("Your plan lapsed. ") + c.sample + " now");
+  }
+  // Every pair of ASCII punctuation as opener and closer, around a word, doubled, and before a URL:
+  // a construct tgHtml learns later (~~strike~~, ||spoiler||) fails here until the reason neutralizes it.
+  const std::string punct = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
+  for (char a : punct)
+    for (char b : punct) {
+      std::string m = "w ";
+      m += a; m += "word"; m += b; m += ' ';
+      m += a; m += a; m += "word"; m += b; m += b; m += ' ';
+      m += a; m += "word"; m += b; m += "(https://e.example/p) end";
+      expectLiteral(m);
+    }
+  // '<', '>' and '&' from the reason arrive escaped.
+  const std::string html = nimbus::tgHtml(refusedLine(400, anthropicError("invalid_request_error", "a <b>x</b> & <a href=\"u\">y</a>")));
+  TEST_ASSERT_TRUE_MESSAGE(html.find("a &lt;b&gt;x&lt;/b&gt; &amp; &lt;a href=\"u\"&gt;y&lt;/a&gt;") != std::string::npos, html.c_str());
+  // A bare visible URL may stay.
+  TEST_ASSERT_EQUAL_STRING(reasonLine("See https://e.example/docs.").c_str(),
+                           refusedLine(400, anthropicError("invalid_request_error", "See https://e.example/docs")).c_str());
+}
+
+// Lane E2-FIX13 (test gap of E2-FIX11): the web chat shows the refusal line through its own renderer
+// (_mdInline and _mdInto in include/web/ui_js.h), which no C++ test runs. This case runs the class of
+// hostile provider text of test_no_markup_in_a_reason_is_read (every construct sample alone and in a
+// sentence, angle brackets and an ampersand, an image tag, every ordered pair of ASCII punctuation as
+// opener and closer) through the real exchange and pins each line the device sends in
+// test/golden/refusal_lines_web.jsonl ({"in": provider message, "line": the line}). The gate test
+// tools/release_gate/test_web_refusal_render.py renders every pinned line with the page's own
+// JavaScript under node and fails on any link, emphasis, code, list or markup. Bless with
+// GOLDEN_UPDATE=1 (and read the diff: every line must still be the literal provider words).
+static const char* const kWebCasesPath = "test/golden/refusal_lines_web.jsonl";
+
+static std::vector<std::string> webCaseMessages() {
+  std::vector<std::string> m = {
+      "[Renew here](https://evil.example/pay)", "**bold**", "say *this* now", "say _this_ now", "`code`",
+      "```\nblock\n```", "# heading", "- bullet", "1. first",
+      "a <b>x</b> & <a href=\"u\">y</a>", "<img src=x onerror=alert(1)> &amp; &lt;script&gt;",
+      "Use [the docs](http://e.example/d) or **call** _us_ at `555` <now> & later",
+      "See https://e.example/docs",
+  };
+  const size_t samples = m.size();
+  for (size_t i = 0; i < samples; ++i) m.push_back("Your plan lapsed. " + m[i] + " now");
+  const std::string punct = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
+  for (char a : punct)
+    for (char b : punct) {
+      std::string s = "w ";
+      s += a; s += "word"; s += b; s += ' ';
+      s += a; s += a; s += "word"; s += b; s += b; s += ' ';
+      s += a; s += "word"; s += b; s += "(https://e.example/p) end";
+      m.push_back(s);
+    }
+  return m;
+}
+
+static void test_the_web_cases_are_the_lines_the_device_sends() {
+  std::string text;
+  for (const std::string& msg : webCaseMessages()) {
+    JsonDocument d;
+    d["in"] = msg;
+    d["line"] = refusedLine(400, anthropicError("invalid_request_error", msg));
+    std::string row;
+    serializeJson(d, row);
+    text += row + '\n';
+  }
+  const char* bless = std::getenv("GOLDEN_UPDATE");
+  if (bless && std::strcmp(bless, "1") == 0) {
+    FILE* f = std::fopen(kWebCasesPath, "wb");
+    TEST_ASSERT_NOT_NULL_MESSAGE(f, kWebCasesPath);
+    std::fwrite(text.data(), 1, text.size(), f);
+    std::fclose(f);
+    return;
+  }
+  FILE* f = std::fopen(kWebCasesPath, "rb");
+  TEST_ASSERT_NOT_NULL_MESSAGE(f, "missing test/golden/refusal_lines_web.jsonl - run with GOLDEN_UPDATE=1");
+  std::string onDisk;
+  char buf[4096];
+  for (size_t n; (n = std::fread(buf, 1, sizeof(buf), f)) > 0;) onDisk.append(buf, n);
+  std::fclose(f);
+  TEST_ASSERT_TRUE_MESSAGE(onDisk == text, "the refusal lines drifted from test/golden/refusal_lines_web.jsonl - re-bless with GOLDEN_UPDATE=1");
+}
+
+// The reason rides class Other only: every other class's line is byte-identical with and without a
+// message in the body; and each body shape providerErrorText reads yields the reason.
+static void test_a_reason_rides_no_other_class_and_every_body_shape_yields_it() {
+  const std::string body = anthropicError("invalid_request_error", "Distinct provider words");
+  const int statuses[] = {401, 402, 403, 408, 413, 429, 500, 502, 503, 529};
+  for (int st : statuses) {
+    Rig a, b;
+    for (int i = 0; i < 8; ++i) {
+      a.model.push(sp::httpError(st, body));
+      b.model.push(sp::httpError(st));
+    }
+    expectOk(a.run());
+    expectOk(b.run());
+    TEST_ASSERT_TRUE_MESSAGE(a.out.err != ExchangeErr::Other && a.out.err != ExchangeErr::None, std::to_string(st).c_str());
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(b.out.errorLine.c_str(), a.out.errorLine.c_str(), std::to_string(st).c_str());
+    TEST_ASSERT_TRUE(a.out.errorLine.find("Distinct") == std::string::npos);
+  }
+  const ExchangeErr classes[] = {ExchangeErr::Transport, ExchangeErr::Server, ExchangeErr::RateLimited, ExchangeErr::ContextRefused,
+                                 ExchangeErr::KeyRefused, ExchangeErr::Cut, ExchangeErr::Malformed, ExchangeErr::Blocked};
+  // E2-CFIX1: a billing refusal at 400 carries its reason (ExchangeResult::reason is set only for one); at any
+  // other status the key line stays as it was.
+  TEST_ASSERT_EQUAL_STRING(plain::exchangeLine(ExchangeErr::KeyRefused, "anthropic", 401).c_str(),
+                           plain::exchangeLine(ExchangeErr::KeyRefused, "anthropic", 401, "Distinct provider words").c_str());
+  for (ExchangeErr e : classes) {
+    if (e == ExchangeErr::KeyRefused) continue;
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(plain::exchangeLine(e, "anthropic", 400).c_str(),
+                                     plain::exchangeLine(e, "anthropic", 400, "Distinct provider words").c_str(),
+                                     plain::exchangeErrSlug(e));
+  }
+  const char* shapes[] = {
+      R"({"type":"error","error":{"type":"invalid_request_error","message":"Distinct provider words"}})",   // Anthropic
+      R"({"error":{"message":"Distinct provider words","type":"invalid_request_error","code":null}})",     // OpenAI
+      R"({"error":"Distinct provider words"})",
+      R"({"message":"Distinct provider words"})",
+      R"({"message":{"detail":"Distinct provider words"}})",
+      R"({"detail":"Distinct provider words"})",
+      R"({"detail":[{"msg":"Distinct provider words"}]})",
+  };
+  for (const char* sh : shapes)
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("Distinct provider words", plain::refusalReason(sh).c_str(), sh);
+}
+
+// F7: the reason belongs to the answer that ends the exchange. A 400 with a reason (a refused file
+// reference, sent again), then a 500 (sent again), then a render that fails: the line never joins
+// "HTTP 500" to the 400's words.
+static void test_a_stale_reason_never_joins_a_later_status() {
+  Rig rig;
+  rig.req.refusedRef = [](int, const std::string&) { return true; };
+  rig.model.push(sp::httpError(400, anthropicError("invalid_request_error", "File not found: stale words")));
+  rig.model.push(sp::httpError(500));
+  rig.model.push(sp::say("never asked"));
+  int perRequest = 0;
+  {
+    Rig one;
+    one.wire.failFromRender = 1000;   // counts renders without failing
+    one.model.push(sp::say("ok"));
+    expectOk(one.run());
+    perRequest = one.wire.renders;
+  }
+  rig.wire.failFromRender = 2 * perRequest + 1;
+  expectOk(rig.run());
+  TEST_ASSERT_EQUAL(2, (int)rig.model.requests().size());
+  TEST_ASSERT_TRUE(rig.out.err == ExchangeErr::Other);
+  TEST_ASSERT_EQUAL(500, rig.out.httpStatus);
+  TEST_ASSERT_TRUE_MESSAGE(rig.out.errorLine.find("stale") == std::string::npos, rig.out.errorLine.c_str());
+  TEST_ASSERT_EQUAL_STRING("No reply: Anthropic refused the request (HTTP 500).", rig.out.errorLine.c_str());
+}
+
 static void test_provider_slug_of_a_head() {
   plain::TurnCtx t;
   plain::HeadEndpoint h;
@@ -1039,6 +1553,18 @@ static void test_a_fallback_the_table_does_not_qualify_is_skipped() {
   int idx = 9;
   expectOk(plain::pickFallback(f, idx));
   TEST_ASSERT_EQUAL(3, idx);   // mistral held, sonnet parked, glm assumed
+  // Lane E2-R8a (design section 6 item 7): never to a smaller body. Haiku's body budget holds a request of
+  // exactly its size, not one byte more.
+  nimbus::orch::tx::HeadBudget haiku;
+  expectOk(nimbus::orch::tx::budgetFor(nimbus::orch::tx::HeadKey{"anthropic", "claude-haiku-5-5", false},
+                                       nimbus::orch::tx::kDefaultProfile, haiku));
+  f.capLength = haiku.bodyCap;
+  expectOk(plain::pickFallback(f, idx));
+  TEST_ASSERT_EQUAL(3, idx);
+  f.capLength = haiku.bodyCap + 1;
+  expectOk(plain::pickFallback(f, idx));
+  TEST_ASSERT_EQUAL(-1, idx);
+  f.capLength = 0;
   f.line = hq::Line::E2;       // nothing is qualified on engine 2 yet
   expectOk(plain::pickFallback(f, idx));
   TEST_ASSERT_EQUAL(-1, idx);
@@ -1145,6 +1671,7 @@ int main(int, char**) {
   RUN_TEST(test_writer_pieces_and_splices);
   RUN_TEST(test_writer_random_bodies_parse_and_are_stable);
   RUN_TEST(test_inputs_are_checked);
+  RUN_TEST(test_the_exchange_state_is_allocated_and_given_back);
   RUN_TEST(test_a_plain_answer_is_one_request);
   RUN_TEST(test_the_output_cap_fits_the_body_and_the_time);
   RUN_TEST(test_retryable_classes_retry_twice_then_one_line);
@@ -1153,6 +1680,11 @@ int main(int, char**) {
   RUN_TEST(test_a_key_or_billing_refusal_parks_and_is_never_retried);
   RUN_TEST(test_other_answers_are_one_plain_line);
   RUN_TEST(test_a_custom_messages_host_sends_an_output_cap);
+  RUN_TEST(test_a_routed_claude_head_gets_a_cap_and_the_deadline_header);
+  RUN_TEST(test_a_full_window_climbs_one_rung_instead_of_the_cut_retry);
+  RUN_TEST(test_a_timeout_above_the_read_window_is_lowered);
+  RUN_TEST(test_a_refused_field_is_resent_once_without_it);
+  RUN_TEST(test_a_required_cap_is_never_zero_and_a_ceiling_clamps_it);
   RUN_TEST(test_a_refused_file_reference_is_forgotten_and_sent_once_more);
   RUN_TEST(test_a_cut_answer_retries_once_then_is_delivered_with_its_line);
   RUN_TEST(test_cut_arguments_are_never_returned_for_dispatch);
@@ -1162,6 +1694,13 @@ int main(int, char**) {
   RUN_TEST(test_no_body_string_over_the_guard_is_sent);
   RUN_TEST(test_a_routed_head_follows_the_refusal_contract);
   RUN_TEST(test_every_error_class_has_one_plain_line);
+  RUN_TEST(test_a_refusal_line_names_the_providers_reason);
+  RUN_TEST(test_a_refusal_reason_is_printable_ascii_on_one_line);
+  RUN_TEST(test_the_key_rule_keeps_ordinary_reasons_and_drops_keys);
+  RUN_TEST(test_no_markup_in_a_reason_is_read);
+  RUN_TEST(test_the_web_cases_are_the_lines_the_device_sends);
+  RUN_TEST(test_a_reason_rides_no_other_class_and_every_body_shape_yields_it);
+  RUN_TEST(test_a_stale_reason_never_joins_a_later_status);
   RUN_TEST(test_provider_slug_of_a_head);
   RUN_TEST(test_the_dialect_decides_an_unknown_host_and_nothing_named_is_nothing);
   RUN_TEST(test_a_fallback_the_table_does_not_qualify_is_skipped);
@@ -1169,5 +1708,6 @@ int main(int, char**) {
   RUN_TEST(test_a_cut_retry_always_has_more_room);
   RUN_TEST(test_a_late_cut_with_no_room_is_not_asked_again);
   RUN_TEST(test_a_failed_render_after_a_cut_delivers_the_cut);
+  RUN_TEST(test_the_provider_markers_decide_the_class);
   return UNITY_END();
 }

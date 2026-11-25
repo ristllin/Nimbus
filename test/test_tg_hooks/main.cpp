@@ -401,7 +401,7 @@ static void test_turn_media_list_follows_the_turn() {
   const std::string pm = bodyOf(c, "static bool processMedia(");
   TEST_ASSERT_TRUE(pm.find("noteTurnMedia(slot, label, true);") != std::string::npos);
   TEST_ASSERT_EQUAL_size_t(3, findAll(c, "noteTurnMedia(").size());   // definition + two calls
-  const std::string turn = c.substr(c.find("void runTurn(const std::string& from"), 400);
+  const std::string turn = bodyOf(c, "void runTurn(const std::string& from");
   TEST_ASSERT_TRUE(turn.find("g_cb(") < turn.find("s_turnMedia = 0;"));
   const std::string endPage = c.substr(c.find("void endPage() {"), 120);
   TEST_ASSERT_TRUE(endPage.find("s_turnMedia = 0;") != std::string::npos);

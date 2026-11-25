@@ -1,0 +1,4 @@
+synthetic: https://docs.mistral.ai/api/endpoint/chat, read 2026-11-24
+status: 422
+expect: class=bad_request retry=no
+{"object":"error","message":{"detail":[{"type":"missing","loc":["body","messages"],"msg":"Field required","input":{}}]},"type":"invalid_request_message_error","param":null,"code":null}

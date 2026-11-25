@@ -1,0 +1,159 @@
+{
+ "provider": "anthropic",
+ "written": "2026-11-24",
+ "by": "lane E2-R5",
+ "verified": "synthetic, from the source named on each case; replaced from recorded bodies by lane R10",
+ "cases": [
+  {
+   "row": "transport",
+   "status": 0,
+   "body": "",
+   "expect": "transport",
+   "source": "design section 9: no status"
+  },
+  {
+   "row": "transport",
+   "status": 408,
+   "body": "",
+   "expect": "transport",
+   "source": "design section 9: 408"
+  },
+  {
+   "row": "rate",
+   "status": 429,
+   "body": "{\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"Number of request tokens has exceeded your per-minute rate limit\"}}",
+   "expect": "rate_limited",
+   "source": "https://platform.claude.com/docs/en/api/errors (read 2026-11-24)"
+  },
+  {
+   "row": "server",
+   "status": 500,
+   "body": "{\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"An unexpected error has occurred internal to Anthropic's systems.\"}}",
+   "expect": "server",
+   "source": "https://platform.claude.com/docs/en/api/errors (read 2026-11-24)"
+  },
+  {
+   "row": "server",
+   "status": 529,
+   "body": "{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}",
+   "expect": "server",
+   "source": "https://platform.claude.com/docs/en/api/errors (read 2026-11-24)"
+  },
+  {
+   "row": "server",
+   "status": 504,
+   "body": "{\"type\":\"error\",\"error\":{\"type\":\"timeout_error\",\"message\":\"Request timed out\"}}",
+   "expect": "server",
+   "source": "https://platform.claude.com/docs/en/api/errors (read 2026-11-24)"
+  },
+  {
+   "row": "server",
+   "status": 200,
+   "body": "{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}",
+   "expect": "server",
+   "source": "https://platform.claude.com/docs/en/api/errors (read 2026-11-24); a 2xx carrying an error object"
+  },
+  {
+   "row": "auth",
+   "status": 401,
+   "body": "{\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"invalid x-api-key\"}}",
+   "expect": "key_auth",
+   "source": "https://platform.claude.com/docs/en/api/errors (read 2026-11-24)"
+  },
+  {
+   "row": "forbidden",
+   "status": 403,
+   "body": "{\"type\":\"error\",\"error\":{\"type\":\"permission_error\",\"message\":\"Your API key does not have permission to use the specified resource.\"}}",
+   "expect": "key_forbidden",
+   "source": "https://platform.claude.com/docs/en/api/errors (read 2026-11-24)"
+  },
+  {
+   "row": "billing",
+   "status": 402,
+   "body": "{\"type\":\"error\",\"error\":{\"type\":\"billing_error\",\"message\":\"There is an issue with your account's billing.\"}}",
+   "expect": "billing",
+   "source": "https://platform.claude.com/docs/en/api/errors (read 2026-11-24)"
+  },
+  {
+   "row": "billing",
+   "status": 400,
+   "body": "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.\"}}",
+   "expect": "billing",
+   "source": "lib/core/include/nimbus/orch/billing_refusal.h:39 (recorded 13 Oct 2026)"
+  },
+  {
+   "row": "billing",
+   "status": 400,
+   "body": "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"You have reached your specified API usage limits. You will regain access on 2026-12-01 at 00:00 UTC.\"}}",
+   "expect": "billing",
+   "source": "program-2026-10-18/lanes/E2-BENCH3/RESULT.md defect 1 (bench 24 Nov 2026, the key's own usage limit)"
+  },
+  {
+   "row": "context",
+   "status": 413,
+   "body": "{\"type\":\"error\",\"error\":{\"type\":\"request_too_large\",\"message\":\"Request exceeds the maximum allowed number of bytes.\"}}",
+   "expect": "context",
+   "source": "https://platform.claude.com/docs/en/api/errors (read 2026-11-24)"
+  },
+  {
+   "row": "context",
+   "status": 400,
+   "body": "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"prompt is too long: 210000 tokens > 200000 maximum\"}}",
+   "expect": "context",
+   "source": "https://platform.claude.com/docs/en/api/errors (read 2026-11-24)"
+  },
+  {
+   "row": "file_id",
+   "status": 404,
+   "body": "{\"type\":\"error\",\"error\":{\"type\":\"not_found_error\",\"message\":\"File not found: file_0aa\"}}",
+   "expect": "bad_request",
+   "source": "https://platform.claude.com/docs/en/api/errors (read 2026-11-24); test_plain_exchange refusedRef case",
+   "file_ref": true
+  },
+  {
+   "row": "malformed_request",
+   "status": 400,
+   "body": "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The request body is not valid JSON: expected value at line 1 column 1\"}}",
+   "expect": "bad_request",
+   "source": "lib/core/src/orch_head_loop.cpp:105-111"
+  },
+  {
+   "row": "refused_field",
+   "status": 400,
+   "body": "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"output_config: Extra inputs are not permitted\"}}",
+   "expect": "refused_field",
+   "source": "https://platform.claude.com/docs/en/api/errors (read 2026-11-24); generic field refusal",
+   "refused": [
+    "structured"
+   ]
+  },
+  {
+   "row": "refusal_2xx",
+   "status": 200,
+   "body": "@anthropic_wire_2026-11/synthetic_refusal.json",
+   "expect": "none",
+   "source": "the Messages codec reads stop_reason refusal (StopReason::Refusal)"
+  },
+  {
+   "row": "cut",
+   "status": 200,
+   "body": "@anthropic_wire_2026-11/max_tokens_cut_call.json",
+   "expect": "none",
+   "source": "the codec reads max_tokens; the exchange cuts"
+  },
+  {
+   "row": "unparsed_2xx",
+   "status": 200,
+   "body": "{\"type\":\"message\",\"content\":[{\"type\":\"te",
+   "expect": "none",
+   "source": "a cut 2xx: the codec's parse fails (Malformed)"
+  },
+  {
+   "row": "answer_2xx",
+   "status": 200,
+   "body": "@anthropic_wire_2026-11/text_end_turn.json",
+   "expect": "none",
+   "source": "a plain answer is no error"
+  }
+ ]
+}

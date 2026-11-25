@@ -105,7 +105,9 @@ inline void test_a_long_reply_keeps_the_message_cap_inline_then_a_view_pointer()
       char why[160];
       std::snprintf(why, sizeof why, "%s %zu B: the stored reply keeps %zu B", floor ? "floor" : "sonnet", bytes, a->x.size());
       TEST_ASSERT_TRUE_MESSAGE(a->x.compare(0, hb.messageCap - 3, reply, 0, hb.messageCap - 3) == 0, why);
-      TEST_ASSERT_TRUE_MESSAGE(a->x.find(tx::viewPointer(a->q)) != std::string::npos, "no view pointer to the rest");
+      // E2-FIX5: view is not bound in this rig: the line says how much more, and names no call.
+      TEST_ASSERT_TRUE_MESSAGE(a->x.find("B more]") != std::string::npos, "no line for the rest");
+      TEST_ASSERT_TRUE_MESSAGE(a->x.find("view id=") == std::string::npos, "names view, which is not bound");
       TEST_ASSERT_FALSE_MESSAGE(a->handle.empty(), "the a item does not name where the whole is");
       std::string whole;
       tx::TxLog reader(b.files, b.chatKey);
@@ -120,10 +122,37 @@ inline void test_a_long_reply_keeps_the_message_cap_inline_then_a_view_pointer()
     }
 }
 
+// Lane E2-STACK2: the argument walks keep a work list instead of recursing. Long strings nested deep
+// in the arguments (one 40 levels down, one beside it) are each a stub, in document order, and the
+// structure around them is kept.
+inline void test_nested_long_call_arguments_are_each_a_stub_in_order() {
+  const std::string a1 = std::string(2000, 'x') + "-NESTED-1", a2 = std::string(3000, 'y') + "-NESTED-2";
+  const std::string open(40, '['), close(40, ']');
+  const std::string args = "{\"path\":\"notes/n.md\",\"deep\":" + open + "\"" + a1 + "\"" + close +
+                           ",\"side\":{\"text\":\"" + a2 + "\"}}";
+  txb::Battery k;
+  k.model.push(sp::call("append_file", args));
+  k.model.push(sp::say("ok"));
+  plain::TurnOutcome out;
+  TXB_OK(k.owner("append", out));
+  const std::vector<tx::Item> items = engine_tests::storedOf(k);
+  const tx::Item* c = engine_tests::lastCall(items);
+  TEST_ASSERT_NOT_NULL(c);
+  TEST_ASSERT_TRUE(c->args == args);
+  TEST_ASSERT_TRUE_MESSAGE(c->st.find("-NESTED-1") == std::string::npos && c->st.find("-NESTED-2") == std::string::npos,
+                           "a nested long string is whole in the stub form");
+  const size_t s1 = c->st.find(std::to_string(a1.size()));
+  const size_t s2 = c->st.find(std::to_string(a2.size()));
+  TEST_ASSERT_TRUE_MESSAGE(s1 != std::string::npos && s2 != std::string::npos, "a long string has no stub");
+  TEST_ASSERT_TRUE_MESSAGE(s1 < s2, "the stubs are out of document order");
+  TEST_ASSERT_TRUE_MESSAGE(c->st.find(open) != std::string::npos && c->st.find("\"side\":{\"text\":") != std::string::npos,
+                           "the structure around the stubs was lost");
+}
+
 // DoD item 3 (ruling 83 item 8): a call's long string argument is whole while its own turn is open,
 // bounded like tier-2 bulk, and shows as its stub from the close of the turn. A two-round turn: the
-// second request still carries the first round's 5,000 B argument whole; the next turn's request
-// shows its stub. The counter-case: an argument over the head's bulk-whole bound is a stub at once.
+// second request still carries the first round's 5,000 B argument whole, and so does the next turn's
+// request (E2-VERB). The counter-case: an argument over the head's bulk-whole bound is a stub at once.
 inline void test_a_long_call_argument_is_whole_in_its_open_turn_and_a_stub_after() {
   for (size_t bytes : {(size_t)5000, (size_t)40000}) {
     txb::Battery b;
@@ -148,8 +177,11 @@ inline void test_a_long_call_argument_is_whole_in_its_open_turn_and_a_stub_after
     b.advance(30);
     TXB_OK(b.owner("thanks", out));
     const std::string& next = b.model.requests().back().body;
-    TEST_ASSERT_TRUE_MESSAGE(next.find("TAIL") == std::string::npos, "a closed turn's long argument must show as its stub");
-    TEST_ASSERT_TRUE_MESSAGE(next.find("B sha:") != std::string::npos, "the closed turn's stub is missing");
+    // E2-VERB (rulings 81, 82 and 106): the closed turn's argument stays whole too (before, its stub);
+    // one over the bound was a stub from the start and stays one.
+    TEST_ASSERT_EQUAL_MESSAGE(!overBound, next.find("TAIL") != std::string::npos,
+                              overBound ? "an argument over the bound came back whole" : "a closed turn's long argument became its stub by default");
+    TEST_ASSERT_EQUAL_MESSAGE(overBound, next.find("B sha:") != std::string::npos, "the stub shows where it must not, or not where it must");
   }
 }
 
@@ -204,9 +236,9 @@ inline void test_an_engine_with_no_compaction_installed_refuses_to_boot() {
 
 // DoD 5 (ruling 84 item 5): no note-writing tool comes back; a photo's note (a migrated v5.1.2 note
 // or a blind host's transcription, on the owner message's part) survives in the later-turn photo
-// stub with its working view pointer. The photo arrives with its note; two turns later its request
-// shows the stub with the note and the pointer. The counter-case: a photo with no note shows the
-// plain stub.
+// line (lane E2-FIX4: shown earlier, not attached to this request, no view pointer while view is not
+// bound). The photo arrives with its note; later requests with no pixels to show (no photo hook) show
+// the line with the note. The counter-case: a photo with no note shows the plain line.
 inline void test_a_photo_note_survives_in_the_later_turn_stub() {
   for (bool noted : {true, false}) {
     txb::Battery b;
@@ -221,7 +253,11 @@ inline void test_a_photo_note_survives_in_the_later_turn_stub() {
       TXB_OK(b.owner("and now " + std::to_string(k), out));
     }
     const std::string& body = b.model.requests().back().body;
-    TEST_ASSERT_TRUE_MESSAGE(body.find("view id=pa1b2c3d4") != std::string::npos, "the photo stub lost its view pointer");
+    // No photo hook here: the photo renders as its line (lane E2-FIX4: true, and naming no unbound tool).
+    TEST_ASSERT_TRUE_MESSAGE(body.find("[photo pa1b2c3d4") != std::string::npos &&
+                                 body.find("not attached to this request") != std::string::npos,
+                             "the photo's line is missing");
+    TEST_ASSERT_TRUE_MESSAGE(body.find("view id=pa1b2c3d4") == std::string::npos, "the line names view, which is not bound");
     TEST_ASSERT_EQUAL_MESSAGE(noted, body.find("two lemons") != std::string::npos,
                               noted ? "the photo's note did not survive in its stub" : "a note appeared from nowhere");
   }
@@ -231,6 +267,7 @@ inline void run() {
   RUN_TEST(test_the_turn_end_keeps_the_last_request_whole_prompt);
   RUN_TEST(test_a_long_reply_keeps_the_message_cap_inline_then_a_view_pointer);
   RUN_TEST(test_a_long_call_argument_is_whole_in_its_open_turn_and_a_stub_after);
+  RUN_TEST(test_nested_long_call_arguments_are_each_a_stub_in_order);
   RUN_TEST(test_text_written_beside_a_call_is_delivered_when_the_last_round_is_empty);
   RUN_TEST(test_an_engine_with_no_compaction_installed_refuses_to_boot);
   RUN_TEST(test_a_photo_note_survives_in_the_later_turn_stub);

@@ -8,6 +8,7 @@
 #include "nimbus/harness/plain/deliver.h"   // StatusLine: the one status line of a failed exchange
 #include "nimbus/harness/plain/wire.h"
 #include "nimbus/orch/head_qual.h"
+#include "nimbus/orch/model_caps.h"
 
 namespace agent {
 struct Platform;
@@ -44,6 +45,12 @@ struct Platform;
 //          and sent once more; a second refusal is one plain line;
 //        billing or key refused (401, 402, 403, a billing marker): parkHost, one plain line;
 //        a 2xx that does not parse: Malformed, one plain line;
+//        a window-full answer (StopReason::Context, lane E2-R4a): kept like a cut, the ladder
+//          climbs one rung (climb(Climb::Refused)) and the request goes once more; cut or full
+//          again, the kept answer is delivered as Cut;
+//        a 400 or 422 naming a refused optional field: resent once without it (ExchangeDeps::refused);
+//        a provider's refusal code (Z.ai 1301): an answer with StopReason::Refusal, nothing to run;
+//        an unknown model: modelUnusable, one plain line;
 //        a cut answer (StopReason::MaxTokens): one retry at the retry cap (more room, and a
 //          lower effort where the table says so) when the window allows one, else or when
 //          the retry is cut too: the text is kept, every call of the cut answer is marked
@@ -99,7 +106,7 @@ inline constexpr uint8_t kMaxSameHostRetries = 2;          // transport, 5xx, 42
 // left for the request: a request with less time cannot be answered, it only spends.
 inline constexpr uint32_t kMinRequestMs = 5000;
 // How many rungs one exchange may climb for a body over its cap (the ladder has four).
-inline constexpr uint8_t kMaxCapClimbs = 4;
+inline constexpr uint8_t kMaxCapClimbs = 5;   // and compaction first (lane RB-C3, ruling 105 item 3)
 
 // Why the ladder is asked to climb one rung.
 enum class Climb : uint8_t {
@@ -127,16 +134,24 @@ using RefusedRefFn = std::function<bool(int httpStatus, const std::string& body)
 struct ExchangeDeps {
   HttpTransport* transport = nullptr;
   const Platform* platform = nullptr;   // nowMs and delayMs are required
+  // Lane E2-R4a: the boot's refused optional fields (router design section 9; the caller's PSRAM
+  // state). A 400 or 422 naming one is resent once without it and remembered here; null: the
+  // exchange remembers for itself only.
+  nimbus::orch::caps::RefusedFields* refused = nullptr;
 };
 
 struct ExchangeRequest {
   const WireCodec* wire = nullptr;
   const RenderInput* render = nullptr;   // turn and head are required; maxTokens is the exchange's
-  uint32_t timeoutMs = 0;      // the host's read window (Anthropic 120 s, ...); 0 = readWindowMsFor
+  uint32_t timeoutMs = 0;      // a read window; 0 or above the route's (readWindowMsFor): the route's
   uint32_t deadlineMs = 0;     // the turn's remaining soft wall clock; required
   uint32_t bodyCap = 0;        // the head's body cap (tx::budgetFor); 0 = its released row (requestBudgetFor)
   ClimbFn climb;               // the overflow ladder; empty = no rung to climb
   RefusedRefFn refusedRef;     // a refused file reference, once per exchange; empty = none
+  uint32_t capCeiling = 0;     // the caller's output cap ceiling (the summarizer's rungs); 0 = none
+  uint32_t retryCeiling = 0;   // E2-R4b: the cut retry's ceiling under capCeiling (the summarizer's second rung); 0 = capCeiling
+  bool summary = false;        // E2-REP5: the summarizer's request: its cap table and time fit are RoundKind::Fold's
+  bool once = false;           // E2-PARK1: one request, never sent again (the park's re-check)
 };
 
 struct ExchangeResult {
@@ -147,14 +162,26 @@ struct ExchangeResult {
   uint8_t requests = 0;        // requests sent (head requests for the e item)
   uint8_t climbs = 0;          // ladder rungs climbed in this exchange
   uint32_t requestBytes = 0;   // the last request's body, photos included
+  uint32_t capBytes = 0;       // the same as the body cap counts it: each photo its share, never its base64 (E2-CFIX3)
   uint32_t ms = 0;             // the whole exchange, waits included
   uint32_t waitedMs = 0;       // of which waits before retries
   uint32_t maxTokens = 0;      // the output cap the last request carried (0 = none sent)
   bool cutRetried = false;     // a cut answer was asked again with the retry cap
   bool failOver = false;       // the router said fail over: the ladder's next target
   bool parkHost = false;       // billing or key refused: the caller parks the host
+  bool billing = false;        // that refusal is billing by the classifier's markers (E2-CFIX1: the park's kind)
+  // Lane E2-PARK1: that refusal was read from the provider's message words alone (no status, type or code
+  // said it): the engine asks the account (one small request) before anything is parked.
+  bool byText = false;
+  bool refusesModel = false;   // E2-PARK1: the account check was refused too, no billing class: the head model is refused
+  bool modelUnusable = false;  // the provider does not know the model: the caller marks it unusable
+  uint16_t dropped = 0;        // what the last request's pre-flight left out (plain/route.h dropped::)
   StatusLine status = StatusLine::None;   // CutAnswer or ProviderError when err != None
   std::string errorLine;       // the one plain line for the owner when err != None
+  std::string errorLineStored; // errorLine as it may be stored or reach a model: without the provider's reason
+  std::string reason;          // refusalReason of a refusal (Other, or a billing KeyRefused): the person's line only (E2-CFIX1)
+  std::string providerBody;    // the provider's own refusal body (first 4 KB) when err is Other (lane E2-FIX7)
+  std::string parkBody;        // the refusal body (first 4 KB) when parkHost: the park reads its kind (E2-FIX14)
   nimbus::orch::tx::ExchangeFacts ref;   // the last request sent, by reference (RB-E3, recordRequest)
 };
 
@@ -167,6 +194,7 @@ struct HeadTarget {
   std::string model;
   nimbus::orch::headqual::Wire wire = nimbus::orch::headqual::Wire::Any;
   bool parked = false;         // the provider park holds this host
+  bool routed = false;         // through the Cumulo router (its body budget is the routed one)
 };
 
 // True when the table qualifies `t` on `line` (assumed and held rows do not).
@@ -178,9 +206,14 @@ struct FallbackFacts {
   bool headParked = false;     // the turn's head is parked
   nimbus::orch::headqual::Line line = nimbus::orch::headqual::Line::E2;
   const std::vector<HeadTarget>* order = nullptr;   // the fallback order after the head
+  // The body of the request a target would replace, in bytes (0: none sent yet). Router design section
+  // 6 item 7 (lane E2-R8a): no automatic switch moves a conversation to a smaller body, so a target
+  // qualifies only when tx::budgetFor(target).bodyCap holds it.
+  uint32_t capLength = 0;
 };
 // The fallback host that answers instead of a parked head: only a fresh attempt with no
-// effect run, only a target that is not parked and that the table qualifies on `line`;
+// effect run, only a target that is not parked, whose body budget holds capLength and that the table
+// qualifies on `line`;
 // index -1 when none may (the owner gets one plain line and no model is called).
 Status pickFallback(const FallbackFacts& facts, int& index);
 
@@ -203,8 +236,27 @@ std::string headSlugOf(const TurnCtx& turn, const HeadEndpoint& head, bool* byDi
 // The provider an owner's line names: headSlugOf, but "custom" where only the dialect named it (a
 // proxy is not the provider).
 std::string providerSlugOf(const TurnCtx& turn, const HeadEndpoint& head);
-// The owner's plain line for an exchange that ended with `err` (empty for None).
-std::string exchangeLine(ExchangeErr err, const std::string& providerSlug, int httpStatus);
+// The provider's own reason from a refusal body, fit for the person's line (lane E2-FIX11): the message
+// of its JSON error body reduced to printable ASCII on one line (a control or line-breaking character is
+// a space, any other non-ASCII character a '?'), with the characters Telegram's and the web chat's
+// Markdown would read as markup replaced, at most 160 bytes. Empty when the body is not JSON, names no
+// message, is over 16 KB, or the text looks like it carries a key or token (then no reason at all).
+std::string refusalReason(const std::string& body);
+// The owner's plain line for an exchange that ended with `err` (empty for None). `reason` is read only
+// for ExchangeErr::Other with a status, and for a billing refusal at HTTP 400 (E2-CFIX1: Anthropic's key usage
+// limit and empty credit, where the key line names no cause): "<who> refused the request (HTTP n): <reason>".
+std::string exchangeLine(ExchangeErr err, const std::string& providerSlug, int httpStatus,
+                         const std::string& reason = std::string());
+// Lane E2-P-FO: the person's line for one switch. E2-CFIX1: the class in the exchange line's words, "<provider A>
+// had a server error (HTTP 500); this answer came from <model B>.", and a refusal's `reason` (ExchangeResult::reason;
+// "" for the stored form) after them: "<provider A> refused the request (HTTP 400): <reason>; this answer came from <model B>."
+std::string failoverLine(const std::string& fromSlug, ExchangeErr err, int httpStatus, const std::string& reason,
+                         const std::string& toModel);
+// Lane E2-P-FO: does engine 1 move a round that failed this way to another host (fabricRuleFor's switch
+// classes)? Transport, server, rate limit, a refused key or credit, a cut, an unreadable answer, and a
+// refusal of this request by this host (`httpStatus` and `body` say which: one the same body gets on every
+// host, an invalid or unreadable request, never moves). Never a context refusal or a moderation block.
+bool switchesHost(ExchangeErr err, int httpStatus, const std::string& body);
 
 }  // namespace plain
 }  // namespace agent

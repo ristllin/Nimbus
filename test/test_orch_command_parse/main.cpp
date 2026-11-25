@@ -138,7 +138,7 @@ static void test_verb_table_is_well_formed() {
 // a verb added to the table without a handler, or a handler for a verb missing from the
 // table, fails here; and the owner gate reads the table, not an inline list.
 static void test_dispatcher_matches_the_table() {
-  const std::string src = readFile("src/agent/orchestrator.cpp");
+  const std::string src = readFile("src/agent/orchestrator_e1.cpp");
   const size_t fn = src.find("void handleMessage(const String& text, const String& fromName,");
   TEST_ASSERT_TRUE(fn != std::string::npos);
   const size_t end = src.find("if (!g_engine) return;", fn);

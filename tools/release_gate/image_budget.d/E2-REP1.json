@@ -1,0 +1,6 @@
+{
+  "lane": "E2-REP1",
+  "allowance_bytes": 0,
+  "envs": {"esp32s3-cyd-e2": 11264, "test-cyd-e2": 11264, "esp32s3-cyd": 2048},
+  "why": "Money and provider edges on engine 2 and review items A to F. Same tree, base rb-main 3929a4e14 against the lane tip, firmware.bin: esp32s3-cyd-e2 6,213,040 -> 6,223,232 B (+10,192): the summarizer's park check, the fall-back park, the re-check line, the portable custom verify, the routed and summary effort, the kept-message retry and the in-turn limits (pending spend per answered request, the paid check before the next). test-cyd-e2 built at the tip, its base not built (taken as the same delta). esp32s3-cyd measured on the earlier base 9d694431d: 6,278,368 -> 6,280,048 B (+1,680: the custom verify and the page's cleartext line). Rounded up to 11 KB and 2 KB."
+}

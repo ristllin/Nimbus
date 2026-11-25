@@ -94,6 +94,12 @@ class WebApi {
 
  private:
   // Home + Assistant snapshots (instant: engine snapshot + immutable config).
+  // Lane E2-P-HOST2: the engine this instance runs and the one its next start takes.
+  bool tryEngine(const std::string& m, const std::string& base, const std::string& body, ApiResp& out) {
+    if (base != "/api/engine") return false;
+    out = m == "POST" ? enginePost(body) : engineGet();
+    return true;
+  }
   bool tryStatus(const std::string& m, const std::string& base, const std::string& body,
                  ApiResp& out) {
     if (base == "/api/state" && m == "GET")   { out = stateResp();  return true; }
@@ -110,7 +116,7 @@ class WebApi {
   // read the ?turn=<id> the client polls its own turn's reply with.
   bool tryChat(const std::string& m, const std::string& base, const std::string& path,
                const std::string& body, ApiResp& out) {
-    if (base != "/api/chat") return false;
+    if (base != "/api/chat") return tryEngine(m, base, body, out);   // lane E2-P-HOST2: /api/engine beside it
     out = m == "POST" ? chatPost(body) : chatGet(path);
     return true;
   }
@@ -817,11 +823,54 @@ class WebApi {
     // Session usage (real engine counters).
     d["turnInFlight"] = s.turnInFlight;
     d["turnCount"]    = s.turnCount;
+    fillEngine(d);   // lane E2-P-HOST2: which engine answers, and engine 2's own counters while it does
+    fillMemberModeration(d);
     d["params"].to<JsonArray>();   // ring/hardware overrides do not apply to a VN
     // NOTE: no d.ota* fields - ESP OTA does not apply; the platform rolls the image.
     std::string out;
     serializeJson(d, out);
     return okJson(out);
+  }
+
+  // Lane E2-P-HOST2: the engine this instance runs (`engine`, from `engineFrom`: instance, env or default), the
+  // one its next start takes (`engineNext`), and while engine 2 runs its version line (the device's engine-2
+  // image reports the same) and its turn count.
+  void fillEngine(JsonDocument& d) {
+    const EngineChoice next = engineChoice(rig_->cfg(), rig_->dataDir());
+    d["engine"] = rig_->engineNumber();
+    d["engineNext"] = next.engine;
+    d["engineFrom"] = next.from;
+    const Engine2Stats* e2 = rig_->engine2Stats();
+    if (!e2) return;
+    d["fw"] = NIMBUS_FW_VERSION_ENGINE2;
+    d["turnCount"] = e2->turns.load();
+  }
+  // Lane E2-REP3: the daemon has no moderation classifier, so on its own provider key (any head but the Cumulo
+  // router) nothing checks a member's messages or the replies to them; /api/state says so.
+  void fillMemberModeration(JsonDocument& d) {
+    const std::string head = rig_->hostBadge();
+    if (head.empty() || head == kCumuloSlug) return;
+    d["memberModeration"] =
+        "Members' messages and the replies to them are not checked by a moderation service: this instance runs on "
+        "its own provider key.";
+  }
+  ApiResp engineGet() {
+    JsonDocument d;
+    fillEngine(d);
+    d.remove("fw");
+    d.remove("turnCount");
+    std::string out;
+    serializeJson(d, out);
+    return okJson(out);
+  }
+  // POST /api/engine engine=1|2: the instance's choice for its next start (mem/engine.json); the running engine
+  // stays until the restart. Engine 1 reads every engine-2 turn from its own day stream (the way back).
+  ApiResp enginePost(const std::string& body) {
+    const std::string v = formValue(body, "engine");
+    if (v != "1" && v != "2") return ApiResp{400, "application/json", R"({"error":"Send engine=1 or engine=2."})"};
+    if (!storeEngineFile(rig_->dataDir(), v == "2" ? 2 : 1))
+      return ApiResp{500, "application/json", R"({"error":"The choice was not stored. Check the instance disk."})"};
+    return engineGet();
   }
 
   void fillDisk(JsonDocument& d) {
@@ -930,6 +979,13 @@ class WebApi {
     u["turns"] = s.turnCount;
     u["lastIn"] = s.lastTokensIn;
     u["lastOut"] = s.lastTokensOut;
+    if (const Engine2Stats* e2 = rig_->engine2Stats()) {   // lane E2-P-HOST2: engine 2 answers the turns
+      u["sessIn"] = e2->sessIn.load();
+      u["sessOut"] = e2->sessOut.load();
+      u["turns"] = e2->turns.load();
+      u["lastIn"] = e2->lastIn.load();
+      u["lastOut"] = e2->lastOut.load();
+    }
     u["byProvider"].to<JsonArray>();
     {
       JsonDocument cd;   // lane DEF: the Usage page's monthly ceiling meter
