@@ -539,6 +539,7 @@ class ChatBinding {
     in.parts = msg.parts;
     in.stored = msg.stored;
     in.ctx.photosBlind = msg.photosBlind;
+    in.neutralSwitch = !ownerChat();   // R11: a member's or group's switch line names only the model that answered
     // Lane E2-STORE: a chat whose stored conversation could not be loaded tries again before
     // the turn, so the turn sees the whole conversation as soon as the card answers.
     if (movedTo_.empty()) reload();   // E2-FIX3: held for the new conversation, the caller stores it first
@@ -655,6 +656,14 @@ class ChatBinding {
     r.moreHooks = [](PlainHooks& h) { (void)installSuppression(h); };
     r.owner = ownerSink();
     return r;
+  }
+
+  // Review R8: a routine or wake-up fire on this chat while the head is held: it starts on the stand-in (engine
+  // 1's start-past covers every turn), with no line and no latch of its own.
+  void standInRoutine(RoutineDeps& r) {
+    r.startPast = heldAsk(r.head.model);
+    if (d_.fallbacks)
+      r.failover = [this](const FailoverAsk& ask, std::vector<FailoverTarget>& out) { failoverTargets(ask, out); };
   }
 
   // The reply as it left in the last turn, after the owner's output rules ("" when no reply went
@@ -857,6 +866,19 @@ class ChatBinding {
     };
     return r;
   }
+  // The held head's start-past question for `model` (engine 1's class for the park's cause; a pause or a budget:
+  // none).
+  FailoverAsk heldAsk(const std::string& model) const {
+    namespace orch = nimbus::orch;
+    orch::ParkEntry e;
+    const bool parked = parkEntryOf(cfg_.provider, d_.platform->nowMs(), e) && e.kind != orch::ParkKind::None;
+    FailoverAsk ask;
+    ask.provider = cfg_.provider;
+    ask.model = model;
+    ask.held = true;
+    ask.heldClass = heldClassOf(parked ? e.kind : orch::ParkKind::None, !parked || (e.paused != 0));
+    return ask;
+  }
   // The chat is the owner's (his words, the episode's notice); no limitChat answer: it is (the hosted daemon).
   bool ownerChat() const { return !d_.limitChat || d_.limitChat(cfg_.chatId).owner; }
   // Lane E2-PARK1 (engine 1's startPastParkedHead): the held head's turn, set to start on the first fall-back
@@ -868,11 +890,7 @@ class ChatBinding {
     const uint32_t now = d_.platform->nowMs();
     orch::ParkEntry e;
     const bool parked = parkEntryOf(cfg_.provider, now, e) && e.kind != orch::ParkKind::None;
-    FailoverAsk ask;
-    ask.provider = cfg_.provider;
-    ask.model = cfg_.model;
-    ask.held = true;
-    ask.heldClass = heldClassOf(parked ? e.kind : orch::ParkKind::None, !parked || (e.paused != 0));
+    const FailoverAsk ask = heldAsk(cfg_.model);
     std::vector<FailoverTarget> to;
     if (d_.fallbacks) failoverTargets(ask, to);
     if (to.empty()) {
@@ -880,12 +898,12 @@ class ChatBinding {
       return false;
     }
     in.startPast = ask;
-    if (!parked || e.paused || msg.trigger == Trigger::AgentResult || !ownerChat() ||
-        !orch::providerPark().noticeDue(cfg_.provider.c_str()))
-      return true;
+    // R13: the latch is taken only once the line went out (noteHead), so a failed stand-in reply keeps the notice.
+    if (!parked || e.paused || e.noticed || msg.trigger != Trigger::Owner || !ownerChat()) return true;
     const HeldReasons::Reason r = heldReasons().of(cfg_.provider, e.httpStatus);
     in.startLine = failoverLine(cfg_.provider, ExchangeErr::KeyRefused, r.status, r.text, to.front().model);
     in.startStored = failoverLine(cfg_.provider, ExchangeErr::KeyRefused, r.status, std::string(), to.front().model);
+    startTold_ = true;
     return true;
   }
   // Lane E2-FIX14: after a turn, the shared park learns what the head answered (parkHead only).
@@ -898,7 +916,11 @@ class ChatBinding {
     const std::string key = d_.key ? d_.key() : std::string();
     const uint32_t now = d_.platform->nowMs();
     const bool refusedAgain = probeTurn_ && out.parkHost && !out.switches;
-    noteHeadOutcome(cfg_.provider, key, out, msg.probe, /*told=*/!refusedAgain, now);
+    // R3: only the owner's chat takes the episode's notice: a member's or group's line never tells him.
+    noteHeadOutcome(cfg_.provider, key, out, msg.probe, /*told=*/!refusedAgain && ownerChat(), now);
+    if (startTold_ && out.delivered && !out.statusText.empty())   // R13: the stand-in's notice went out
+      (void)orch::providerPark().noticeDue(cfg_.provider.c_str());
+    startTold_ = false;
     if (heldStatus_.empty()) return;
     std::string line;
     line.swap(heldStatus_);
@@ -1106,7 +1128,13 @@ class ChatBinding {
       c.held = [this](const SummarizerRung& r) {
         const std::string key = r.host == cfg_.provider && d_.key ? d_.key() : std::string();
         std::string why;
-        if (!headHeld(r.host, key, d_.overBudget && d_.overBudget(r.host), d_.platform->nowMs(), why)) return false;
+        // R9: a parked provider is never asked here, also while its re-check is due or its probe is out.
+        nimbus::orch::ParkEntry e;
+        if (parkEntryOf(r.host, d_.platform->nowMs(), e) && e.kind != nimbus::orch::ParkKind::None &&
+            (e.seamMask & (1u << (uint8_t)nimbus::orch::PaidSeam::Chat)))
+          why = r.host + " is parked";
+        else if (!headHeld(r.host, key, d_.overBudget && d_.overBudget(r.host), d_.platform->nowMs(), why))
+          return false;
         say(("e2: summarizer " + r.host + " held, no request: " + why).c_str());
         return true;
       };
@@ -1230,6 +1258,7 @@ class ChatBinding {
   std::string shown_;           // the reply as it left (E2-FIX14)
   bool withheld_ = false;       // the outbound screen withheld it
   bool probeTurn_ = false;      // this turn is the park's re-check (E2-REP1)
+  bool startTold_ = false;      // this stand-in turn carries the episode's notice (E2-PARK1 R13)
   std::string heldStatus_;      // its status line, sent once its answer is known (E2-REP1)
   bool busy_ = false;
   bool migrationRan_ = false;

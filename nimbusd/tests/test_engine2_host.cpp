@@ -325,8 +325,10 @@ void caseDelete(ndtest::Ctx& c) {
   c.ok(h.files.put("docs", "old.txt", "old\n", err), "engine 1's store holds docs/old.txt");
   (void)h.host->say("owner", "delete docs/old.txt", "web");
   const std::string& first = h.model.requests().front().body;
-  c.ok(first.find("delete_file(path)") != std::string::npos && first.find("\"name\":\"more\"") != std::string::npos,
-       "the request offers more and its index names delete_file");
+  // Since lane E2-BFIX4 the index names a group by its few words (texts.h kGroupWords), not its tools' signatures.
+  c.ok(first.find("delete, move, download and share files") != std::string::npos &&
+           first.find("\"name\":\"more\"") != std::string::npos,
+       "the request offers more and its index names the group that holds delete_file");
   c.ok(h.model.last().body.find("deleted docs/old.txt (4 B)") != std::string::npos, "the result says what was deleted");
   struct stat st;
   c.ok(::stat((dir + "/mem/files/docs/old.txt").c_str(), &st) != 0, "the bytes are gone");

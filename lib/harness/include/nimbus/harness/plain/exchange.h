@@ -173,7 +173,7 @@ struct ExchangeResult {
   // Lane E2-PARK1: that refusal was read from the provider's message words alone (no status, type or code
   // said it): the engine asks the account (one small request) before anything is parked.
   bool byText = false;
-  bool refusesAll = false;     // E2-PARK1: the account check was refused too: the provider refuses every request
+  bool refusesModel = false;   // E2-PARK1: the account check was refused too, no billing class: the head model is refused
   bool modelUnusable = false;  // the provider does not know the model: the caller marks it unusable
   uint16_t dropped = 0;        // what the last request's pre-flight left out (plain/route.h dropped::)
   StatusLine status = StatusLine::None;   // CutAnswer or ProviderError when err != None

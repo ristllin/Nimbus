@@ -174,6 +174,7 @@ struct Turn {
   const std::string& storedLine() const { return statusStored.empty() || statusRef != &statusText ? *statusRef : statusStored; }
   bool parkHost = false, failOver = false;
   bool modelUnusable = false;          // the provider does not know the model (E2-R8a: the store marks it)
+  std::string unusableProvider, unusableModel;   // which head did not know it (review R2)
   // Lane E2-P-FO: rounds moved to another head, the heads tried (slot/model), the answering head's slot
   // (set at the first switch), the person's line per switch, what each head left was billed, and the
   // turn's totals when the head now answering took over (its share is the rest).
@@ -186,7 +187,8 @@ struct Turn {
   HeadShare base;
   int parkStatus = 0;                  // the park's refusal: its status and body (E2-FIX14)
   bool parkBilling = false;            // and billing by the classifier (E2-CFIX1)
-  bool parkAll = false;                // and the account check was refused too (E2-PARK1)
+  bool parkModel = false;              // and the account check was refused too (E2-PARK1)
+  bool neutralSwitch = false;          // a member's chat: the switch line names only the model (R11)
   std::string parkText;
   std::vector<TurnOutcome::FallbackRefusal> fallbackRefusals;   // E2-REP1
   std::string cause;
@@ -407,6 +409,7 @@ class TurnRun {
     t_.ctx.startedAt = epoch();
     t_.ctx.startedMs = t_.startMs = d_.platform->nowMs();
     t_.tz = in.tzMinutes;
+    t_.neutralSwitch = in.neutralSwitch;
     // A resumed run's turn is open from its first item (its owner message, calls and results of the
     // run a cut stopped): a drop to make room never takes them (lane RB-X1).
     const uint64_t own = t_.ctx.trigger == Trigger::Resume ? firstQOfTurn(t_.ctx.turn) : 0;
@@ -1007,38 +1010,60 @@ class TurnRun {
   // ---- lane E2-PARK1: is the request refused, or the account? ---------------------------------------
   // A 4xx no structured signal explains (a bad request or a refusal by class, or a billing class read from the
   // message words alone) asks the account with one small known-good request to the same provider and key (the
-  // park's re-check request), at most once per provider per ten minutes (EngineDeps::accountCheckDue). Refused
-  // with a 4xx too: the provider refuses every request from this key, so it is parked and the round fails over
-  // as for billing. Answered (or no verdict): the fault is this request's, nothing is parked, the bad-request
-  // path as before. Never for a 429, a 408, a 5xx, a timeout or a network failure; never twice in an exchange.
+  // park's re-check request, at the provider's default effort), at most once per provider per ten minutes
+  // (EngineDeps::accountCheckDue). Never for a 429, a 408, a 5xx, a timeout or a network failure; never twice in
+  // an exchange. A billing class read from text keeps its park unless the check is answered (review R1); a
+  // refusal with no class is parked only when the check is refused with a 4xx too, on the chat seam alone: this
+  // head model's requests are refused (review R6). Answered: the fault is this request's, the bad-request path.
+  enum class Check : uint8_t { NotAsked, Answered, Refused, NoVerdict };
   static bool clientRefusal(int status) { return status >= 400 && status < 500 && status != 429 && status != 408; }
   bool unexplained(const ExchangeResult& ex) const {
-    if (ex.parkHost) return ex.byText;
+    if (ex.parkHost) return ex.byText && clientRefusal(ex.httpStatus);
     return ex.err == ExchangeErr::Other && clientRefusal(ex.httpStatus) && !ex.modelUnusable && !ex.failOver &&
            !providers::imageparts::refusedImages(ex.httpStatus, ex.providerBody);
   }
   void askAccount(ExchangeResult& ex) {
     if (!d_.accountCheckDue || !unexplained(ex)) return;
-    const bool refused = d_.accountCheckDue(slotNow()) && accountRefused();
-    if (!refused && !ex.parkHost) return;
+    const Check c = d_.accountCheckDue(slotNow()) ? accountCheck() : Check::NotAsked;
+    event(c == Check::Refused ? "account:refused" : c == Check::Answered ? "account:answered" : "account:none");
+    hlog::logf("plain(%s): %s refused a request (HTTP %d): account check %s", d_.chatKey.c_str(), slotNow().c_str(),
+               ex.httpStatus, c == Check::Refused ? "refused too" : c == Check::Answered ? "answered" : "not asked or no verdict");
+    if (ex.parkHost) {   // a billing class read from text: only an answered check lifts it
+      ex.byText = false;
+      if (c == Check::Answered) asRequestFault(ex);
+      return;
+    }
+    if (c == Check::Refused) asModelRefused(ex);
+  }
+  // The answered check: this request's fault, the bad-request path (nothing parked).
+  void asRequestFault(ExchangeResult& ex) {
+    const std::string body = ex.parkBody;
+    ex.parkHost = ex.billing = false;
+    ex.err = ExchangeErr::Other;
+    ex.parkBody.clear();
+    ex.providerBody = body;
+    refreshLines(ex);
+  }
+  // A refusal with no class, the check refused too: parked on the chat seam as this model's refusal.
+  void asModelRefused(ExchangeResult& ex) {
+    ex.parkHost = ex.refusesModel = true;
+    ex.billing = false;
+    ex.err = ExchangeErr::KeyRefused;
+    ex.parkBody = ex.providerBody;
+    ex.providerBody.clear();
+    refreshLines(ex);
+  }
+  void refreshLines(ExchangeResult& ex) {
     const std::string slug = providerSlugOf(t_.ctx, t_.setup.head);
-    const std::string body = ex.parkHost ? ex.parkBody : ex.providerBody;
-    ex.parkHost = ex.billing = ex.refusesAll = refused;
-    ex.byText = false;
-    ex.err = refused ? ExchangeErr::KeyRefused : ExchangeErr::Other;
-    ex.parkBody = refused ? body : std::string();
-    ex.providerBody = refused ? std::string() : body;
-    if (ex.reason.empty()) ex.reason = refusalReason(body);
+    if (ex.reason.empty()) ex.reason = refusalReason(ex.parkHost ? ex.parkBody : ex.providerBody);
     ex.errorLine = exchangeLine(ex.err, slug, ex.httpStatus, ex.reason);
     ex.errorLineStored = exchangeLine(ex.err, slug, ex.httpStatus);
-    event(refused ? "account:refused" : "account:answered");
-    hlog::logf("plain(%s): %s refused a request (HTTP %d): the account %s", d_.chatKey.c_str(), slotNow().c_str(),
-               ex.httpStatus, refused ? "is refused too: parked" : "answered: this request's fault");
   }
   // The one small request (plain::recheckAsk) on the answering head; its usage is the turn's.
-  bool accountRefused() {
+  Check accountCheck() {
     SummarizerRung rung;
     rung.endpoint = t_.setup.head;
+    rung.endpoint.effort.clear();   // R6: the provider's default effort, never the refused request's setting
     rung.host = slotNow();
     rung.model = t_.ctx.model;
     rung.dialect = t_.ctx.dialect;
@@ -1050,7 +1075,9 @@ class TurnRun {
     t_.end.outputTokens += u.completionTokens;
     RequestTokens rt{u.promptTokens, u.completionTokens, u.cacheReadTokens, u.cacheWriteTokens, u.cacheWrite1hTokens};
     t_.end.microUsd = (uint32_t)std::min<uint64_t>((uint64_t)t_.end.microUsd + requestMicroUsd(t_.setup.cost, rt), UINT32_MAX);
-    return check.requests && check.err != ExchangeErr::None && clientRefusal(check.httpStatus);
+    if (!check.requests) return Check::NoVerdict;
+    if (check.err == ExchangeErr::None || check.err == ExchangeErr::Cut) return Check::Answered;
+    return clientRefusal(check.httpStatus) ? Check::Refused : Check::NoVerdict;
   }
 
   // Lane E2-REP1 (review F): a monthly limit crossed by this turn's own answered requests (or reached
@@ -1238,6 +1265,10 @@ class TurnRun {
     takePark(ex);
     notePending(ex);
     t_.failOver |= ex.failOver;
+    if (ex.modelUnusable && !t_.modelUnusable) {   // R2: the head that answered so, never the configured one
+      t_.unusableProvider = slotNow();
+      t_.unusableModel = t_.ctx.model;
+    }
     t_.modelUnusable |= ex.modelUnusable;
   }
 
@@ -1260,14 +1291,14 @@ class TurnRun {
       r.status = ex.httpStatus;
       r.text = ex.parkBody;
       r.billing = ex.billing;
-      r.all = ex.refusesAll;
+      r.model = ex.refusesModel;
       t_.fallbackRefusals.push_back(std::move(r));
       return;
     }
     t_.parkHost = true;
     t_.parkStatus = ex.httpStatus;
     t_.parkBilling = ex.billing;
-    t_.parkAll = ex.refusesAll;
+    t_.parkModel = ex.refusesModel;
     t_.parkText = ex.parkBody;
   }
 
@@ -1583,6 +1614,11 @@ class TurnRun {
   void switchedLine() {
     const bool fromFallback = t_.ex.err == ExchangeErr::None || t_.ex.err == ExchangeErr::Cut;
     if (t_.switchLines.empty() || !t_.reply || !fromFallback) return;
+    if (t_.neutralSwitch) {   // R11: the catalogued "; this answer came from " as its own sentence, nothing else
+      std::string s = std::string(texts::stubs::kAnswerFrom).substr(2);
+      s[0] = 'T';
+      t_.switchLines = t_.switchStored = s + t_.ctx.model + ".";
+    }
     if (t_.status == StatusLine::None) return setStatus(StatusLine::ProviderError, t_.switchLines, &t_.switchStored);
     if (t_.statusRef != &t_.statusText) return;
     if (t_.statusStored.empty()) t_.statusStored = t_.statusText;
@@ -2396,9 +2432,11 @@ Status PlainEngine::runTurn(const TurnInput& in, TurnOutcome& out) {
   out.parkHost = t->parkHost;
   out.parkStatus = t->parkStatus;
   out.parkBilling = t->parkBilling;
-  out.parkAll = t->parkAll;
+  out.parkModel = t->parkModel;
   out.failOver = t->failOver;
   out.modelUnusable = t->modelUnusable;
+  out.unusableProvider = t->unusableProvider;
+  out.unusableModel = t->unusableModel;
   out.switches = t->switches;
   // A deferred effect's bit is set only once its argument is copied: never a head switch without its head.
   for (size_t k = 0; k < kDeferredKinds; ++k) {

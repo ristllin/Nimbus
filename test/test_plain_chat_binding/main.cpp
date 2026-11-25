@@ -244,7 +244,7 @@ struct Device {
     d.railPending = railPending;
     if (!fallbacks.empty())   // lane E2-P-FO: as the device's fallbacksFor, by the shipped rule set
       d.fallbacks = [this](const plain::FailoverAsk& ask, std::vector<plain::HeadSlot>& out) {
-        if (!midFail) return;
+        if (!midFail && !ask.held) return;   // E2-PARK1 R4: the start past a held head ignores the setting
         plain::FallbackPlan plan;
         for (const auto& f : fallbacks) plan.priority.push_back(f.first);
         plan.model = [this](const std::string& p) {
@@ -420,6 +420,15 @@ void setUp() {   // the shared park is process-wide, as the chats told under a l
   plain::backLines().clear();
   plain::heldReasons().clear();
   plain::accountChecks().clear();
+}
+// A report turn (an agent's result), as the device's reportTurnIn builds it.
+plain::Status reportTurn(Device& dev, bool standIn) {
+  plain::ChatMessage m;
+  m.trigger = plain::Trigger::AgentResult;
+  m.text = "[agent report] digest id=j1\nThe digest is ready.";
+  m.standIn = standIn;
+  dev.out = plain::TurnOutcome{};
+  return dev.binding->turn(m, dev.out);
 }
 void tearDown() { nimbus::orch::providerPark().clear(); }
 
@@ -1365,7 +1374,6 @@ plain::MessageGate message(Device& dev, const std::string& text, const std::stri
   g.limitChat = ownerOnly;
   if (!dev.fallbacks.empty())   // E2-PARK1: the device's standInOpen, over the same fall-back order
     g.standIn = [&dev](nimbus::orch::ErrorClass cls) {
-      if (!dev.midFail) return false;
       plain::FailoverAsk ask;
       ask.provider = "anthropic";
       ask.model = dev.binding->config().model;
@@ -2468,8 +2476,8 @@ static void test_a_held_head_starts_on_its_fall_back_with_nothing_sent_to_it() {
   TEST_ASSERT_EQUAL_STRING("openai", u.slot[0].host);
   TEST_ASSERT_EQUAL_STRING("anthropic", dev.binding->config().provider.c_str());   // his head is his
   TEST_ASSERT_TRUE(nimbus::orch::providerPark().isParked("anthropic"));
-  // No fall-back open (mid-turn fail-over off): held, no request at all.
-  dev.midFail = false;
+  // No fall-back keyed: held, no request at all.
+  dev.fallbacks.clear();
   const size_t before = dev.model.requests().size();
   TEST_ASSERT_EQUAL((int)plain::GateVerdict::Held, (int)message(dev, "And now?").verdict);
   TEST_ASSERT_EQUAL(before, dev.model.requests().size());
@@ -2561,7 +2569,7 @@ static void test_a_held_message_gets_a_line_at_most_every_ten_minutes() {
   TEST_ASSERT_EQUAL_STRING(neutral.c_str(), message(dev, "hi", "2002").line.c_str());   // the member first
   const plain::MessageGate notice = message(dev, "first");
   TEST_ASSERT_EQUAL((int)plain::GateVerdict::Held, (int)notice.verdict);
-  TEST_ASSERT_TRUE_MESSAGE(has(notice.line, "says the account is out of credit"), notice.line.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(has(notice.line, "refuses requests from this key (HTTP 400)"), notice.line.c_str());   // R12
   const std::string shortLine = message(dev, "second").line;
   TEST_ASSERT_TRUE_MESSAGE(has(shortLine, "Your message was not answered.") && has(shortLine, "minutes"), shortLine.c_str());
   TEST_ASSERT_EQUAL_STRING("", message(dev, "third").line.c_str());          // within ten minutes
@@ -2639,13 +2647,13 @@ static void test_an_unexplained_refusal_asks_the_account_before_it_parks() {
   TEST_ASSERT_EQUAL(2, (int)askedOf(dev, "api.anthropic.com"));   // the request, then the one check
   TEST_ASSERT_TRUE(has(dev.model.requests()[1].body, nimbus::orch::ORCH_PARK_RECHECK_PROMPT));
   TEST_ASSERT_TRUE(nimbus::orch::providerPark().isParked("anthropic"));
-  TEST_ASSERT_TRUE(plain::heldReasons().of("anthropic", 0).all);
+  TEST_ASSERT_TRUE(plain::heldReasons().of("anthropic", 0).modelOnly);   // R6: the chat seam
   TEST_ASSERT_EQUAL_STRING("From the fall-back.", dev.out.text.c_str());
   TEST_ASSERT_EQUAL_STRING(
       "Anthropic refused the request (HTTP 400): This organization is on hold until its review closes; this answer "
       "came from gpt-5.6-luna.",
       dev.out.statusText.c_str());
-  TEST_ASSERT_TRUE(has(plain::parkedNotice("anthropic", "Anthropic", false), "refuses every request from this key"));
+  TEST_ASSERT_TRUE(has(plain::parkedNotice("anthropic", "Anthropic", true), "refuses this model's requests"));
 
   // The account answers: the fault is the request's. Nothing parked, no switch, the bad-request line.
   for (const std::string& body : {unseen, std::string(kUsageLimit)}) {
@@ -2667,8 +2675,238 @@ static void test_an_unexplained_refusal_asks_the_account_before_it_parks() {
                              ok.out.statusText.c_str());
     (void)ok.say("Again.");   // within ten minutes: no second check
     TEST_ASSERT_EQUAL(3, (int)ok.model.requests().size());
-    TEST_ASSERT_FALSE(nimbus::orch::providerPark().isParked("anthropic"));
+    // R1: inside the window a billing class read from text keeps its park; a refusal with no class parks nothing.
+    TEST_ASSERT_EQUAL(body != unseen, nimbus::orch::providerPark().isParked("anthropic"));
   }
+}
+
+// ---- review repairs R1 to R14 (lane E2-PARK1) ----------------------------------------------------
+namespace {
+void parkFor(const std::string& provider, int status, uint32_t ms) {
+  nimbus::orch::providerPark().park(provider.c_str(), nimbus::orch::PaidSeam::Chat, 0, nimbus::orch::ParkKind::Billing,
+                                    status, ms);
+}
+}  // namespace
+
+// R1: a billing refusal read from text is never un-parked by the account check: a 429 sends no check and parks;
+// inside the ten-minute window an Anthropic 400 credit refusal parks with no check.
+static void test_r1_a_text_billing_refusal_parks_without_a_check_at_429_or_inside_the_window() {
+  Device dev;
+  dev.parkHead = true;
+  dev.provider = "mistral";
+  TEST_ASSERT_TRUE(dev.boot("mistral-large-4-0").ok());
+  dev.model.push(sp::httpError(429, R"({"object":"error","message":"insufficient_quota: add funds to continue","type":"error"})"));
+  (void)dev.say("Hello.");
+  TEST_ASSERT_EQUAL_MESSAGE(1, (int)dev.model.requests().size(), "no check for a 429");
+  TEST_ASSERT_TRUE(nimbus::orch::providerPark().isParked("mistral"));
+  Device a;
+  a.parkHead = true;
+  TEST_ASSERT_TRUE(a.boot().ok());
+  TEST_ASSERT_TRUE(plain::accountChecks().due("anthropic", a.ms));   // asked a minute ago
+  a.model.push(sp::httpError(400, kCreditBody));
+  (void)a.say("Hello.");
+  TEST_ASSERT_EQUAL(1, (int)a.model.requests().size());
+  TEST_ASSERT_TRUE(nimbus::orch::providerPark().isParked("anthropic"));
+}
+
+// R2: a stand-in that does not know its model marks its own model, never the owner's head model.
+static void test_r2_a_stand_in_that_does_not_know_its_model_marks_its_own() {
+  Device dev;
+  dev.parkHead = true;
+  dev.fallbacks = {{"openai", "gpt-5.6-luna"}};
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  parkFor("anthropic", 402, dev.ms);
+  answerByHost(dev, {{"api.openai.com", sp::httpError(404, R"({"error":{"message":"The model `gpt-5.6-luna` does not exist","type":"invalid_request_error","code":"model_not_found"}})")}});
+  TEST_ASSERT_EQUAL((int)plain::GateVerdict::StandIn, (int)message(dev, "Hello.").verdict);
+  TEST_ASSERT_TRUE(dev.out.modelUnusable);
+  TEST_ASSERT_EQUAL_STRING("openai", dev.out.unusableProvider.c_str());
+  TEST_ASSERT_EQUAL_STRING("gpt-5.6-luna", dev.out.unusableModel.c_str());
+}
+
+// R3: a member's refused turn parks the provider but leaves the owner's notice due: the owner's next stand-in
+// reply carries it, and the back line is due only after that.
+static void test_r3_a_members_refusal_leaves_the_owners_notice() {
+  Device member;
+  member.parkHead = true;
+  member.fallbacks = {{"openai", "gpt-5.6-luna"}};
+  TEST_ASSERT_TRUE(member.boot("claude-haiku-5-5", "2002").ok());
+  answerByHost(member, {{"api.anthropic.com", sp::httpError(401, kKeyBody)}, {"api.openai.com", sp::say("Hi.")}});
+  (void)member.say("Hello.");
+  TEST_ASSERT_TRUE(nimbus::orch::providerPark().isParked("anthropic"));
+  nimbus::orch::ParkEntry e;
+  TEST_ASSERT_TRUE(plain::parkEntryOf("anthropic", member.ms, e));
+  TEST_ASSERT_FALSE_MESSAGE(e.noticed, "the owner was not told");
+  Device owner;
+  owner.parkHead = true;
+  owner.fallbacks = {{"openai", "gpt-5.6-luna"}};
+  TEST_ASSERT_TRUE(owner.boot().ok());
+  answerByHost(owner, {{"api.openai.com", sp::say("Fine.")}});
+  TEST_ASSERT_EQUAL((int)plain::GateVerdict::StandIn, (int)message(owner, "Hi?").verdict);
+  TEST_ASSERT_TRUE_MESSAGE(has(owner.out.statusText, "this answer came from gpt-5.6-luna."), owner.out.statusText.c_str());
+  TEST_ASSERT_TRUE(plain::parkEntryOf("anthropic", owner.ms, e) && e.noticed);
+}
+
+// R4: with mid-turn fail-over off, a held head still starts on the stand-in (engine 1's start-past is not
+// behind the setting); a failed round inside a turn still does not move.
+static void test_r4_start_past_works_with_mid_turn_fail_over_off() {
+  Device dev;
+  dev.parkHead = true;
+  dev.midFail = false;
+  dev.fallbacks = {{"openai", "gpt-5.6-luna"}};
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  parkFor("anthropic", 402, dev.ms);
+  answerByHost(dev, {{"api.openai.com", sp::say("Fine.")}});
+  TEST_ASSERT_EQUAL((int)plain::GateVerdict::StandIn, (int)message(dev, "Hello.").verdict);
+  TEST_ASSERT_EQUAL_STRING("api.openai.com", dev.model.last().req.host.c_str());
+  TEST_ASSERT_EQUAL_STRING("Fine.", dev.out.text.c_str());
+}
+
+// R5: a "back" line not sent yet is dropped when the provider is refused again.
+static void test_r5_a_back_line_is_dropped_when_the_provider_is_refused_again() {
+  plain::backLines().push("anthropic");
+  const std::string body = kCreditBody;
+  (void)plain::noteRefusal("anthropic", 0, plain::RefusalSeen{400, body, true, false}, 1000);
+  std::string p;
+  TEST_ASSERT_FALSE(plain::backLines().take(p));
+}
+
+// R6: the account check carries the provider's default effort; a refusal with no class whose check is refused
+// parks the chat seam alone, in words that name the model, never "every request from this key".
+static void test_r6_a_refused_check_with_no_class_parks_the_chat_seam_only() {
+  const std::string unseen =
+      R"({"type":"error","error":{"type":"invalid_request_error","message":"This organization is on hold."}})";
+  Device dev;
+  dev.parkHead = true;
+  TEST_ASSERT_TRUE(dev.boot("claude-sonnet-5-5").ok());
+  answerByHost(dev, {{"api.anthropic.com", sp::httpError(400, unseen)}});
+  (void)dev.say("Hello.");
+  TEST_ASSERT_EQUAL(2, (int)dev.model.requests().size());
+  TEST_ASSERT_FALSE_MESSAGE(has(dev.model.last().body, "\"effort\""), "the check sends the default effort");
+  const nimbus::orch::ParkVerdict chat = nimbus::orch::providerPark().peek("anthropic", nimbus::orch::PaidSeam::Chat, 0, dev.ms);
+  const nimbus::orch::ParkVerdict vision =
+      nimbus::orch::providerPark().peek("anthropic", nimbus::orch::PaidSeam::Vision, 0, dev.ms);
+  TEST_ASSERT_FALSE(chat.open);
+  TEST_ASSERT_TRUE(vision.open);
+  const std::string notice = plain::parkedNotice("anthropic", "Anthropic", true);
+  TEST_ASSERT_TRUE_MESSAGE(has(notice, "refuses this model's requests (HTTP 400): This organization is on hold."), notice.c_str());
+  TEST_ASSERT_FALSE(has(notice, "every request"));
+}
+
+// R7: the one-request check carries an output cap on the Responses and Chat codecs too.
+static void test_r7_the_check_carries_an_output_cap_on_every_codec() {
+  Device dev;
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  const struct {
+    const char* provider;
+    const char* model;
+    const char* field;
+  } kCases[] = {{"openai", "gpt-5.6-luna", "\"max_output_tokens\""}, {"mistral", "mistral-large-4-0", "\"max_tokens\""},
+                {"anthropic", "claude-haiku-5-5", "\"max_tokens\""}};
+  for (const auto& k : kCases) {
+    plain::HeadSlot slot;
+    TEST_ASSERT_TRUE(plain::headSlotFor(dev.slots(), k.provider, k.model, slot).ok());
+    dev.model.push(sp::say("ok"));
+    plain::ExchangeResult ex;
+    const plain::Status st = plain::recheckAsk(dev.platform, dev.model, plain::rungOf(slot), ex);
+    TEST_ASSERT_TRUE_MESSAGE(has(dev.model.last().body, k.field), k.provider);
+  }
+}
+
+// R8: a routine and an agent's report turn run on the stand-in while the head is held, with no line of their own.
+static void test_r8_routines_and_reports_run_on_the_stand_in() {
+  Device dev;
+  dev.parkHead = true;
+  dev.fallbacks = {{"openai", "gpt-5.6-luna"}};
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  parkFor("anthropic", 402, dev.ms);
+  std::string heldText;
+  plain::HeldStore held(plain::HeldFile{[&heldText] { return heldText; }, [&heldText](const std::string& t) {
+                                          heldText = t;
+                                          return true;
+                                        }});
+  plain::RoutineDeps rd = dev.binding->routineDeps("claude-haiku-5-5");
+  rd.held = &held;
+  dev.binding->standInRoutine(rd);
+  plain::RoutineFire fire;
+  fire.def.id = "lp00c2";
+  fire.def.name = "Morning";
+  fire.def.instruction = "Say good morning.";
+  fire.fireAt = kEpoch0 + dev.ms / 1000u;
+  answerByHost(dev, {{"api.openai.com", sp::say("Good morning.")}});
+  plain::FireReport rep;
+  TEST_ASSERT_TRUE(plain::runRoutine(rd, fire, rep).ok());
+  TEST_ASSERT_EQUAL_STRING("api.openai.com", dev.model.last().req.host.c_str());
+  TEST_ASSERT_EQUAL(1, (int)rep.outcome.switches);
+  TEST_ASSERT_TRUE(reportTurn(dev, true).ok());
+  TEST_ASSERT_EQUAL_STRING("api.openai.com", dev.model.last().req.host.c_str());
+  TEST_ASSERT_EQUAL_STRING("", dev.out.statusText.c_str());
+  for (const std::string& h : hostsAsked(dev)) TEST_ASSERT_EQUAL_STRING("api.openai.com", h.c_str());
+}
+
+// R9: in a stand-in turn the summariser never asks the held head, also while its re-check is due.
+static void test_r9_the_summarizer_never_asks_a_parked_head_while_its_recheck_is_due() {
+  Device dev;
+  dev.parkHead = true;
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  for (int i = 0; i < 4; ++i) {
+    dev.model.push(sp::say("Answer " + std::to_string(i) + "."));
+    TEST_ASSERT_TRUE(dev.say("Question " + std::to_string(i) + ".").ok());
+  }
+  const size_t before = dev.model.requests().size();
+  parkFor("anthropic", 402, dev.ms);
+  dev.ms += nimbus::orch::ProviderPark::kRecheckMs + 1000;   // due: peek reads it open
+  dev.model.push(sp::say("Facts and standing preferences: none."));
+  (void)dev.binding->compactNow();
+  TEST_ASSERT_EQUAL(before, dev.model.requests().size());
+}
+
+// R10: a head over its token or call budget starts on the stand-in, as engine 1 moves the turn.
+static void test_r10_a_head_over_its_budget_starts_on_the_stand_in() {
+  Device dev;
+  dev.parkHead = true;
+  dev.overBudget = true;
+  dev.fallbacks = {{"openai", "gpt-5.6-luna"}};
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  answerByHost(dev, {{"api.openai.com", sp::say("Fine.")}});
+  TEST_ASSERT_EQUAL((int)plain::GateVerdict::StandIn, (int)message(dev, "Hello.").verdict);
+  TEST_ASSERT_EQUAL_STRING("api.openai.com", dev.model.last().req.host.c_str());
+}
+
+// R11: a member's fail-over line names only the model that answered: no provider reason, no money words.
+static void test_r11_a_members_switch_line_is_neutral() {
+  Device dev;
+  dev.parkHead = true;
+  dev.fallbacks = {{"openai", "gpt-5.6-luna"}};
+  TEST_ASSERT_TRUE(dev.boot("claude-haiku-5-5", "2002").ok());
+  answerByHost(dev, {{"api.anthropic.com", sp::httpError(400, kUsageLimit)}, {"api.openai.com", sp::say("Hi.")}});
+  (void)dev.say("Hello.");
+  TEST_ASSERT_EQUAL_STRING("This answer came from gpt-5.6-luna.", dev.out.statusText.c_str());
+}
+
+// R12: a billing park at a status other than 402 that no reason was kept for (a restart) is not "out of credit".
+static void test_r12_a_park_with_no_reason_is_not_called_out_of_credit() {
+  parkFor("anthropic", 400, 1000);
+  const std::string notice = plain::parkedNotice("anthropic", "Anthropic", false);
+  TEST_ASSERT_TRUE_MESSAGE(has(notice, "Anthropic refuses requests from this key (HTTP 400)."), notice.c_str());
+  TEST_ASSERT_FALSE(has(notice, "out of credit"));
+  std::string why;
+  TEST_ASSERT_TRUE(plain::headHeld("anthropic", std::string(), false, 1000, why));
+  TEST_ASSERT_FALSE_MESSAGE(has(why, "credit"), why.c_str());
+}
+
+// R13: the episode's notice is taken only when the stand-in's reply carried it: a failed stand-in keeps it due.
+static void test_r13_a_failed_stand_in_keeps_the_notice_due() {
+  Device dev;
+  dev.parkHead = true;
+  dev.fallbacks = {{"openai", "gpt-5.6-luna"}};
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  parkFor("anthropic", 402, dev.ms);
+  answerByHost(dev, {{"api.openai.com", sp::httpError(500)}});
+  (void)message(dev, "Hello.");
+  TEST_ASSERT_FALSE(dev.out.delivered);
+  nimbus::orch::ParkEntry e;
+  TEST_ASSERT_TRUE(plain::parkEntryOf("anthropic", dev.ms, e));
+  TEST_ASSERT_FALSE(e.noticed);
 }
 
 // D1: with midTurnFailover off the failed round is the turn's end, on the head only.
@@ -2992,5 +3230,18 @@ int main(int, char**) {
   RUN_TEST(test_a_held_message_gets_a_line_at_most_every_ten_minutes);
   RUN_TEST(test_the_owner_is_told_once_when_the_provider_answers_again);
   RUN_TEST(test_an_unexplained_refusal_asks_the_account_before_it_parks);
+  RUN_TEST(test_r1_a_text_billing_refusal_parks_without_a_check_at_429_or_inside_the_window);
+  RUN_TEST(test_r2_a_stand_in_that_does_not_know_its_model_marks_its_own);
+  RUN_TEST(test_r3_a_members_refusal_leaves_the_owners_notice);
+  RUN_TEST(test_r4_start_past_works_with_mid_turn_fail_over_off);
+  RUN_TEST(test_r5_a_back_line_is_dropped_when_the_provider_is_refused_again);
+  RUN_TEST(test_r6_a_refused_check_with_no_class_parks_the_chat_seam_only);
+  RUN_TEST(test_r7_the_check_carries_an_output_cap_on_every_codec);
+  RUN_TEST(test_r8_routines_and_reports_run_on_the_stand_in);
+  RUN_TEST(test_r9_the_summarizer_never_asks_a_parked_head_while_its_recheck_is_due);
+  RUN_TEST(test_r10_a_head_over_its_budget_starts_on_the_stand_in);
+  RUN_TEST(test_r11_a_members_switch_line_is_neutral);
+  RUN_TEST(test_r12_a_park_with_no_reason_is_not_called_out_of_credit);
+  RUN_TEST(test_r13_a_failed_stand_in_keeps_the_notice_due);
   return UNITY_END();
 }

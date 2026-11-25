@@ -554,6 +554,7 @@ struct Fire {
     };
     e.deliver = [this](const DeliverInput& in, DeliverOutcome& out) { return capture(in, out); };
     e.noCompaction = "routine-fires-start-from-their-state";   // nothing older is resident to compact
+    e.failover = deps.failover;   // R8: a held head's fire starts on its stand-in
     return e;
   }
 
@@ -638,6 +639,7 @@ Status runRoutine(const RoutineDeps& deps, const RoutineFire& fire, FireReport& 
     in.ctx.turn = turn;
     in.tzMinutes = deps.tzMinutes;
     in.text = routineInputText(f->fire, deps.tzMinutes, deps.head.dayStartMin);
+    in.startPast = deps.startPast;   // R8
     // Lane E2-P-CONN2: engine 1's connector grant for a turn nobody is writing (engine.cpp runTurn,
     // RB-Q2a): the owner's connectors only with his routine switch on, nothing at all otherwise.
     const orch::ConnectorGrantScope grant(orch::unattendedGranted(routineFacts(fire), orch::ToolUse::Spend)

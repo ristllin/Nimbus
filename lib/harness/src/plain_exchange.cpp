@@ -201,6 +201,7 @@ class Exchange {
     in_.maxTokens = tokens;
     in_.bodyCap = bodyCap_;
     dropped_ = preflight(route_, ceiling(), pre_, in_);
+    if (req_.once && !in_.maxTokens) in_.maxTokens = req_.capCeiling;   // R7: a cap on every codec (row omits)
     http_ = HttpRequest{};
     const Status st = req_.wire->render(in_, http_);
     dropped_ |= pre_.lateDropped;
@@ -237,6 +238,11 @@ class Exchange {
   // only when it gives kRetryGainTokens more (the shared retry-gain rule), at the same effort.
   uint32_t ceiling() const { return cutRetried_ && req_.retryCeiling ? req_.retryCeiling : req_.capCeiling; }
   void ceilCaps(const providers::RoundLoad& load) {
+    if (!cap_.maxTokens && req_.once) {   // R7: the one-request check carries its cap on every codec
+      cap_.maxTokens = req_.capCeiling;
+      cap_.retryTokens = 0;
+      return;
+    }
     if (!cap_.maxTokens) return;   // an uncapped row sends no cap, the summarizer's included
     cap_.maxTokens = minU(cap_.maxTokens, req_.capCeiling);
     const uint32_t fit = providers::roundFitTokens(tableHost_, model_, minU(window_, remaining()), load);

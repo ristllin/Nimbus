@@ -522,8 +522,10 @@ std::vector<plain::SummarizerRung> summarizerLadder(const std::string& head, con
 // Lane E2-P-FO: the heads a failed round may move to (engine 1's fallbackOrder, plain::fallbackSlots):
 // none with midTurnFailover off; else by the owner's rule set over the provider priority, each provider
 // keyed and not parked, paused or over its monthly limit, on its own head model.
+// E2-PARK1 R4: the start past a held head (ask.held) does not read the mid-turn setting, as engine 1's
+// startPastParkedHead does not; the move inside a turn keeps it.
 void fallbacksFor(const plain::SlotSettings& set, const plain::FailoverAsk& ask, std::vector<plain::HeadSlot>& out) {
-  if (!store::midTurnFailover()) return;
+  if (!ask.held && !store::midTurnFailover()) return;
   plain::FallbackPlan plan;
   plan.rulesJson = store::fallbackRulesJson().c_str();
   const std::string pri(store::providerPriority().c_str());
@@ -978,6 +980,16 @@ std::string headKeyText() { return keyOf(std::string(store::resolvedOrchHost().c
 
 // Lane E2-PARK1: a fall-back the owner's rules name for a held head (`cls`) is open, priced and sized, as the
 // binding's own fail-over targets are (none with mid-turn fail-over off).
+bool standInOpen(nimbus::orch::ErrorClass cls);
+// The head's held cause as engine 1 classes it (R14: the stand-in for the cause, never class None by default).
+nimbus::orch::ErrorClass heldClassNow() {
+  nimbus::orch::ParkEntry e;
+  const bool parked = plain::parkEntryOf(store::resolvedOrchHost().c_str(), (uint32_t)millis(), e) &&
+                      e.kind != nimbus::orch::ParkKind::None;
+  return plain::heldClassOf(parked ? e.kind : nimbus::orch::ParkKind::None, !parked || e.paused != 0);
+}
+bool standInNow() { return standInOpen(heldClassNow()); }
+
 bool standInOpen(nimbus::orch::ErrorClass cls) {
   const String host = store::resolvedOrchHost();
   plain::FailoverAsk ask;
@@ -1063,7 +1075,7 @@ bool turnFor(plain::ChatBinding& b, const String& chatId, const plain::ChatMessa
   engineSetHeadArc(false);
   nimbus::crash::turnEnded();
   if (status) *status = st;
-  if (out.modelUnusable) markUnusable(b.config().provider, b.config().model);
+  if (out.modelUnusable) markUnusable(out.unusableProvider, out.unusableModel);   // R2: the head that said so
   afterTurn(msg.probe, st, out);   // E2-FIX14: a turn refused before its first request gives the re-check back
   logTurn(b, out, st, millis() - t0);
   noteHeld(b);   // E2-BFIX1: items storage still holds in RAM are named at the next boot if a restart comes first
@@ -1221,7 +1233,7 @@ plain::WaitingAnswer answerKept(const plain::WaitingMessage& w, const String& ch
   std::string why;
   if (std::find(s_keptStallTold.begin(), s_keptStallTold.end(), std::string(chatId.c_str())) != s_keptStallTold.end() &&
       plain::headHeld(host.c_str(), keyOf(host.c_str()), store::providerOverBudget(host), (uint32_t)millis(), why) &&
-      !standInOpen(nimbus::orch::ErrorClass::None))
+      !standInNow())
     return keptStalled(chatId, nullptr);
   // E2-FIX14: a kept message's turn passes engine 1's money gates as a new message does (its inbound screen
   // ran when it came): over the limit, parked or paused, no request.
@@ -1666,7 +1678,18 @@ const char* kindWord(sch::Kind k) {
 // Lane E2-FIX14: a routine or a wake-up (E2-P-MEM) sends no request while the head's provider is over its
 // limit or held by the park (a refused key, an empty credit, a pause); it waits for its next slot. A
 // reminder goes (it sends its stored text, no request). The overall monthly limit first, as before.
-bool routineHeld(sch::Kind kind, const String& host, nimbus::orch::FireOutcome& out) {
+// E2-PARK1 R8: a turn no person writes (a routine, a wake-up, an agent's report) while the head is held, or its
+// re-check is due: true when a stand-in is open, so the turn starts there instead of waiting (engine 1's
+// start-past covers every turn); never the head's re-check.
+bool unattendedStandIn(const std::string& provider, bool held) {
+  nimbus::orch::ParkEntry e;
+  const bool due = plain::parkEntryOf(provider, (uint32_t)millis(), e) && e.kind != nimbus::orch::ParkKind::None &&
+                   (e.seamMask & (1u << (uint8_t)nimbus::orch::PaidSeam::Chat)) && !e.recheckInMs;
+  return (held || due) && standInNow();
+}
+
+bool routineHeld(sch::Kind kind, const String& host, nimbus::orch::FireOutcome& out, bool& standIn) {
+  standIn = false;
   if (kind == sch::Kind::Reminder) return false;
   if (spend::frozen()) {
     out.deferred = true;
@@ -1675,8 +1698,9 @@ bool routineHeld(sch::Kind kind, const String& host, nimbus::orch::FireOutcome& 
   }
   std::string held;
   const std::string provider(host.c_str());
-  if (!plain::headHeld(provider, keyOf(provider), store::providerOverBudget(host), (uint32_t)millis(), held))
-    return false;
+  const bool h = plain::headHeld(provider, keyOf(provider), store::providerOverBudget(host), (uint32_t)millis(), held);
+  if ((standIn = unattendedStandIn(provider, h))) return false;
+  if (!h) return false;
   out.deferred = true;
   out.error = "paid requests are held: " + held;
   return true;
@@ -1697,7 +1721,8 @@ nimbus::orch::FireOutcome fireEntry(const String& chatIn, const String& id) {
   const String chat = chatIn.length() ? chatIn : telegram::ownerChat();
   const std::string chatId(chat.c_str(), chat.length());
   const String host = store::resolvedOrchHost();
-  if (routineHeld(kind, host, out)) return out;   // the money guard: a routine or wake-up waits, a reminder goes
+  bool standIn = false;
+  if (routineHeld(kind, host, out, standIn)) return out;   // the money guard: a routine or wake-up waits, a reminder goes
   plain::ChatBinding* b = nullptr;
   if (chat.length() && !(kind != sch::Kind::Reminder && refusalFor(host)))
     b = chatFor(chat, roleOfChat(chat));
@@ -1724,6 +1749,7 @@ nimbus::orch::FireOutcome fireEntry(const String& chatIn, const String& id) {
     d.grants = loops::routineGrants();
     d.tzMinutes = tzNow();
     d.routineModel = sub;
+    d.standIn = standIn;   // R8: the fire starts on the stand-in
     d.fired = [provider, sub](const plain::FireReport& rep) {
       store::recordProviderSpend(plain::turnSpendOf(rep.outcome, provider, sub), "routine");
       // E2-FIX14: the park learns what the routine's head answered; nobody was told, so the owner's next
@@ -1813,6 +1839,12 @@ void tellBack() {
   if (plain::backLines().empty() || now < 1000000000 || plain::inQuiet(quietNow(), now, tzNow())) return;
   std::string provider;
   if (!plain::backLines().take(provider)) return;
+  std::string held;   // R5: held again since (a refusal, a pause): no "back" line
+  if (plain::headHeld(provider, keyOf(provider), store::providerOverBudget(String(provider.c_str())), (uint32_t)millis(),
+                      held)) {
+    alogf("e2: %s is held again: no \"answering again\" line", provider.c_str());
+    return;
+  }
   const String host = store::resolvedOrchHost();
   const std::string model = provider == host.c_str() ? std::string(store::orchModel(host).c_str()) : std::string();
   const String owner = telegram::ownerChat().length() ? telegram::ownerChat() : String("web");
@@ -1880,7 +1912,10 @@ plain::Status reportTurnIn(const std::string& chatId, const std::string& note) {
   // E2-FIX14: a report turn sends no request while the head is over its limit, parked or paused: the report
   // waits in the JobEngine (it never takes the park's re-check; a person's message does).
   std::string held;
-  if (plain::headHeld(host.c_str(), keyOf(host.c_str()), store::providerOverBudget(host), (uint32_t)millis(), held)) {
+  const bool h =
+      plain::headHeld(host.c_str(), keyOf(host.c_str()), store::providerOverBudget(host), (uint32_t)millis(), held);
+  const bool standIn = unattendedStandIn(host.c_str(), h);   // R8: on the stand-in when one is open
+  if (h && !standIn) {
     alogf("e2: an agent report for %s waits: %s", chatId.c_str(), held.c_str());
     return busy;
   }
@@ -1888,6 +1923,7 @@ plain::Status reportTurnIn(const std::string& chatId, const std::string& note) {
   if (!b) return busy;
   plain::ChatMessage msg;
   msg.trigger = plain::Trigger::AgentResult;
+  msg.standIn = standIn;
   msg.text = note;
   msg.ch = channelOf(chat);
   msg.tzMinutes = (int16_t)(utcOffsetAt((uint32_t)time(nullptr)));

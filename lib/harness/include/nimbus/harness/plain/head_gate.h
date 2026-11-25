@@ -135,6 +135,16 @@ struct HeldChat {
   uint32_t nowMs = 0;
 };
 
+// The park's record of `provider` (false: none).
+inline bool parkEntryOf(const std::string& provider, uint32_t nowMs, nimbus::orch::ParkEntry& out) {
+  namespace orch = nimbus::orch;
+  orch::ParkEntry e[orch::ProviderPark::kMaxProviders];
+  const size_t n = orch::providerPark().snapshot(e, orch::ProviderPark::kMaxProviders, nowMs);
+  for (size_t i = 0; i < n; ++i)
+    if (provider == e[i].provider) return out = e[i], true;
+  return false;
+}
+
 // Lane E2-PARK1: the last refusal that parked each provider, in E2-FIX11's safe form (refusalReason: one ASCII
 // line, no markup, no key, at most 160 B) with its status, for the episode's one notice when a later turn starts
 // on a fall-back. RAM only: after a restart the notice names the status alone (never the provider's words).
@@ -143,7 +153,7 @@ class HeldReasons {
   struct Reason {
     int status = 0;
     std::string text;
-    bool all = false;   // the account check was refused too: it refuses every request (item 6)
+    bool modelOnly = false;   // item 6: the account check was refused too, no billing class: the head model
   };
   void keep(const std::string& provider, const Reason& r) {
     std::lock_guard<std::mutex> lk(mx_);
@@ -182,15 +192,29 @@ inline HeldReasons& heldReasons() {
   return r;
 }
 
-// The episode's full notice for a refusal park (engine 1's deliverParkedRefusal words).
-// Item 6: a provider whose account check was refused too: in its own words, as E2-FIX11's safe form keeps them.
+// Item 6 and review R12: engine 2's own words for a park its classifier or account check made, where the
+// park's billing words would claim an empty credit nobody stated: a refused model (the chat seam), or a billing
+// park at a status other than 402 that the router did not name. The kept reason when there is one (E2-FIX11's safe
+// form, RAM), else the status. "" = the park's own words are true.
+inline std::string heldWords(const std::string& provider, const std::string& label, uint32_t nowMs = 0) {
+  namespace orch = nimbus::orch;
+  orch::ParkEntry e;
+  if (!parkEntryOf(provider, nowMs, e) || e.cause != orch::ParkCause::Unspecified) return std::string();
+  const HeldReasons::Reason r = heldReasons().of(provider, e.httpStatus);
+  const std::string code = " (HTTP " + std::to_string(r.status) + ")";
+  const std::string why = r.text.empty() ? code : code + ": " + r.text;
+  if (r.modelOnly) return label + " refuses this model's requests" + why;
+  if (e.kind != orch::ParkKind::Billing || e.httpStatus == 402) return std::string();
+  return label + (r.text.empty() ? " refuses requests from this key" + code : " refused requests from this key" + why);
+}
+
+// The episode's full notice for a refusal park (engine 1's deliverParkedRefusal words; engine 2's heldWords).
 inline std::string parkedNotice(const std::string& provider, const std::string& label, bool key) {
   namespace orch = nimbus::orch;
   const orch::ParkCause cause = orch::providerPark().causeOf(provider.c_str());
-  const HeldReasons::Reason r = heldReasons().of(provider, 0);
-  if (r.all && cause == orch::ParkCause::Unspecified)
-    return "That didn't finish - " + label + " refuses every request from this key" +
-           (r.text.empty() ? std::string(".") : ": " + r.text + (r.text.back() == '.' ? "" : ".")) +
+  const std::string own = heldWords(provider, label);
+  if (!own.empty())
+    return "That didn't finish - " + own + (own.back() == '.' ? "" : ".") +
            " Your message was not answered. Nothing is still running.";
   const std::string head =
       cause != orch::ParkCause::Unspecified ? "That didn't finish - " + orch::parkCauseNotice(label, cause, std::string())
@@ -212,7 +236,8 @@ inline std::string parkedLine(const std::string& provider, const nimbus::orch::P
   const std::string label = providerLabelOf(provider);
   if (v.paused) return "Your message was not answered: " + orch::parkWords(label.c_str(), v) + ".";
   const orch::ParkCause cause = orch::providerPark().causeOf(provider.c_str());
-  const bool key = v.kind == orch::ParkKind::Auth && cause == orch::ParkCause::Unspecified;
+  const bool key = v.kind == orch::ParkKind::Auth && cause == orch::ParkCause::Unspecified &&
+                   heldWords(provider, label, at.nowMs).empty();   // R6: a refused model is not its key
   if (!personWrote)
     return orch::refusalTurnAnswer(provider.c_str(), false) == orch::RefusalTurnAnswer::Notice
                ? parkedNotice(provider, label, key)
@@ -294,30 +319,19 @@ inline nimbus::orch::ErrorClass heldClassOf(nimbus::orch::ParkKind kind, bool pa
   return kind == orch::ParkKind::Auth ? orch::ErrorClass::Auth : orch::ErrorClass::Disabled;
 }
 
-// The park's record of `provider` (false: none).
-inline bool parkEntryOf(const std::string& provider, uint32_t nowMs, nimbus::orch::ParkEntry& out) {
-  namespace orch = nimbus::orch;
-  orch::ParkEntry e[orch::ProviderPark::kMaxProviders];
-  const size_t n = orch::providerPark().snapshot(e, orch::ProviderPark::kMaxProviders, nowMs);
-  for (size_t i = 0; i < n; ++i)
-    if (provider == e[i].provider) return out = e[i], true;
-  return false;
-}
 
-// Lane E2-PARK1: the head is held (parked, its re-check due or out, paused, or over its own dollar limit) and
-// a fall-back is open: the turn starts there. Reads only: no re-check handed out, no latch taken. A token or
-// call budget keeps engine 1's line (no fall-back for it, as on engine 1).
+// Lane E2-PARK1: the head is held (parked, its re-check due or out, paused, or over its own monthly limit or its
+// token or call budget) and a fall-back is open: the turn starts there, as engine 1 moves a turn past a head over
+// its budget (review R10). Reads only: no re-check handed out, no latch taken.
 inline bool standInGate(const MessageGateDeps& d, uint32_t keyFp, uint32_t nowMs, MessageGate& g) {
   namespace orch = nimbus::orch;
   if (!d.standIn) return false;
   const bool over = d.overBudget && d.overBudget(d.provider);
-  const bool limit = over && pausedByLimit(d.provider);
-  if (over && !limit) return false;
   const orch::ParkVerdict v = orch::providerPark().peek(d.provider.c_str(), orch::PaidSeam::Chat, keyFp, nowMs);
-  if (!limit && v.open && !v.due) return false;
+  if (!over && v.open && !v.due) return false;
   orch::ParkEntry e;
   const orch::ParkKind kind = parkEntryOf(d.provider, nowMs, e) ? e.kind : orch::ParkKind::None;
-  const bool paused = limit || v.paused != 0 || kind == orch::ParkKind::None;
+  const bool paused = over || v.paused != 0 || kind == orch::ParkKind::None;
   if (!d.standIn(heldClassOf(kind, paused))) return false;
   g.verdict = GateVerdict::StandIn;
   g.why = paused ? "paused" : "parked";
@@ -372,7 +386,8 @@ inline bool headHeld(const std::string& provider, const std::string& key, bool o
   const orch::ParkVerdict v =
       orch::providerPark().peek(provider.c_str(), orch::PaidSeam::Chat, orch::parkKeyFingerprint(key), nowMs);
   if (v.open) return false;
-  why = orch::parkWords(provider.c_str(), v);
+  why = heldWords(provider, providerLabelOf(provider), nowMs);   // R12: engine 2's words where the park's would lie
+  if (why.empty()) why = orch::parkWords(provider.c_str(), v);
   return true;
 }
 
@@ -385,6 +400,10 @@ class BackLines {
     if (std::find(due_.begin(), due_.end(), provider) != due_.end()) return;
     if (due_.size() >= nimbus::orch::ProviderPark::kMaxProviders) due_.erase(due_.begin());
     due_.push_back(provider);
+  }
+  void drop(const std::string& provider) {
+    std::lock_guard<std::mutex> lk(mx_);
+    due_.erase(std::remove(due_.begin(), due_.end(), provider), due_.end());
   }
   bool take(std::string& provider) {
     std::lock_guard<std::mutex> lk(mx_);
@@ -452,24 +471,26 @@ inline void noteLimitState(const std::string& provider) {
 
 // E2-CFIX1: a refusal the engine's classifier read as billing (its marker table: a key's own usage limit, an
 // HTTP 400 the shared billing words do not name) is parked as no credit; any other through the park's own rule.
-// E2-PARK1: a refusal that parks keeps its reason for the episode's notice (HeldReasons).
-// `all`: the account check was refused too (item 6): parked as no credit (every seam, the 30-minute re-check),
-// in engine 2's words "refuses every request" (RAM: after a restart the park's own words).
+// E2-PARK1: a refusal that parks keeps its reason for the episode's notice (HeldReasons), and a "back" line not
+// sent yet is dropped (review R5). `modelOnly`: the account check was refused too and the refusal carried no
+// billing or account class (item 6, review R6): the chat seam alone is parked (the park's seam-only kind).
 struct RefusalSeen {
   int status = 0;
   const std::string& text;
   bool billing = false;
-  bool all = false;
+  bool modelOnly = false;
 };
 inline nimbus::orch::ParkKind noteRefusal(const char* provider, uint32_t keyFp, const RefusalSeen& r, uint32_t nowMs) {
   namespace orch = nimbus::orch;
   const int status = r.status;
   const std::string& text = r.text;
-  const bool billing = r.billing, all = r.all;
-  orch::ParkKind k = orch::ParkKind::Billing;
-  if (billing) orch::providerPark().park(provider, orch::PaidSeam::Chat, keyFp, orch::ParkKind::Billing, status, nowMs);
+  orch::ParkKind k = r.billing ? orch::ParkKind::Billing : orch::ParkKind::Auth;
+  if (r.modelOnly) orch::providerPark().park(provider, orch::PaidSeam::Chat, keyFp, orch::ParkKind::Auth, 403, nowMs);
+  else if (r.billing) orch::providerPark().park(provider, orch::PaidSeam::Chat, keyFp, k, status, nowMs);
   else k = orch::providerPark().noteAnswer(provider, orch::PaidSeam::Chat, keyFp, status, text, nowMs);
-  if (k != orch::ParkKind::None) heldReasons().keep(provider, HeldReasons::Reason{status, refusalReason(text), all});
+  if (k == orch::ParkKind::None) return k;
+  heldReasons().keep(provider, HeldReasons::Reason{status, refusalReason(text), r.modelOnly});
+  backLines().drop(provider);
   return k;
 }
 
@@ -520,10 +541,10 @@ inline void noteHeadOutcome(const std::string& provider, const std::string& key,
   // E2-REP1: a fallback head that refused its key or credit is parked as the head is (no latch: the
   // turn's line named the switch, not the refusal, so its notice is still due if it becomes the head).
   for (const TurnOutcome::FallbackRefusal& r : out.fallbackRefusals)
-    (void)noteRefusal(r.provider.c_str(), r.keyFp, RefusalSeen{r.status, r.text, r.billing, r.all}, nowMs);
+    (void)noteRefusal(r.provider.c_str(), r.keyFp, RefusalSeen{r.status, r.text, r.billing, r.model}, nowMs);
   if (out.parkHost) {
     const orch::ParkKind k =
-        noteRefusal(p, orch::parkKeyFingerprint(key), RefusalSeen{out.parkStatus, out.parkText, out.parkBilling, out.parkAll},
+        noteRefusal(p, orch::parkKeyFingerprint(key), RefusalSeen{out.parkStatus, out.parkText, out.parkBilling, out.parkModel},
                     nowMs);
     // The exchange's own line told the person why: that was this episode's notice, so the next
     // message gets the short answer and the ones after it nothing (engine 1's rule).

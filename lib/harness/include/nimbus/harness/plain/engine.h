@@ -236,6 +236,9 @@ struct TurnInput {
   // none, the episode was told), startStored its form with no provider words.
   FailoverAsk startPast;
   std::string startLine, startStored;
+  // Review R11: the chat is not the owner's: a switch line carries no provider reason and no money words, only
+  // the model that answered ("This answer came from <model>.").
+  bool neutralSwitch = false;
 };
 
 struct TurnOutcome {
@@ -254,8 +257,9 @@ struct TurnOutcome {
   int parkStatus = 0;            // that refusal's HTTP status and its body (first 4 KB): the shared park reads
   std::string parkText;          // its kind from them (lane E2-FIX14); never stored, never shown
   bool parkBilling = false;      // the engine's classifier read it as billing (E2-CFIX1): parked as no credit
-  bool parkAll = false;          // E2-PARK1: the account check was refused too: the provider refuses every request
+  bool parkModel = false;        // E2-PARK1: the account check was refused too: this head model's requests (chat seam)
   bool modelUnusable = false;    // the provider does not know the head model (E2-R8a: the device marks it)
+  std::string unusableProvider, unusableModel;   // review R2: the head that did not know it (a stand-in's own)
   bool failOver = false;         // routed: the router said fail over to the next target
   // Lane E2-P-FO: rounds moved to another head (at most kMaxFailovers), and then what each head was
   // billed, in order (empty with no switch: the whole turn is the head's). parkHost is the first head's.
@@ -269,7 +273,7 @@ struct TurnOutcome {
     int status = 0;
     std::string text;
     bool billing = false;   // as parkBilling (E2-CFIX1)
-    bool all = false;       // as parkAll (E2-PARK1)
+    bool model = false;     // as parkModel (E2-PARK1)
   };
   std::vector<FallbackRefusal> fallbackRefusals;
   // Effects the turn's tools asked for after the turn (a stored, successful result each): the

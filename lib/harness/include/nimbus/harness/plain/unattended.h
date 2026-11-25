@@ -229,6 +229,10 @@ struct RoutineDeps {
   HeldStore* held = nullptr;
   OwnerSink owner;
   QuietHours quiet;
+  // Review R8: the head is held and a stand-in is open: the fire starts on it (TurnInput::startPast), no line of
+  // its own, no latch. failover: the binding's fall-back order (EngineDeps::failover). Unset: on the head.
+  FailoverFn failover;
+  FailoverAsk startPast;
 };
 
 enum class FireResult : uint8_t {

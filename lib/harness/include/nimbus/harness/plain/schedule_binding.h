@@ -28,6 +28,7 @@ struct ScheduleBindingDeps {
   bool grants = false;              // the owner's "/loop grants on"
   int16_t tzMinutes = 0;            // the local offset now
   std::string routineModel;         // the head of a routine fire ("" = the chat's head)
+  bool standIn = false;             // review R8: the head is held, a stand-in is open: the fire starts there
   // After each routine run: its report (the device files its spend in usage). Null: none.
   std::function<void(const FireReport& rep)> fired;
 };
@@ -77,6 +78,7 @@ inline nimbus::orch::schedule::FireBinding fireBindingFor(ChatBinding& chat, nim
     r.tzMinutes = d.tzMinutes;
     r.held = d.held;
     r.quiet = d.quiet;
+    if (d.standIn) c->standInRoutine(r);
     const Status st = runRoutine(r, f, out);
     if (d.fired) d.fired(out);
     return st;
