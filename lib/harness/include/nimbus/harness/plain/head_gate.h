@@ -22,8 +22,11 @@
 //   - the shared provider park (nimbus/orch/provider_park.h): a refused key or an empty credit closes
 //     the provider for every seam, re-checked by one request after ProviderPark::kRecheckMs, ended at
 //     once by a changed key or an answered request; a pause (the owner, a limit) closes it until its
-//     cause lifts. A closed head sends no request; the person gets engine 1's words by the park's own
-//     latches (refusalTurnAnswer: the notice once an episode, then one short answer, then nothing).
+//     cause lifts. A closed head sends no request; the person gets engine 1's words (lane E2-PARK1: the
+//     owner the notice once an episode, then every chat the short line at most once per ten minutes).
+// Lane E2-PARK1: a held head with an open fall-back starts its turn there (GateVerdict::StandIn, the
+// released engine's startPastParkedHead), the park is asked again by a request of its own between turns
+// (recheckParked), and the owner is told once when a provider he was told about answers again (backLines).
 // After a turn, noteHeadOutcome tells the park what the head's answer said, as engine 1's wire does:
 // a key or credit refusal parks (the exchange's own line told the person: the episode's notice is
 // taken), an answered request ends the episode, a request with no answer re-arms a re-check.

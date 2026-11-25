@@ -548,12 +548,16 @@ class ChatBinding {
     } catch (const std::bad_alloc&) {
       st = Status::fail(tx::Err::TooLarge, "plain::ChatBinding::turn.memory");
     }
+    turnDone(msg, out, person);
+    return st.err == tx::Err::Busy ? Status::fail(tx::Err::Io, st.where) : st;   // Busy: nothing was stored
+  }
+  // After a turn ran: the unloaded line, the park, the breaker, the progress line and the usage.
+  void turnDone(const ChatMessage& msg, const TurnOutcome& out, bool person) {
     if (engine_->unloaded() && d_.sendPart) (void)d_.sendPart(cfg_.chatId, unloadedLine());
     noteHead(msg, out);   // E2-FIX14: the shared park learns what the head answered
     breaker_.spent(person, out.end.microUsd, d_.platform->nowMs());
     if (reporter_) reporter_->close(d_.platform->nowMs());
     if (d_.usage) d_.usage(out);
-    return st.err == tx::Err::Busy ? Status::fail(tx::Err::Io, st.where) : st;   // Busy: nothing was stored
   }
 
   // A compaction of this chat now (/compact): the driver's manual run, stepped here until it has
