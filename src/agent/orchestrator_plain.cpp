@@ -651,11 +651,22 @@ void tellTextMode(const String& chatId, const plain::HeadSlot& head) {
   sayInstead(chatId, kTextModeLine);
 }
 
+// E2-CFIX3: where a chat stands under a provider's dollar limit: the freeze notice reaches the owner's chat and
+// the web chat (main.cpp spendNoticePump); the voice and serial chats are the owner's too, with no notice.
+plain::LimitChat limitChatOf(const std::string& chat) {
+  plain::LimitChat c;
+  const String id(chat.c_str());
+  c.notice = id == "web" || (id.length() && id == telegram::ownerChat());
+  c.owner = c.notice || localChat(id);
+  return c;
+}
+
 // E2-REP1 (review F): engine 1's wire inside a turn: each answered request's spend is pending at once
 // (store::recordProviderSpend's turn booking clears it), and each further request asks paidCallAllowed and
 // the provider's own limit first.
 void limitsInTurn(plain::ChatBindingDeps& d) {
   d.overBudget = [](const std::string& p) { return store::providerOverBudget(String(p.c_str())); };   // E2-FIX14: the resume
+  d.limitChat = limitChatOf;
   d.pendingSpend = [](const std::string& p, const std::string& m, const nimbus::orch::TokenUsage& u) {
     nimbus::orch::notePendingUsage(p.c_str(), m.c_str(), nimbus::orch::TokenUsage{}, u);
   };
@@ -966,6 +977,7 @@ plain::MessageGateDeps gateDeps() {
                                                               ": That message couldn't be processed here.";
   };
   g.overBudget = [](const std::string& p) { return store::providerOverBudget(String(p.c_str())); };
+  g.limitChat = limitChatOf;   // E2-CFIX3
   return g;
 }
 

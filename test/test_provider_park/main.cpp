@@ -204,8 +204,8 @@ static void test_changed_key_is_a_new_start() {
   TEST_ASSERT_TRUE(orch::billingNoticeDue("openai"));   // a new key: a new episode
 }
 
-// E2-CFIX3 (review of E2-CFIX1): a latch left on a record with no park (a pause's short answer, a notice taken
-// while nothing was parked) never carries into a new park episode: its refusal is told.
+// E2-CFIX3 (review of E2-CFIX1): a latch left on a record by a dollar-limit pause with nothing parked (E2-CFIX1's
+// short answer took them) is cleared when the pause lifts: a later billing park is told.
 static void test_a_new_park_episode_starts_with_clear_latches() {
   providerPark().pause("anthropic", orch::kPauseProviderLimit);
   TEST_ASSERT_TRUE(providerPark().shortAnswerDue("anthropic"));   // noticed and answered set, nothing parked

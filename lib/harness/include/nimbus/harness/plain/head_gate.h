@@ -1,11 +1,15 @@
 #pragma once
+#include <algorithm>
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <string>
+#include <vector>
 
 #include "nimbus/harness/plain/engine.h"   // TurnOutcome
 #include "nimbus/orch/billing_refusal.h"   // billingShortAnswer
 #include "nimbus/orch/provider_park.h"
+#include "nimbus/orch/spend_guard.h"     // frozenReplyTextOther: the members' neutral pause line (E2-CFIX3)
 #include "nimbus/orch/provider_slots.h"    // findProviderSlot: the provider's display name
 
 // plain/head_gate.h - engine 1's gates in front of an engine-2 head (lane E2-FIX14).
@@ -45,6 +49,8 @@ struct MessageGateDeps {
   std::function<std::string(const std::string& chat, const std::string& text)> inbound;
   // The provider's own monthly limit is reached (engine 1's overBudget). Null: no limit.
   std::function<bool(const std::string& provider)> overBudget;
+  // E2-CFIX3: where `chat` stands under a dollar limit (LimitChat). Null: a member's chat with no notice.
+  std::function<LimitChat(const std::string& chat)> limitChat;
 };
 
 struct MessageGate {
@@ -91,18 +97,67 @@ inline std::string parkedLine(const std::string& provider, const nimbus::orch::P
   return std::string();
 }
 
-// E2-CFIX1: the line of a message the provider's monthly limit holds. Its own dollar limit paused it in the
-// park: the limits store's freeze notice told the pause, so the owner's next message gets the park's short
-// pause line once in the episode and later ones nothing (a dollar limit is never a token budget). A token or
-// call budget keeps engine 1's line.
-inline std::string limitLine(const std::string& provider, bool personWrote) {
+// E2-CFIX3: the chats told under a provider's own dollar limit, each once per pause (RAM: a restart tells each
+// once more). The park's notice latches are never touched here: they belong to its refusal episodes.
+class LimitTold {
+ public:
+  // True the first time `chat` asks while `provider` is paused by its limit.
+  bool due(const std::string& provider, const std::string& chat) {
+    std::lock_guard<std::mutex> lk(mx_);
+    const std::string id = provider + "\n" + chat;
+    if (std::find(told_.begin(), told_.end(), id) != told_.end()) return false;
+    if (told_.size() >= kMax) told_.erase(told_.begin());   // the oldest may be told once more
+    told_.push_back(id);
+    return true;
+  }
+  // The pause is over: every chat is told again next time.
+  void end(const std::string& provider) {
+    std::lock_guard<std::mutex> lk(mx_);
+    const std::string head = provider + "\n";
+    told_.erase(std::remove_if(told_.begin(), told_.end(),
+                               [&head](const std::string& id) { return id.compare(0, head.size(), head) == 0; }),
+                told_.end());
+  }
+  void clear() {
+    std::lock_guard<std::mutex> lk(mx_);
+    told_.clear();
+  }
+
+ private:
+  static constexpr size_t kMax = 32;
+  std::mutex mx_;
+  std::vector<std::string> told_;
+};
+inline LimitTold& limitTold() {
+  static LimitTold t;
+  return t;
+}
+inline bool pausedByLimit(const std::string& provider) {
+  return (nimbus::orch::providerPark().pausedBy(provider.c_str()) & nimbus::orch::kPauseProviderLimit) != 0;
+}
+
+// The line for a message the provider's own dollar limit leaves unanswered, once per chat per pause: the
+// owner's short pause line (E2-CFIX1), or for any other chat the neutral line the overall ceiling gives
+// members (spend::frozenReplyFor). A token or call budget keeps engine 1's line.
+inline std::string limitLine(const std::string& provider, const std::string& chat, const LimitChat& where,
+                             bool personWrote) {
   namespace orch = nimbus::orch;
-  if (!(orch::providerPark().pausedBy(provider.c_str()) & orch::kPauseProviderLimit)) return overBudgetLine(provider);
-  if (!personWrote || !orch::providerPark().shortAnswerDue(provider.c_str())) return std::string();
+  if (!pausedByLimit(provider)) return overBudgetLine(provider);
+  if (!personWrote || !limitTold().due(provider, chat)) return std::string();
+  if (!where.owner) return orch::frozenReplyTextOther();
   orch::ParkVerdict v;
   v.open = false;
   v.paused = orch::kPauseProviderLimit;
   return "Your message was not answered: " + orch::parkWords(providerLabelOf(provider).c_str(), v) + ".";
+}
+
+// The line of a turn the limit stopped before its next request (EngineDeps::paidHeld gave `line`): where the
+// freeze notice lands it is the pause's one line, so the turn adds none; any other chat is told here, once.
+inline std::string limitTurnLine(const std::string& provider, const std::string& chat, const LimitChat& where,
+                                 const std::string& line) {
+  if (!pausedByLimit(provider)) return line;
+  if (where.notice) return std::string();
+  return limitLine(provider, chat, where, /*personWrote=*/true);
 }
 
 // The gates in engine 1's order: the inbound screen, the provider's limit, then the park. `personWrote`:
@@ -120,10 +175,11 @@ inline MessageGate gateMessage(const MessageGateDeps& d, const std::string& chat
       return g;
     }
   }
+  if (!pausedByLimit(d.provider)) limitTold().end(d.provider);   // E2-CFIX3: a lifted pause tells again
   if (d.overBudget && d.overBudget(d.provider)) {
     g.verdict = GateVerdict::Held;
     g.why = "limit";
-    g.line = limitLine(d.provider, personWrote);
+    g.line = limitLine(d.provider, chat, d.limitChat ? d.limitChat(chat) : LimitChat{}, personWrote);
     return g;
   }
   const std::string key = d.key ? d.key() : std::string();

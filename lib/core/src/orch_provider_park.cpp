@@ -481,14 +481,24 @@ void ProviderPark::pause(const char* provider, uint8_t causes) {
 
 void ProviderPark::resume(const char* provider, uint8_t causes) {
   if (!causes || !provider) return;
+  FlushOnExit flushAfter{*this};   // after the lock below is released (a cleared latch is saved)
   std::lock_guard<std::recursive_mutex> lk(mx_);
   if (std::strcmp(provider, kPauseAllProviders) == 0) {
     pausedAll_ &= (uint8_t)~causes;
     return;
   }
-  Rec* r = validName(provider) ? find(provider) : nullptr;
+  if (!validName(provider)) return;
+  loadLocked(clockNow());
+  Rec* r = find(provider);
   if (!r) return;
   r->paused &= (uint8_t)~causes;
+  // E2-CFIX3: a lifted dollar-limit pause with no refusal parked leaves no latch behind, so a later billing or
+  // key park is told. (A latch another seam took with nothing parked stays: that seam told the episode.)
+  if ((causes & kPauseProviderLimit) && r->kind == ParkKind::None && !r->paused) {
+    if (r->noticed || r->answered) saveLocked();
+    r->noticed = false;
+    r->answered = false;
+  }
   dropIfEmpty(*r);
 }
 

@@ -161,6 +161,7 @@ struct ExchangeResult {
   uint8_t requests = 0;        // requests sent (head requests for the e item)
   uint8_t climbs = 0;          // ladder rungs climbed in this exchange
   uint32_t requestBytes = 0;   // the last request's body, photos included
+  uint32_t capBytes = 0;       // the same as the body cap counts it: each photo its share, never its base64 (E2-CFIX3)
   uint32_t ms = 0;             // the whole exchange, waits included
   uint32_t waitedMs = 0;       // of which waits before retries
   uint32_t maxTokens = 0;      // the output cap the last request carried (0 = none sent)

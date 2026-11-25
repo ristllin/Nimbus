@@ -148,6 +148,12 @@ struct HeadShare {
 // put its own here; it keeps deliverTurn's contract (progress recorded per send, fromPart).
 using DeliverFn = std::function<Status(const DeliverInput& in, DeliverOutcome& out)>;
 
+// Where a chat stands under a provider's dollar limit (E2-CFIX3; the device's answers; null: neither).
+struct LimitChat {
+  bool notice = false;   // the limits store's freeze notice reaches it (the owner's chat, the web chat)
+  bool owner = false;    // the owner's own chat: the owner's words, else the members' neutral line
+};
+
 struct EngineDeps {
   const Platform* platform = nullptr;        // nowMs, delayMs and nowEpoch are required
   const HarnessConfig* config = nullptr;     // not read: the limits come from TurnSetup
@@ -193,6 +199,8 @@ struct EngineDeps {
   // ("" = go on) ends the turn there with that line (StatusLine::PausedSpend), keeping what it already did.
   std::function<void(const std::string& provider, const std::string& model, const nimbus::orch::TokenUsage& u)> pendingSpend;
   std::function<std::string(const std::string& provider)> paidHeld;
+  // E2-CFIX3: where this chat stands under a dollar limit (plain/head_gate.h limitTurnLine). Null: a member's.
+  std::function<LimitChat(const std::string& chat)> limitChat;
 };
 
 // What a turn starts from. A person's message (Owner, Console) is stored as a u item before

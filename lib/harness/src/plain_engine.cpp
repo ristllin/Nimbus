@@ -18,6 +18,7 @@
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/harness/platform.h"
 #include "nimbus/orch/mcp_client.h"   // serverOf (E2-REP2)
+#include "nimbus/harness/plain/head_gate.h"   // limitTurnLine (E2-CFIX3)
 #include "nimbus/orch/provider_park.h"   // parkKeyFingerprint: a fallback head's refusal (E2-REP1)
 #include "nimbus/orch/path_rules.h"   // storePathFor: an own path as the store lists it (E2-FIX8)
 #include "nimbus/orch/psram_alloc.h"   // WorkingVector: the argument walks keep their list off the stack
@@ -1010,10 +1011,10 @@ class TurnRun {
     t_.ex.err = ExchangeErr::Other;
     t_.cause = "paused";
     event("paused:" + slotNow());
-    // E2-CFIX1: the provider's own dollar limit paused it in the park: the limits store's freeze notice is the
-    // pause's one line (a dollar limit is not a token budget), so the turn's own line is empty: nothing sent.
-    const bool told = orch::providerPark().pausedBy(slotNow().c_str()) & orch::kPauseProviderLimit;
-    setStatus(StatusLine::PausedSpend, told ? std::string() : line);
+    // E2-CFIX1, E2-CFIX3: under the provider's own dollar limit the freeze notice is the pause's one line where it
+    // lands (nothing sent there); any other chat is told here, once per pause (a dollar limit is not a token budget).
+    const LimitChat where = d_.limitChat ? d_.limitChat(t_.ctx.chatId) : LimitChat{};
+    setStatus(StatusLine::PausedSpend, limitTurnLine(slotNow(), t_.ctx.chatId, where, line));
     return true;
   }
 
@@ -1042,9 +1043,11 @@ class TurnRun {
       tx::HeadBudget b;
       if (!tx::budgetFor(tx::HeadKey{tg.provider, tg.model, tg.head.routed}, t_.ctx.profile, b).ok()) continue;
       const uint32_t cap = t_.setup.bodyCapLimit ? std::min(b.bodyCap, t_.setup.bodyCapLimit) : b.bodyCap;
-      if (cap < ex.requestBytes) {   // never to a smaller body
+      // E2-CFIX3: by the cap's own measure (a photo's share, not its base64); the target's real limits hold when
+      // it renders its own request.
+      if (cap < ex.capBytes) {   // never to a smaller body
         hlog::logf("plain(%s): fail-over skips %s: body %u B over its cap %u B", d_.chatKey.c_str(), id.c_str(),
-                   (unsigned)ex.requestBytes, (unsigned)cap);
+                   (unsigned)ex.capBytes, (unsigned)cap);
         continue;
       }
       moveTo(tg, cap, ask);

@@ -289,6 +289,7 @@ class Exchange {
     std::string err;
     ++out_.requests;
     out_.requestBytes = (uint32_t)bodyLength(http_);
+    out_.capBytes = (uint32_t)capLength(http_);   // the fail-over's size check (E2-CFIX3)
     out_.maxTokens = in_.maxTokens;
     out_.dropped = dropped_;
     recordRequest(in_, http_, out_.ref);   // the dossier keeps this request by reference (RB-E3)

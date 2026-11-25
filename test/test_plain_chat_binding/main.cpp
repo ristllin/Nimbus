@@ -159,6 +159,13 @@ class CutModel : public sp::ScriptedProvider {
   size_t n_ = 0;
 };
 
+// E2-CFIX3: the owner's chat (1001) is where the freeze notice lands; every other chat is a member's.
+plain::LimitChat ownerOnly(const std::string& chat) {
+  plain::LimitChat c;
+  c.notice = c.owner = chat == "1001";
+  return c;
+}
+
 struct Device {
   Device() : files(card) {
     platform.nowMs = [this] { return ms; };
@@ -235,6 +242,7 @@ struct Device {
     d.noCard = [this] { return noCardFitted; };
     d.pendingSpend = pendingSpend;
     d.paidHeld = paidHeld;
+    d.limitChat = ownerOnly;   // E2-CFIX3: as the device, the owner's chat 1001 gets the freeze notice
     d.railPending = railPending;
     if (!fallbacks.empty())   // lane E2-P-FO: as the device's fallbacksFor, by the shipped rule set
       d.fallbacks = [this](const plain::FailoverAsk& ask, std::vector<plain::HeadSlot>& out) {
@@ -388,7 +396,10 @@ std::vector<uint64_t> storedQs(const Card& card, const std::string& chat) {
 
 }  // namespace
 
-void setUp() { nimbus::orch::providerPark().clear(); }   // the shared park is process-wide
+void setUp() {   // the shared park is process-wide, as the chats told under a limit
+  nimbus::orch::providerPark().clear();
+  plain::limitTold().clear();
+}
 void tearDown() { nimbus::orch::providerPark().clear(); }
 
 static void test_a_message_reaches_the_turn_and_the_reply_the_channel_once() {
@@ -1330,6 +1341,7 @@ plain::MessageGate message(Device& dev, const std::string& text, const std::stri
   g.nowMs = [&dev] { return dev.ms; };
   g.inbound = dev.inbound;
   g.overBudget = [&dev](const std::string&) { return dev.overBudget; };
+  g.limitChat = ownerOnly;
   const plain::MessageGate gate = plain::gateMessage(g, chat, text, /*personWrote=*/true);
   if (gate.verdict == plain::GateVerdict::Run) {
     dev.probe = gate.probe;
@@ -1722,6 +1734,7 @@ static void test_a_kept_messages_turn_is_refused_by_a_parked_provider_with_the_s
     g.key = [&dev] { return dev.key; };
     g.nowMs = [&dev] { return dev.ms; };
     g.overBudget = [&dev](const std::string&) { return dev.overBudget; };
+  g.limitChat = ownerOnly;
     const plain::MessageGate gate = plain::gateMessage(g, "1001", m.text, /*personWrote=*/true);
     if (gate.verdict != plain::GateVerdict::Run) {
       lines.push_back(gate.line);

@@ -151,6 +151,7 @@ struct ChatBindingDeps {
   // and EngineDeps::paidHeld. Null: the limits are read between turns only.
   std::function<void(const std::string& provider, const std::string& model, const nimbus::orch::TokenUsage& u)> pendingSpend;
   std::function<std::string(const std::string& provider)> paidHeld;
+  std::function<LimitChat(const std::string& chat)> limitChat;   // E2-CFIX3: EngineDeps::limitChat
   // Lane E2-FIX14: what engine 1's deliver() does to a model's reply before it leaves
   // (src/agent/orchestrator_common.cpp), each the shared code engine 1 calls. replyFilter: the owner's
   // output rules for this chat (prefs::filtersForRole, orch::applyOutputFilters: the no-dash rule);
@@ -1108,6 +1109,7 @@ class ChatBinding {
         d_.pendingSpend(p, m, ledgerUsage(p, m, u));
       };
     e.paidHeld = d_.paidHeld;
+    e.limitChat = d_.limitChat;
     if (d_.fallbacks)
       e.failover = [this](const FailoverAsk& ask, std::vector<FailoverTarget>& out) { failoverTargets(ask, out); };
     if (d_.replyFilter || d_.replyScreen || d_.parkHead)
