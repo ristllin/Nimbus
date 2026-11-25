@@ -416,6 +416,7 @@ void setUp() {   // the shared park is process-wide, as the chats told under a l
   plain::shortTold().clear();   // E2-PARK1
   plain::backLines().clear();
   plain::heldReasons().clear();
+  plain::accountChecks().clear();
 }
 void tearDown() { nimbus::orch::providerPark().clear(); }
 
@@ -1512,8 +1513,9 @@ static void test_an_empty_credit_parks_the_head_until_the_recheck_answers() {
   dev.parkHead = true;
   TEST_ASSERT_TRUE(dev.boot().ok());
   dev.model.push(sp::httpError(400, kCreditBody));
+  dev.model.push(sp::httpError(400, kCreditBody));   // E2-PARK1 item 6: the account check is refused too
   (void)message(dev, "first");
-  TEST_ASSERT_EQUAL(1, (int)dev.model.requests().size());
+  TEST_ASSERT_EQUAL(2, (int)dev.model.requests().size());
   nimbus::orch::ParkEntry e[nimbus::orch::ProviderPark::kMaxProviders];
   const size_t n = nimbus::orch::providerPark().snapshot(e, nimbus::orch::ProviderPark::kMaxProviders, dev.ms);
   TEST_ASSERT_EQUAL(1, (int)n);
@@ -1526,18 +1528,18 @@ static void test_an_empty_credit_parks_the_head_until_the_recheck_answers() {
       nimbus::orch::billingShortAnswer("Anthropic", nimbus::orch::providerPark().recheckInMs("anthropic")).c_str(),
       second.line.c_str());
   TEST_ASSERT_TRUE(second.line.find("Your message was not answered.") == 0);
-  TEST_ASSERT_EQUAL(1, (int)dev.model.requests().size());
+  TEST_ASSERT_EQUAL(2, (int)dev.model.requests().size());
 
   dev.ms += nimbus::orch::ProviderPark::kRecheckMs + 1000;   // the re-check is due
   dev.model.push(sp::say("Credit is back."));
   const plain::MessageGate probe = message(dev, "third");
   TEST_ASSERT_EQUAL((int)plain::GateVerdict::Run, (int)probe.verdict);
   TEST_ASSERT_TRUE(probe.probe);
-  TEST_ASSERT_EQUAL(2, (int)dev.model.requests().size());
+  TEST_ASSERT_EQUAL(3, (int)dev.model.requests().size());
   TEST_ASSERT_FALSE(nimbus::orch::providerPark().isParked("anthropic"));
   dev.model.push(sp::say("And again."));
   TEST_ASSERT_EQUAL((int)plain::GateVerdict::Run, (int)message(dev, "fourth").verdict);
-  TEST_ASSERT_EQUAL(3, (int)dev.model.requests().size());
+  TEST_ASSERT_EQUAL(4, (int)dev.model.requests().size());
 }
 
 // E2-REP1 (E2-FIX14's known gap): the 30-minute re-check refused again. The first refusal's line was the
@@ -2443,7 +2445,7 @@ static void test_a_held_head_starts_on_its_fall_back_with_nothing_sent_to_it() {
   answerByHost(dev, {{"api.anthropic.com", sp::httpError(400, kUsageLimit)}, {"api.openai.com", sp::say("Noted, Sam.")}});
   TEST_ASSERT_EQUAL((int)plain::GateVerdict::Run, (int)message(dev, "My name is Sam.").verdict);
   TEST_ASSERT_TRUE(nimbus::orch::providerPark().isParked("anthropic"));
-  TEST_ASSERT_EQUAL(1, (int)askedOf(dev, "api.anthropic.com"));
+  TEST_ASSERT_EQUAL(2, (int)askedOf(dev, "api.anthropic.com"));   // the request and its account check (item 6)
   dev.photos = &set;
   const int uploads = dev.uploads;
   answerByHost(dev, {{"api.anthropic.com", sp::say("Never.")}, {"api.openai.com", sp::say("A red triangle.")}});
@@ -2451,7 +2453,7 @@ static void test_a_held_head_starts_on_its_fall_back_with_nothing_sent_to_it() {
   dev.photos = nullptr;
   TEST_ASSERT_EQUAL((int)plain::GateVerdict::StandIn, (int)g.verdict);
   TEST_ASSERT_FALSE(g.probe);
-  TEST_ASSERT_EQUAL_MESSAGE(1, (int)askedOf(dev, "api.anthropic.com"), "nothing more to the held provider");
+  TEST_ASSERT_EQUAL_MESSAGE(2, (int)askedOf(dev, "api.anthropic.com"), "nothing more to the held provider");
   TEST_ASSERT_EQUAL_MESSAGE(uploads, dev.uploads, "no Files API upload for the stand-in");
   TEST_ASSERT_EQUAL_STRING("api.openai.com", dev.model.last().req.host.c_str());
   TEST_ASSERT_EQUAL(1, (int)count(dev.model.last().body, "\"input_image\""));
@@ -2517,23 +2519,23 @@ static void test_the_recheck_is_its_own_request_while_a_stand_in_answers() {
   const plain::MessageGate g = message(dev, "second");
   TEST_ASSERT_EQUAL((int)plain::GateVerdict::StandIn, (int)g.verdict);
   TEST_ASSERT_FALSE(g.probe);
-  TEST_ASSERT_EQUAL(1, (int)askedOf(dev, "api.anthropic.com"));
+  TEST_ASSERT_EQUAL(2, (int)askedOf(dev, "api.anthropic.com"));   // the request and its account check
   // The re-check: one request with engine 1's words, refused again (the same usage limit).
   const size_t lines = dev.sent.size();
   TEST_ASSERT_EQUAL_STRING("anthropic", plain::recheckParked(recheckDeps(dev)).c_str());
-  TEST_ASSERT_EQUAL(2, (int)askedOf(dev, "api.anthropic.com"));
+  TEST_ASSERT_EQUAL(3, (int)askedOf(dev, "api.anthropic.com"));
   TEST_ASSERT_EQUAL_MESSAGE(lines, dev.sent.size(), "a refused re-check adds no line");
   TEST_ASSERT_TRUE(has(dev.model.last().body, nimbus::orch::ORCH_PARK_RECHECK_PROMPT));
   TEST_ASSERT_FALSE(has(dev.model.last().body, "My name"));
   TEST_ASSERT_TRUE(nimbus::orch::providerPark().isParked("anthropic"));
   TEST_ASSERT_TRUE(nimbus::orch::providerPark().recheckInMs("anthropic") > 29u * 60u * 1000u);
   TEST_ASSERT_EQUAL_STRING("", plain::recheckParked(recheckDeps(dev)).c_str());   // not due again
-  TEST_ASSERT_EQUAL(2, (int)askedOf(dev, "api.anthropic.com"));
+  TEST_ASSERT_EQUAL(3, (int)askedOf(dev, "api.anthropic.com"));
   // A server error is one request too, and re-arms the wait.
   dev.ms += nimbus::orch::ProviderPark::kRecheckMs + 1000;
   answerByHost(dev, {{"api.anthropic.com", sp::httpError(500)}, {"api.openai.com", sp::say("Fine.")}});
   TEST_ASSERT_EQUAL_STRING("anthropic", plain::recheckParked(recheckDeps(dev)).c_str());
-  TEST_ASSERT_EQUAL(3, (int)askedOf(dev, "api.anthropic.com"));
+  TEST_ASSERT_EQUAL(4, (int)askedOf(dev, "api.anthropic.com"));
   TEST_ASSERT_TRUE(nimbus::orch::providerPark().isParked("anthropic"));
   TEST_ASSERT_EQUAL((int)plain::GateVerdict::StandIn, (int)message(dev, "third").verdict);
   // A changed key ends the park at once: the next message runs on the head.
@@ -2615,6 +2617,55 @@ static void test_the_owner_is_told_once_when_the_provider_answers_again() {
   plain::noteLimitState("anthropic");
   TEST_ASSERT_TRUE(plain::backLines().take(p));
   TEST_ASSERT_FALSE(plain::backLines().take(p));
+}
+
+// Item 6: the decision to stop asking a provider never rests on its message words. A 400 invalid_request_error
+// with a wording no marker knows asks the account with one small request: refused too, the provider is parked
+// (it refuses every request; the owner's line carries its own words) and the turn is answered on the fall-back.
+// Answered, nothing is parked and the turn takes the bad-request path; a second such refusal within ten minutes
+// asks nothing. Even the usage-limit wording a text marker knows parks nothing when the account answers.
+static void test_an_unexplained_refusal_asks_the_account_before_it_parks() {
+  const std::string unseen =
+      R"({"type":"error","error":{"type":"invalid_request_error","message":"This organization is on hold until its review closes."}})";
+  Device dev;
+  dev.parkHead = true;
+  dev.fallbacks = {{"openai", "gpt-5.6-luna"}};
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  answerByHost(dev, {{"api.anthropic.com", sp::httpError(400, unseen)}, {"api.openai.com", sp::say("From the fall-back.")}});
+  TEST_ASSERT_TRUE(dev.say("Hello there.").ok());
+  TEST_ASSERT_EQUAL(2, (int)askedOf(dev, "api.anthropic.com"));   // the request, then the one check
+  TEST_ASSERT_TRUE(has(dev.model.requests()[1].body, nimbus::orch::ORCH_PARK_RECHECK_PROMPT));
+  TEST_ASSERT_TRUE(nimbus::orch::providerPark().isParked("anthropic"));
+  TEST_ASSERT_TRUE(plain::heldReasons().of("anthropic", 0).all);
+  TEST_ASSERT_EQUAL_STRING("From the fall-back.", dev.out.text.c_str());
+  TEST_ASSERT_EQUAL_STRING(
+      "Anthropic refused the request (HTTP 400): This organization is on hold until its review closes; this answer "
+      "came from gpt-5.6-luna.",
+      dev.out.statusText.c_str());
+  TEST_ASSERT_TRUE(has(plain::parkedNotice("anthropic", "Anthropic", false), "refuses every request from this key"));
+
+  // The account answers: the fault is the request's. Nothing parked, no switch, the bad-request line.
+  for (const std::string& body : {unseen, std::string(kUsageLimit)}) {
+    nimbus::orch::providerPark().clear();
+    plain::accountChecks().clear();
+    plain::heldReasons().clear();
+    Device ok;
+    ok.parkHead = true;
+    TEST_ASSERT_TRUE(ok.boot().ok());
+    ok.model.respondWith([body](const sp::Recorded& r, size_t) {
+      return has(r.body, nimbus::orch::ORCH_PARK_RECHECK_PROMPT) ? sp::say("ok") : sp::httpError(400, body);
+    });
+    (void)ok.say("Hello there.");
+    TEST_ASSERT_EQUAL(2, (int)ok.model.requests().size());
+    TEST_ASSERT_FALSE(nimbus::orch::providerPark().isParked("anthropic"));
+    TEST_ASSERT_EQUAL(0, (int)ok.out.switches);
+    TEST_ASSERT_FALSE(ok.out.delivered);
+    TEST_ASSERT_TRUE_MESSAGE(has(ok.out.statusText, "No reply: Anthropic refused the request (HTTP 400): "),
+                             ok.out.statusText.c_str());
+    (void)ok.say("Again.");   // within ten minutes: no second check
+    TEST_ASSERT_EQUAL(3, (int)ok.model.requests().size());
+    TEST_ASSERT_FALSE(nimbus::orch::providerPark().isParked("anthropic"));
+  }
 }
 
 // D1: with midTurnFailover off the failed round is the turn's end, on the head only.
@@ -2937,5 +2988,6 @@ int main(int, char**) {
   RUN_TEST(test_the_recheck_is_its_own_request_while_a_stand_in_answers);
   RUN_TEST(test_a_held_message_gets_a_line_at_most_every_ten_minutes);
   RUN_TEST(test_the_owner_is_told_once_when_the_provider_answers_again);
+  RUN_TEST(test_an_unexplained_refusal_asks_the_account_before_it_parks);
   return UNITY_END();
 }

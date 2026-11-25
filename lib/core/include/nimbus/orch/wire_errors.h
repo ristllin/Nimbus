@@ -38,6 +38,9 @@ struct Classified {
   bool error = false;           // false: a 2xx answer with no error object (the codec reads it)
   caps::ErrClass cls = caps::ErrClass::BadRequest;
   bool marked = false;          // a marker row decided it
+  // Lane E2-PARK1: a billing class that only the provider's message words decided (a text marker or the shared
+  // billing words, at a status other than 402): the caller asks the account before it parks anything.
+  bool byText = false;
   bool fileRef = false;         // a 400 or 404 naming a file id (the exchange's refusedRef path)
   uint16_t refused = 0;         // caps::refused:: bits a RefusedField names
 };

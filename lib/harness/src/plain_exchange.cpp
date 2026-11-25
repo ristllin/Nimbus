@@ -53,6 +53,7 @@ struct Verdict {
   int64_t capTokens = -1;
   orch::caps::ErrClass cls = orch::caps::ErrClass::BadRequest;   // the classifier's class (when it classed one)
   uint16_t refusedFields = 0;   // the optional fields a 400 or 422 refused (caps::refused::)
+  bool byText = false;          // E2-PARK1: a billing class the message words alone decided
 };
 
 // A routed refusal that names a reason the contract knows: decided by the reason.
@@ -100,6 +101,7 @@ Verdict classify(int status, const std::string& body, bool routed, const std::st
   if (!c.error) return v;
   v.err = kByClass[(size_t)c.cls];
   v.cls = c.cls;
+  v.byText = c.byText;
   v.refusedFields = c.cls == orch::caps::ErrClass::RefusedField ? c.refused : 0;
   return v;
 }
@@ -462,6 +464,7 @@ class Exchange {
     if (err == ExchangeErr::Other) out_.providerBody = refusedBody_;
     if (out_.parkHost) out_.parkBody = parkBody_;
     out_.billing = out_.parkHost && billing_;
+    out_.byText = out_.parkHost && verdict_.byText;   // E2-PARK1: the account is asked before a park
     return Status::success();
   }
 

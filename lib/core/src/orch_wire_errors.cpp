@@ -109,14 +109,15 @@ bool matches(const Ctx& c, const MarkerRow& m, bool anyStatus) {
   return false;
 }
 
-// The first marker of `set` that matches and whose class `want` accepts.
+// The first marker of `set` that matches and whose class `want` accepts (`kind`: its kind, when asked).
 template <typename Want>
-bool marked(const Ctx& c, bool anyStatus, Want want, ErrClass* out) {
+bool marked(const Ctx& c, bool anyStatus, Want want, ErrClass* out, MarkerKind* kind = nullptr) {
   if (c.set == kNoMarkers) return false;
   for (size_t i = 0; i < c.t.markerCount; i++) {
     const MarkerRow& m = c.t.markers[i];
     if (want(m.cls) && matches(c, m, anyStatus)) {
       *out = m.cls;
+      if (kind) *kind = m.kind;
       return true;
     }
   }
@@ -157,8 +158,17 @@ bool isRateOrServer(ErrClass k) { return k == ErrClass::RateLimited || k == ErrC
 // Step 3: 401, 402, 403 and billing (billing first, and before 429).
 bool keyOrBilling(const Ctx& c, const std::string& body, Classified* out) {
   ErrClass k;
-  if (marked(c, false, isBilling, &k)) return put(out, made(k, true));
-  if (isBillingRefusal(c.status, body)) return put(out, made(ErrClass::Billing, false));
+  MarkerKind kind = MarkerKind::Code;
+  if (marked(c, false, isBilling, &k, &kind)) {
+    Classified r = made(k, true);
+    r.byText = kind == MarkerKind::Text && c.status != 402;   // E2-PARK1: words alone, the account is asked
+    return put(out, r);
+  }
+  if (isBillingRefusal(c.status, body)) {
+    Classified r = made(ErrClass::Billing, false);
+    r.byText = c.status != 402;
+    return put(out, r);
+  }
   if (c.status < 401 || c.status > 403) return false;
   if (marked(c, false, isKey, &k)) return put(out, made(k, true));
   return put(out, made(c.status == 402   ? ErrClass::Billing

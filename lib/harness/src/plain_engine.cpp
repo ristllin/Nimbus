@@ -12,6 +12,7 @@
 
 #include "nimbus/harness/channel.h"
 #include "nimbus/harness/log.h"
+#include "nimbus/harness/plain/compact.h"   // recheckAsk: the account check (E2-PARK1)
 #include "nimbus/harness/plain/exchange.h"
 #include "nimbus/harness/plain/prefix.h"   // the frozen system part (lane E2-CACHE)
 #include "nimbus/harness/plain/rails.h"   // the item taint rule (RB-RL)
@@ -185,6 +186,7 @@ struct Turn {
   HeadShare base;
   int parkStatus = 0;                  // the park's refusal: its status and body (E2-FIX14)
   bool parkBilling = false;            // and billing by the classifier (E2-CFIX1)
+  bool parkAll = false;                // and the account check was refused too (E2-PARK1)
   std::string parkText;
   std::vector<TurnOutcome::FallbackRefusal> fallbackRefusals;   // E2-REP1
   std::string cause;
@@ -987,6 +989,7 @@ class TurnRun {
     }
     t_.ex = ExchangeResult{};
     const Status st = runExchange(ExchangeDeps{d_.transport, d_.platform}, req, t_.ex);
+    askAccount(t_.ex);   // E2-PARK1: a refusal no status, type or code explains asks the account first
     account(t_.ex);
     if (!st.ok()) return failed(ExchangeErr::Other, st);
     if (photosRefused()) return ask();   // E2-P-PHOTO: once, the refused photos as their lines
@@ -999,6 +1002,55 @@ class TurnRun {
     if (t_.ex.err != ExchangeErr::None) return failed(t_.ex.err, Status::success());
     ++t_.rounds;
     return Status::success();
+  }
+
+  // ---- lane E2-PARK1: is the request refused, or the account? ---------------------------------------
+  // A 4xx no structured signal explains (a bad request or a refusal by class, or a billing class read from the
+  // message words alone) asks the account with one small known-good request to the same provider and key (the
+  // park's re-check request), at most once per provider per ten minutes (EngineDeps::accountCheckDue). Refused
+  // with a 4xx too: the provider refuses every request from this key, so it is parked and the round fails over
+  // as for billing. Answered (or no verdict): the fault is this request's, nothing is parked, the bad-request
+  // path as before. Never for a 429, a 408, a 5xx, a timeout or a network failure; never twice in an exchange.
+  static bool clientRefusal(int status) { return status >= 400 && status < 500 && status != 429 && status != 408; }
+  bool unexplained(const ExchangeResult& ex) const {
+    if (ex.parkHost) return ex.byText;
+    return ex.err == ExchangeErr::Other && clientRefusal(ex.httpStatus) && !ex.modelUnusable && !ex.failOver &&
+           !providers::imageparts::refusedImages(ex.httpStatus, ex.providerBody);
+  }
+  void askAccount(ExchangeResult& ex) {
+    if (!d_.accountCheckDue || !unexplained(ex)) return;
+    const bool refused = d_.accountCheckDue(slotNow()) && accountRefused();
+    if (!refused && !ex.parkHost) return;
+    const std::string slug = providerSlugOf(t_.ctx, t_.setup.head);
+    const std::string body = ex.parkHost ? ex.parkBody : ex.providerBody;
+    ex.parkHost = ex.billing = ex.refusesAll = refused;
+    ex.byText = false;
+    ex.err = refused ? ExchangeErr::KeyRefused : ExchangeErr::Other;
+    ex.parkBody = refused ? body : std::string();
+    ex.providerBody = refused ? std::string() : body;
+    if (ex.reason.empty()) ex.reason = refusalReason(body);
+    ex.errorLine = exchangeLine(ex.err, slug, ex.httpStatus, ex.reason);
+    ex.errorLineStored = exchangeLine(ex.err, slug, ex.httpStatus);
+    event(refused ? "account:refused" : "account:answered");
+    hlog::logf("plain(%s): %s refused a request (HTTP %d): the account %s", d_.chatKey.c_str(), slotNow().c_str(),
+               ex.httpStatus, refused ? "is refused too: parked" : "answered: this request's fault");
+  }
+  // The one small request (plain::recheckAsk) on the answering head; its usage is the turn's.
+  bool accountRefused() {
+    SummarizerRung rung;
+    rung.endpoint = t_.setup.head;
+    rung.host = slotNow();
+    rung.model = t_.ctx.model;
+    rung.dialect = t_.ctx.dialect;
+    ExchangeResult check;
+    (void)recheckAsk(*d_.platform, *d_.transport, rung, check);
+    const orch::TokenUsage& u = check.step.usage;
+    t_.end.headRequests += check.requests;
+    t_.end.promptTokens += u.promptTokens;
+    t_.end.outputTokens += u.completionTokens;
+    RequestTokens rt{u.promptTokens, u.completionTokens, u.cacheReadTokens, u.cacheWriteTokens, u.cacheWrite1hTokens};
+    t_.end.microUsd = (uint32_t)std::min<uint64_t>((uint64_t)t_.end.microUsd + requestMicroUsd(t_.setup.cost, rt), UINT32_MAX);
+    return check.requests && check.err != ExchangeErr::None && clientRefusal(check.httpStatus);
   }
 
   // Lane E2-REP1 (review F): a monthly limit crossed by this turn's own answered requests (or reached
@@ -1208,12 +1260,14 @@ class TurnRun {
       r.status = ex.httpStatus;
       r.text = ex.parkBody;
       r.billing = ex.billing;
+      r.all = ex.refusesAll;
       t_.fallbackRefusals.push_back(std::move(r));
       return;
     }
     t_.parkHost = true;
     t_.parkStatus = ex.httpStatus;
     t_.parkBilling = ex.billing;
+    t_.parkAll = ex.refusesAll;
     t_.parkText = ex.parkBody;
   }
 
@@ -2342,6 +2396,7 @@ Status PlainEngine::runTurn(const TurnInput& in, TurnOutcome& out) {
   out.parkHost = t->parkHost;
   out.parkStatus = t->parkStatus;
   out.parkBilling = t->parkBilling;
+  out.parkAll = t->parkAll;
   out.failOver = t->failOver;
   out.modelUnusable = t->modelUnusable;
   out.switches = t->switches;

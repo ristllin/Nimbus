@@ -1152,6 +1152,8 @@ class ChatBinding {
     e.limitChat = d_.limitChat;
     if (d_.fallbacks)
       e.failover = [this](const FailoverAsk& ask, std::vector<FailoverTarget>& out) { failoverTargets(ask, out); };
+    if (d_.parkHead)   // E2-PARK1 item 6: the account check, at most once per provider per ten minutes
+      e.accountCheckDue = [this](const std::string& p) { return accountChecks().due(p, d_.platform->nowMs()); };
     if (d_.replyFilter || d_.replyScreen || d_.parkHead)
       e.deliver = [this](const DeliverInput& in, DeliverOutcome& out) { return deliverReply(in, out); };
     return e;

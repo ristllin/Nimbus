@@ -209,6 +209,10 @@ struct EngineDeps {
   std::function<std::string(const std::string& provider)> paidHeld;
   // E2-CFIX3: where this chat stands under a dollar limit (plain/head_gate.h limitTurnLine). Null: a member's.
   std::function<LimitChat(const std::string& chat)> limitChat;
+  // Lane E2-PARK1: may the engine ask `provider`'s account now (one small request after a refusal no status,
+  // type or code explains)? The binding's bound: once per provider per ten minutes. Null: never asked, the
+  // classifier's verdict stands as before.
+  std::function<bool(const std::string& provider)> accountCheckDue;
 };
 
 // What a turn starts from. A person's message (Owner, Console) is stored as a u item before
@@ -250,6 +254,7 @@ struct TurnOutcome {
   int parkStatus = 0;            // that refusal's HTTP status and its body (first 4 KB): the shared park reads
   std::string parkText;          // its kind from them (lane E2-FIX14); never stored, never shown
   bool parkBilling = false;      // the engine's classifier read it as billing (E2-CFIX1): parked as no credit
+  bool parkAll = false;          // E2-PARK1: the account check was refused too: the provider refuses every request
   bool modelUnusable = false;    // the provider does not know the head model (E2-R8a: the device marks it)
   bool failOver = false;         // routed: the router said fail over to the next target
   // Lane E2-P-FO: rounds moved to another head (at most kMaxFailovers), and then what each head was
@@ -264,6 +269,7 @@ struct TurnOutcome {
     int status = 0;
     std::string text;
     bool billing = false;   // as parkBilling (E2-CFIX1)
+    bool all = false;       // as parkAll (E2-PARK1)
   };
   std::vector<FallbackRefusal> fallbackRefusals;
   // Effects the turn's tools asked for after the turn (a stored, successful result each): the
