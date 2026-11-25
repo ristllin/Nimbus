@@ -2,5 +2,5 @@
   "lane": "E2-PARK1",
   "allowance_bytes": 0,
   "envs": {"esp32s3-cyd-e2": 20480, "test-cyd-e2": 20480},
-  "why": "CUM-1012 (a provider that refuses for money or its key). Same tree, base rb-main dc457b762 against the lane tip, firmware.bin: esp32s3-cyd-e2 6,243,072 -> 6,262,384 B (+19,312), test-cyd-e2 6,409,328 -> 6,428,304 B (+18,976): the turn that starts on the fall-back, the park's own re-check request and its upkeep, the per-chat short-line clock, the back line, the account check after a refusal no status, type or code explains, and the fail-over order and price walk now asked at the message gate. Rounded up to 20 KB. esp32s3-cyd 6,281,376 -> 6,281,344 B (-32), no behaviour of engine 1 changed."
+  "why": "CUM-1012 (a provider that refuses for money or its key). Same tree, base rb-main dc457b762 against the lane tip, firmware.bin: esp32s3-cyd-e2 6,243,072 -> 6,262,416 B (+19,344), test-cyd-e2 6,409,328 -> 6,428,304 B (+18,976): the turn that starts on the fall-back, the park's own re-check request and its upkeep, the per-chat short-line clock, the back line, the account check after a refusal no status, type or code explains, and the fail-over order and price walk now asked at the message gate. Rounded up to 20 KB. esp32s3-cyd 6,281,376 -> 6,281,344 B (-32), no behaviour of engine 1 changed."
 }
