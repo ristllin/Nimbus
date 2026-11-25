@@ -745,8 +745,7 @@ plain::ChatBinding* chatFor(const String& chatId, nimbus::orch::Role role) {
   d.recentFiles = [](const nimbus::orch::Principal& who) -> nimbus::orch::tx::RecentFilesBlock::Source {
     return [who](std::vector<nimbus::orch::tx::RecentFile>& out) { return files::recentFiles(who, out); };
   };
-  d.photo = photoFor;
-  d.photoInline = photoInlineFor;   // E2-PARK1
+  d.photo = photoFor, d.photoInline = photoInlineFor;   // E2-PARK1: no upload for a fall-back
   d.turnTool = historydev::answer;   // E2-SRCH: search and view read this turn's own conversation
   d.skills = [](const nimbus::orch::Principal&) { return skillsdev::chatSkills(); };
   d.skillRefused = noteSkillRefused;

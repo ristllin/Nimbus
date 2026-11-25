@@ -455,9 +455,17 @@ inline void noteLimitState(const std::string& provider) {
 // E2-PARK1: a refusal that parks keeps its reason for the episode's notice (HeldReasons).
 // `all`: the account check was refused too (item 6): parked as no credit (every seam, the 30-minute re-check),
 // in engine 2's words "refuses every request" (RAM: after a restart the park's own words).
-inline nimbus::orch::ParkKind noteRefusal(const char* provider, uint32_t keyFp, int status, const std::string& text,
-                                          bool billing, uint32_t nowMs, bool all = false) {
+struct RefusalSeen {
+  int status = 0;
+  const std::string& text;
+  bool billing = false;
+  bool all = false;
+};
+inline nimbus::orch::ParkKind noteRefusal(const char* provider, uint32_t keyFp, const RefusalSeen& r, uint32_t nowMs) {
   namespace orch = nimbus::orch;
+  const int status = r.status;
+  const std::string& text = r.text;
+  const bool billing = r.billing, all = r.all;
   orch::ParkKind k = orch::ParkKind::Billing;
   if (billing) orch::providerPark().park(provider, orch::PaidSeam::Chat, keyFp, orch::ParkKind::Billing, status, nowMs);
   else k = orch::providerPark().noteAnswer(provider, orch::PaidSeam::Chat, keyFp, status, text, nowMs);
@@ -512,10 +520,11 @@ inline void noteHeadOutcome(const std::string& provider, const std::string& key,
   // E2-REP1: a fallback head that refused its key or credit is parked as the head is (no latch: the
   // turn's line named the switch, not the refusal, so its notice is still due if it becomes the head).
   for (const TurnOutcome::FallbackRefusal& r : out.fallbackRefusals)
-    (void)noteRefusal(r.provider.c_str(), r.keyFp, r.status, r.text, r.billing, nowMs, r.all);
+    (void)noteRefusal(r.provider.c_str(), r.keyFp, RefusalSeen{r.status, r.text, r.billing, r.all}, nowMs);
   if (out.parkHost) {
     const orch::ParkKind k =
-        noteRefusal(p, orch::parkKeyFingerprint(key), out.parkStatus, out.parkText, out.parkBilling, nowMs, out.parkAll);
+        noteRefusal(p, orch::parkKeyFingerprint(key), RefusalSeen{out.parkStatus, out.parkText, out.parkBilling, out.parkAll},
+                    nowMs);
     // The exchange's own line told the person why: that was this episode's notice, so the next
     // message gets the short answer and the ones after it nothing (engine 1's rule).
     if (k != orch::ParkKind::None && told) (void)park.noticeDue(p);
@@ -574,8 +583,8 @@ inline std::string recheckParked(const RecheckDeps& d) {
     if (!a.sent) park.releaseProbe(p.c_str());
     else if (a.answered) (void)endToldEpisode(p, orch::PaidSeam::Chat, d.nowMs);
     else if (a.refused)
-      (void)noteRefusal(p.c_str(), orch::parkKeyFingerprint(d.key ? d.key(p) : std::string()), a.status, a.body, a.billing,
-                        d.nowMs);
+      (void)noteRefusal(p.c_str(), orch::parkKeyFingerprint(d.key ? d.key(p) : std::string()),
+                        RefusalSeen{a.status, a.body, a.billing, false}, d.nowMs);
     else park.noteFailure(p.c_str(), d.nowMs);
     return p;
   }

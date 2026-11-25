@@ -217,18 +217,7 @@ struct Device {
     d.seen = &seen;
     d.outside = outside;
     d.recentFiles = recentFiles;
-    d.photo = [this](const std::string& ref, plain::PhotoBytes& o) {
-      if (plain::photoBytesFrom(photos, ref, o).ok()) {
-        if (fileIds) {   // E2-PARK1: as the device's photoFor on a direct Anthropic head, an upload each time
-          ++uploads;
-          o.fileId = "file_011CPark1Test";
-        }
-        return plain::Status::success();
-      }
-      return plain::photoBytesFrom(stored, ref, o);   // the card's copy of an earlier photo
-    };
-    if (fileIds)   // E2-PARK1: the device's photoInlineFor
-      d.photoInline = [this](const std::string& ref, plain::PhotoBytes& o) { return plain::photoBytesFrom(photos, ref, o); };
+    photoDeps(d);
     if (!skillFiles.empty()) d.skills = [this](const nimbus::orch::Principal&) { return plain::chatSkillsOf(skillFiles); };
     if (skills) d.skills = [this](const nimbus::orch::Principal&) { return skills(); };   // E2-P-SKILL: the store
     if (pinnedNotes) d.pinnedNotes = pinnedNotes;                                         // E2-P-SKILL: the notebook
@@ -269,6 +258,20 @@ struct Device {
     return binding->boot();
   }
   agent::HttpTransport& model_() { return model; }
+  void photoDeps(plain::ChatBindingDeps& d) {
+    d.photo = [this](const std::string& ref, plain::PhotoBytes& o) {
+      if (plain::photoBytesFrom(photos, ref, o).ok()) {
+        if (fileIds) {   // E2-PARK1: as the device's photoFor on a direct Anthropic head, an upload each time
+          ++uploads;
+          o.fileId = "file_011CPark1Test";
+        }
+        return plain::Status::success();
+      }
+      return plain::photoBytesFrom(stored, ref, o);   // the card's copy of an earlier photo
+    };
+    if (fileIds)   // E2-PARK1: the device's photoInlineFor
+      d.photoInline = [this](const std::string& ref, plain::PhotoBytes& o) { return plain::photoBytesFrom(photos, ref, o); };
+  }
   // The device's slot settings (lane E2-R8a): one key for every slot, a LAN custom endpoint.
   plain::SlotSettings slots() {
     plain::SlotSettings s;
