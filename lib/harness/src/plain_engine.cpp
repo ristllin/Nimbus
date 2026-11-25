@@ -1265,7 +1265,12 @@ class TurnRun {
     takePark(ex);
     notePending(ex);
     t_.failOver |= ex.failOver;
-    if (ex.modelUnusable && !t_.modelUnusable) {   // R2: the head that answered so, never the configured one
+    noteUnusable(ex);
+  }
+
+  // R2: the head that said it does not know its model, never the configured one.
+  void noteUnusable(const ExchangeResult& ex) {
+    if (ex.modelUnusable && !t_.modelUnusable) {
       t_.unusableProvider = slotNow();
       t_.unusableModel = t_.ctx.model;
     }

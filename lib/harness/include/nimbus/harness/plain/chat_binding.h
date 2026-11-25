@@ -1124,20 +1124,7 @@ class ChatBinding {
     // E2-REP1: the summarizer asks engine 1's gates as a turn does (parkHead): a rung whose provider is
     // parked, paused or over its monthly limit sends nothing. The park is read only (never the re-check);
     // the head's own key is the one the park knows, another rung's is not compared (fingerprint 0).
-    if (d_.parkHead)
-      c.held = [this](const SummarizerRung& r) {
-        const std::string key = r.host == cfg_.provider && d_.key ? d_.key() : std::string();
-        std::string why;
-        // R9: a parked provider is never asked here, also while its re-check is due or its probe is out.
-        nimbus::orch::ParkEntry e;
-        if (parkEntryOf(r.host, d_.platform->nowMs(), e) && e.kind != nimbus::orch::ParkKind::None &&
-            (e.seamMask & (1u << (uint8_t)nimbus::orch::PaidSeam::Chat)))
-          why = r.host + " is parked";
-        else if (!headHeld(r.host, key, d_.overBudget && d_.overBudget(r.host), d_.platform->nowMs(), why))
-          return false;
-        say(("e2: summarizer " + r.host + " held, no request: " + why).c_str());
-        return true;
-      };
+    if (d_.parkHead) c.held = [this](const SummarizerRung& r) { return summarizerHeld(r); };
     c.spent = [this](const SummarizerRung& r, const nimbus::orch::TokenUsage& u) {
       if (d_.compactUsage) d_.compactUsage(r.host, r.model, ledgerUsage(r.host, r.model, u));
     };
@@ -1151,6 +1138,22 @@ class ChatBinding {
     return c;
   }
 
+  // E2-REP1: a summarizer rung whose provider is parked, paused or over its monthly limit sends nothing (the park
+  // read only; the head's own key is the one the park knows). R9: a parked provider never, even while its
+  // re-check is due or its probe is out.
+  bool summarizerHeld(const SummarizerRung& r) {
+    const std::string key = r.host == cfg_.provider && d_.key ? d_.key() : std::string();
+    std::string why;
+    // R9: a parked provider is never asked here, also while its re-check is due or its probe is out.
+    nimbus::orch::ParkEntry e;
+    if (parkEntryOf(r.host, d_.platform->nowMs(), e) && e.kind != nimbus::orch::ParkKind::None &&
+        (e.seamMask & (1u << (uint8_t)nimbus::orch::PaidSeam::Chat)))
+      why = r.host + " is parked";
+    else if (!headHeld(r.host, key, d_.overBudget && d_.overBudget(r.host), d_.platform->nowMs(), why))
+      return false;
+    say(("e2: summarizer " + r.host + " held, no request: " + why).c_str());
+    return true;
+  }
   EngineDeps deps() {
     EngineDeps e;
     e.platform = d_.platform;
