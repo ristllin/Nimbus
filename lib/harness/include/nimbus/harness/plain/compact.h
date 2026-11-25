@@ -125,6 +125,7 @@ inline constexpr uint32_t kCompactMinRequestMs = 10000;
 // A cut answer is asked once more, in the same attempt, with kSummarizerRetryMaxTokens; a cut is
 // never stored and never asked again at the same cap.
 inline constexpr uint16_t kSummarizerMaxTokens = 4096;   // the changes, at most a whole summary
+inline constexpr uint16_t kRecheckMaxTokens = 16;   // E2-PARK1: the re-check's "ok" (16: the least OpenAI takes)
 inline constexpr uint16_t kSummarizerRetryMaxTokens = 8192;
 inline constexpr uint32_t kCompactPaidPerDay = 48;
 inline constexpr uint32_t kCompactHeadTries = 2;           // failures on rung 1 before the ladder
@@ -171,6 +172,10 @@ struct SummarizerRung {
   std::string model;
   Dialect dialect = Dialect::AnthropicMessages;
 };
+// Lane E2-PARK1: the park's re-check (engine 1's TurnEngine::askParkedHost): one small request on `rung`'s
+// endpoint with engine 1's re-check words (ORCH_PARK_RECHECK_PROMPT, "ok"), no tools, nothing stored, never sent
+// twice; `out` is the exchange's answer (its usage is paid: the caller counts it).
+Status recheckAsk(const Platform& platform, HttpTransport& transport, const SummarizerRung& rung, ExchangeResult& out);
 // The first form a rung is asked in: Changes on the Anthropic host's own wire, Lines on any other (an
 // Anthropic-shaped proxy may not have the structured output).
 AnswerForm firstAnswerForm(const SummarizerRung& rung);

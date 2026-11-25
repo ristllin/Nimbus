@@ -101,6 +101,7 @@ struct ChatBindingDeps {
   std::function<nimbus::orch::tx::RecentFilesBlock::Source(const nimbus::orch::Principal&)> recentFiles;
   // Lane E2-CHAT.
   PhotoFn photo;                                 // the turn's photo bytes by ref; null: stubs only
+  PhotoFn photoInline;                           // the same with no provider file id (TurnSetup::photoInline, E2-PARK1)
   std::function<ChatSkills(const nimbus::orch::Principal&)> skills;   // null: no skills
   // A context skill that does not fit the pinned block whole: left out of it (listed instead).
   std::function<void(const std::string& id, size_t bytes)> skillRefused;
@@ -267,6 +268,7 @@ struct ChatMessage {
   // its agent device note, outside content, so the rails gate its writes; plain/agents.h).
   Trigger trigger = Trigger::Owner;
   bool probe = false;                            // the park's re-check request (MessageGate::probe, E2-FIX14)
+  bool standIn = false;                          // the head is held: start on its fall-back (GateVerdict::StandIn, E2-PARK1)
 };
 
 // Lane E2-P-FO: the heads a failed round may move to, as engine 1's fallbackOrder picks them
@@ -321,7 +323,7 @@ inline void fallbackSlots(const SlotSettings& set, const FallbackPlan& plan, con
   ctx.model = ask.model;
   ctx.sizeClass = orch::sizeClassWord(orch::modelSizeClass(ask.provider, ask.model));
   ctx.capability = "chat";
-  ctx.errorClass = fallbackClassOf(ask.err);
+  ctx.errorClass = ask.held ? ask.heldClass : fallbackClassOf(ask.err);   // E2-PARK1: engine 1's class for a held head
   for (const orch::FallbackTarget& t : fallbackPicks(plan, ctx)) {
     HeadSlot h;
     const std::string model = t.model.empty() && plan.model ? plan.model(t.provider) : t.model;
@@ -512,6 +514,9 @@ class ChatBinding {
     if (busy_) return Status::fail(tx::Err::Busy, "plain::ChatBinding::turn.busy");
     const bool person = msg.trigger != Trigger::AgentResult;
     if (reportedBefore(msg)) return Status::success();   // E2-REP6: its turn ran before a restart
+    TurnInput in;
+    // E2-PARK1: a held head's message starts on its fall-back; with none open now, nothing is stored or sent.
+    if (msg.standIn && !standInFor(msg, in)) return Status::fail(tx::Err::Busy, "plain::ChatBinding::turn.held");
     const uint32_t now = d_.platform->nowMs();
     if (!breaker_.admit(person, now).run && !person) return Status::fail(tx::Err::Busy, "plain::ChatBinding::turn.breaker");
     busy_ = true;
@@ -524,7 +529,6 @@ class ChatBinding {
     withheld_ = false;
     openProbe(msg);
     if (reporter_) reporter_->open(turnCtx(), now);
-    TurnInput in;
     in.ctx = turnCtx();
     in.ctx.trigger = msg.trigger;
     in.text = msg.text;
@@ -849,6 +853,37 @@ class ChatBinding {
     };
     return r;
   }
+  // The chat is the owner's (his words, the episode's notice); no limitChat answer: it is (the hosted daemon).
+  bool ownerChat() const { return !d_.limitChat || d_.limitChat(cfg_.chatId).owner; }
+  // Lane E2-PARK1 (engine 1's startPastParkedHead): the held head's turn, set to start on the first fall-back
+  // the owner's rules name for the cause; false when none is open now. The owner's chat gets the episode's
+  // notice once, on the stand-in's reply: the refusal's reason as the provider gave it (E2-FIX11's safe form,
+  // RAM only), the stand-in's model; told already (the refusal's own turn took it), or a pause: no line.
+  bool standInFor(const ChatMessage& msg, TurnInput& in) {
+    namespace orch = nimbus::orch;
+    const uint32_t now = d_.platform->nowMs();
+    orch::ParkEntry e;
+    const bool parked = parkEntryOf(cfg_.provider, now, e) && e.kind != orch::ParkKind::None;
+    FailoverAsk ask;
+    ask.provider = cfg_.provider;
+    ask.model = cfg_.model;
+    ask.held = true;
+    ask.heldClass = heldClassOf(parked ? e.kind : orch::ParkKind::None, !parked || (e.paused != 0));
+    std::vector<FailoverTarget> to;
+    if (d_.fallbacks) failoverTargets(ask, to);
+    if (to.empty()) {
+      say("e2: the head is held and no fall-back is open now: the message is not run");
+      return false;
+    }
+    in.startPast = ask;
+    if (!parked || e.paused || msg.trigger == Trigger::AgentResult || !ownerChat() ||
+        !orch::providerPark().noticeDue(cfg_.provider.c_str()))
+      return true;
+    const HeldReasons::Reason r = heldReasons().of(cfg_.provider, e.httpStatus);
+    in.startLine = failoverLine(cfg_.provider, ExchangeErr::KeyRefused, r.status, r.text, to.front().model);
+    in.startStored = failoverLine(cfg_.provider, ExchangeErr::KeyRefused, r.status, std::string(), to.front().model);
+    return true;
+  }
   // Lane E2-FIX14: after a turn, the shared park learns what the head answered (parkHead only).
   // E2-REP1: a re-check the head refused again gets engine 1's words by the park's latches (the short
   // answer once, then nothing), never the exchange's line a second time; any other re-check's line goes
@@ -866,7 +901,7 @@ class ChatBinding {
     if (refusedAgain) {
       const orch::ParkVerdict v =
           orch::providerPark().peek(cfg_.provider.c_str(), orch::PaidSeam::Chat, orch::parkKeyFingerprint(key), now);
-      if (!v.open) line = parkedLine(cfg_.provider, v, msg.trigger != Trigger::AgentResult);
+      if (!v.open) line = parkedLine(cfg_.provider, v, msg.trigger != Trigger::AgentResult, HeldChat{cfg_.chatId, ownerChat(), now});
     }
     if (!line.empty() && d_.sendPart) (void)d_.sendPart(cfg_.chatId, line);
   }
@@ -997,6 +1032,7 @@ class ChatBinding {
     if (d_.toolServersWaiting) out.facts.toolServersWaiting = d_.toolServersWaiting();
     skillFacts(t, out.facts);
     out.photo = d_.photo;
+    out.photoInline = d_.photoInline;   // E2-PARK1
     out.dayStartMin = cfg_.dayStartMin;
     out.head = endpoint();
     out.head.effort = headEffortFor(cfg_.provider, t.model);   // E2-FIX14: as nimbusd sends for the same model

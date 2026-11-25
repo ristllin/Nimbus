@@ -348,6 +348,7 @@ class Exchange {
 
   // Whether the exchange sends again (after any wait), by the class of the last answer.
   bool again() {
+    if (req_.once) return false;   // E2-PARK1: the re-check is one request
     switch (verdict_.err) {
       case ExchangeErr::Cut: return retryCut();
       case ExchangeErr::ContextRefused: return retryClimb();

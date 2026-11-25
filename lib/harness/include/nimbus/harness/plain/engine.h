@@ -13,6 +13,7 @@
 #include "nimbus/harness/plain/request.h"
 #include "nimbus/harness/plain/turn.h"
 #include "nimbus/harness/plain/wire.h"
+#include "nimbus/orch/fallback_rules.h"   // ErrorClass: a held head's fall-back class (E2-PARK1)
 #include "nimbus/orch/tx/arena.h"
 #include "nimbus/orch/tx/digest.h"
 #include "nimbus/orch/tx/item.h"
@@ -111,6 +112,9 @@ struct TurnSetup {
   // A test rig's smaller request body cap, bytes (lane E2-FIX9: the overflow ladder on a real provider at a
   // small cost); 0: the head's own (tx::HeadBudget::bodyCap). Never larger than the head's.
   uint32_t bodyCapLimit = 0;
+  // Lane E2-PARK1: the same photos with no provider file id, for a head the turn moved to (a fall-back never
+  // reads the head provider's file ids, so nothing is uploaded there for it); null: `photo` stays.
+  PhotoFn photoInline;
 };
 using TurnSetupFn = std::function<Status(const TurnCtx& turn, TurnSetup& out)>;
 
@@ -126,6 +130,10 @@ struct FailoverAsk {
   std::string model;
   ExchangeErr err = ExchangeErr::None;
   int httpStatus = 0;
+  // Lane E2-PARK1: the head is held by the park (a refused key or credit, a pause) before any request: the
+  // owner's rules are asked for `heldClass`, engine 1's class for that cause (startPastParkedHead).
+  bool held = false;
+  nimbus::orch::ErrorClass heldClass = nimbus::orch::ErrorClass::None;
 };
 struct FailoverTarget {
   std::string provider;            // its slot: price, spend, park ("openai")
@@ -219,6 +227,11 @@ struct TurnInput {
   // whose store succeeded. At the open they count as the turn's own change to the recent-files
   // list (plain/prefix.h): the conversation holds the message that carries them.
   std::vector<std::string> stored;
+  // Lane E2-PARK1: the head is held (startPast.held): the turn starts on the first fall-back the binding's
+  // order names and sends nothing to the head. startLine: the person's line on the stand-in's reply ("":
+  // none, the episode was told), startStored its form with no provider words.
+  FailoverAsk startPast;
+  std::string startLine, startStored;
 };
 
 struct TurnOutcome {

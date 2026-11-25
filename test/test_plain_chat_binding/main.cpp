@@ -61,6 +61,7 @@
 #include "nimbus/orch/no_dash.h"
 #include "nimbus/orch/owner_prefs.h"
 #include "nimbus/orch/provider_park.h"
+#include "nimbus/orch/compact.h"   // ORCH_PARK_RECHECK_PROMPT (E2-PARK1)
 #include "nimbus/orch/tx/rules.h"
 
 namespace plain = agent::plain;
@@ -217,9 +218,17 @@ struct Device {
     d.outside = outside;
     d.recentFiles = recentFiles;
     d.photo = [this](const std::string& ref, plain::PhotoBytes& o) {
-      if (plain::photoBytesFrom(photos, ref, o).ok()) return plain::Status::success();
+      if (plain::photoBytesFrom(photos, ref, o).ok()) {
+        if (fileIds) {   // E2-PARK1: as the device's photoFor on a direct Anthropic head, an upload each time
+          ++uploads;
+          o.fileId = "file_011CPark1Test";
+        }
+        return plain::Status::success();
+      }
       return plain::photoBytesFrom(stored, ref, o);   // the card's copy of an earlier photo
     };
+    if (fileIds)   // E2-PARK1: the device's photoInlineFor
+      d.photoInline = [this](const std::string& ref, plain::PhotoBytes& o) { return plain::photoBytesFrom(photos, ref, o); };
     if (!skillFiles.empty()) d.skills = [this](const nimbus::orch::Principal&) { return plain::chatSkillsOf(skillFiles); };
     if (skills) d.skills = [this](const nimbus::orch::Principal&) { return skills(); };   // E2-P-SKILL: the store
     if (pinnedNotes) d.pinnedNotes = pinnedNotes;                                         // E2-P-SKILL: the notebook
@@ -278,6 +287,7 @@ struct Device {
     m.text = plain::photoText(photos, headHost, headModel, text);
     m.parts = plain::photoParts(photos, headHost, headModel);
     m.probe = probe;
+    m.standIn = standIn;
     out = plain::TurnOutcome{};
     return binding->turn(m, out);
   }
@@ -334,6 +344,10 @@ struct Device {
   // Lane E2-P-FO: the fallback providers in priority order with their head models, and midTurnFailover.
   std::vector<std::pair<std::string, std::string>> fallbacks;
   bool midFail = true;
+  // Lane E2-PARK1: the next message starts on the fall-back (GateVerdict::StandIn); photo uploads counted.
+  bool standIn = false;
+  bool fileIds = false;
+  int uploads = 0;
   std::unique_ptr<plain::ChatBinding> binding;
   plain::TurnOutcome out;
 };
@@ -399,6 +413,9 @@ std::vector<uint64_t> storedQs(const Card& card, const std::string& chat) {
 void setUp() {   // the shared park is process-wide, as the chats told under a limit
   nimbus::orch::providerPark().clear();
   plain::limitTold().clear();
+  plain::shortTold().clear();   // E2-PARK1
+  plain::backLines().clear();
+  plain::heldReasons().clear();
 }
 void tearDown() { nimbus::orch::providerPark().clear(); }
 
@@ -1342,11 +1359,35 @@ plain::MessageGate message(Device& dev, const std::string& text, const std::stri
   g.inbound = dev.inbound;
   g.overBudget = [&dev](const std::string&) { return dev.overBudget; };
   g.limitChat = ownerOnly;
+  if (!dev.fallbacks.empty())   // E2-PARK1: the device's standInOpen, over the same fall-back order
+    g.standIn = [&dev](nimbus::orch::ErrorClass cls) {
+      if (!dev.midFail) return false;
+      plain::FailoverAsk ask;
+      ask.provider = "anthropic";
+      ask.model = dev.binding->config().model;
+      ask.held = true;
+      ask.heldClass = cls;
+      plain::FallbackPlan plan;
+      for (const auto& f : dev.fallbacks) plan.priority.push_back(f.first);
+      plan.open = [](const std::string& p) {
+        std::string why;
+        return !plain::headHeld(p, std::string(), false, 0, why);
+      };
+      plan.model = [&dev](const std::string& p) {
+        for (const auto& f : dev.fallbacks)
+          if (f.first == p) return f.second;
+        return std::string();
+      };
+      std::vector<plain::HeadSlot> out;
+      plain::fallbackSlots(dev.slots(), plan, ask, out);
+      return !out.empty();
+    };
   const plain::MessageGate gate = plain::gateMessage(g, chat, text, /*personWrote=*/true);
-  if (gate.verdict == plain::GateVerdict::Run) {
+  if (gate.verdict == plain::GateVerdict::Run || gate.verdict == plain::GateVerdict::StandIn) {
     dev.probe = gate.probe;
+    dev.standIn = gate.verdict == plain::GateVerdict::StandIn;
     (void)dev.say(text);
-    dev.probe = false;
+    dev.probe = dev.standIn = false;
   }
   return gate;
 }
@@ -1499,11 +1540,11 @@ static void test_an_empty_credit_parks_the_head_until_the_recheck_answers() {
   TEST_ASSERT_EQUAL(3, (int)dev.model.requests().size());
 }
 
-// E2-REP1 (E2-FIX14's known gap): the 30-minute re-check refused again reads as on the released engine.
-// The first refusal's line was the episode's notice; a re-check refused again gets the short answer once
-// (here: no message took it in between), and the next refused re-check gets nothing; the exchange's own
-// refusal line is never sent a second time. One request each, the provider stays parked.
-static void test_a_recheck_refused_again_gets_the_short_answer_then_nothing() {
+// E2-REP1 (E2-FIX14's known gap): the 30-minute re-check refused again. The first refusal's line was the
+// episode's notice; a re-check refused again gets the short answer (E2-PARK1: each time, as they are 30 minutes
+// apart, never silence); the exchange's own refusal line is never sent a second time. One request each, the
+// provider stays parked.
+static void test_a_recheck_refused_again_gets_the_short_answer_each_time() {
   Device dev;
   dev.parkHead = true;
   TEST_ASSERT_TRUE(dev.boot().ok());
@@ -1520,12 +1561,9 @@ static void test_a_recheck_refused_again_gets_the_short_answer_then_nothing() {
     TEST_ASSERT_EQUAL(2 + round, (int)dev.model.requests().size());
     TEST_ASSERT_TRUE(nimbus::orch::providerPark().isParked("anthropic"));
     TEST_ASSERT_EQUAL_MESSAGE(0, sentWith(dev.sent, "refused the key"), round ? "second re-check" : "first re-check");
-    if (round == 0) {
-      TEST_ASSERT_EQUAL(1, (int)dev.sent.size());
-      TEST_ASSERT_EQUAL_STRING(("1001|" + nimbus::orch::keyShortAnswer("Anthropic")).c_str(), dev.sent[0].c_str());
-    } else {
-      TEST_ASSERT_EQUAL(0, (int)dev.sent.size());   // engine 1: nothing more this episode
-    }
+    // E2-PARK1: each refused re-check (30 minutes apart) gets the short line: never a silent message.
+    TEST_ASSERT_EQUAL(1, (int)dev.sent.size());
+    TEST_ASSERT_EQUAL_STRING(("1001|" + nimbus::orch::keyShortAnswer("Anthropic")).c_str(), dev.sent[0].c_str());
   }
 }
 
@@ -2357,6 +2395,228 @@ static void test_a_turn_with_inline_photos_still_fails_over() {
   TEST_ASSERT_EQUAL_STRING("A grey square.", dev.out.text.c_str());
 }
 
+// ---- lane E2-PARK1: a provider that refuses for money or its key ----------------------------------
+namespace {
+const char kUsageLimit[] =
+    R"({"type":"error","error":{"type":"invalid_request_error","message":"You have reached your specified API usage limits. You will regain access on 2026-12-01 at 00:00 UTC."}})";
+size_t askedOf(Device& dev, const std::string& host) {
+  size_t n = 0;
+  for (const std::string& h : hostsAsked(dev)) n += h == host ? 1 : 0;
+  return n;
+}
+// The device's recheckSend over the rig's transport: one request by plain::recheckAsk.
+plain::RecheckAnswer recheckOver(Device& dev, const std::string& provider) {
+  plain::HeadSlot slot;
+  TEST_ASSERT_TRUE(plain::headSlotFor(dev.slots(), provider, "claude-haiku-5-5", slot).ok());
+  plain::ExchangeResult ex;
+  const plain::Status st = plain::recheckAsk(dev.platform, dev.model, plain::rungOf(slot), ex);
+  plain::RecheckAnswer a;
+  a.sent = ex.requests > 0;
+  a.answered = st.ok() && ex.err == plain::ExchangeErr::None;
+  a.refused = ex.parkHost;
+  a.status = ex.httpStatus;
+  a.body = ex.parkBody;
+  a.billing = ex.billing;
+  return a;
+}
+plain::RecheckDeps recheckDeps(Device& dev) {
+  plain::RecheckDeps d;
+  d.key = [&dev](const std::string&) { return dev.key; };
+  d.send = [&dev](const std::string& p) { return recheckOver(dev, p); };
+  d.nowMs = dev.ms;
+  return d;
+}
+}  // namespace
+
+// Item 1: once the head's provider is parked for its usage limit, the next message starts on the owner's
+// fall-back: no request and no Files API upload to the held provider, the photo as pixels on the stand-in, the
+// same conversation, the owner's head unchanged, the usage row on the model that answered. With mid-turn
+// fail-over off (no fall-back) the gate holds as before.
+static void test_a_held_head_starts_on_its_fall_back_with_nothing_sent_to_it() {
+  Device dev;
+  dev.parkHead = true;
+  dev.fileIds = true;
+  dev.fallbacks = {{"openai", "gpt-5.6-luna"}};
+  nimbus::orch::TurnImages set;
+  onePhoto(set);
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  answerByHost(dev, {{"api.anthropic.com", sp::httpError(400, kUsageLimit)}, {"api.openai.com", sp::say("Noted, Sam.")}});
+  TEST_ASSERT_EQUAL((int)plain::GateVerdict::Run, (int)message(dev, "My name is Sam.").verdict);
+  TEST_ASSERT_TRUE(nimbus::orch::providerPark().isParked("anthropic"));
+  TEST_ASSERT_EQUAL(1, (int)askedOf(dev, "api.anthropic.com"));
+  dev.photos = &set;
+  const int uploads = dev.uploads;
+  answerByHost(dev, {{"api.anthropic.com", sp::say("Never.")}, {"api.openai.com", sp::say("A red triangle.")}});
+  const plain::MessageGate g = message(dev, "[image 1/1 ref=0123456789abcdef] what is this?");
+  dev.photos = nullptr;
+  TEST_ASSERT_EQUAL((int)plain::GateVerdict::StandIn, (int)g.verdict);
+  TEST_ASSERT_FALSE(g.probe);
+  TEST_ASSERT_EQUAL_MESSAGE(1, (int)askedOf(dev, "api.anthropic.com"), "nothing more to the held provider");
+  TEST_ASSERT_EQUAL_MESSAGE(uploads, dev.uploads, "no Files API upload for the stand-in");
+  TEST_ASSERT_EQUAL_STRING("api.openai.com", dev.model.last().req.host.c_str());
+  TEST_ASSERT_EQUAL(1, (int)count(dev.model.last().body, "\"input_image\""));
+  TEST_ASSERT_TRUE_MESSAGE(has(dev.model.last().body, "My name is Sam."), "the same conversation");
+  TEST_ASSERT_EQUAL_STRING("A red triangle.", dev.out.text.c_str());
+  TEST_ASSERT_EQUAL_STRING("gpt-5.6-luna", plain::answeringModel(dev.out, "claude-haiku-5-5").c_str());
+  const nimbus::orch::TurnSpend& u = dev.usage.back();
+  TEST_ASSERT_EQUAL(1, (int)u.billedSlots());   // nothing billed on the held provider
+  TEST_ASSERT_EQUAL_STRING("openai", u.slot[0].host);
+  TEST_ASSERT_EQUAL_STRING("anthropic", dev.binding->config().provider.c_str());   // his head is his
+  TEST_ASSERT_TRUE(nimbus::orch::providerPark().isParked("anthropic"));
+  // No fall-back open (mid-turn fail-over off): held, no request at all.
+  dev.midFail = false;
+  const size_t before = dev.model.requests().size();
+  TEST_ASSERT_EQUAL((int)plain::GateVerdict::Held, (int)message(dev, "And now?").verdict);
+  TEST_ASSERT_EQUAL(before, dev.model.requests().size());
+}
+
+// Item 2: the episode is told once. The refusal's own turn carries the switch line with the provider's reason
+// and its return time; the stand-in's answers after it carry no line. A park the owner was not told about yet
+// (learned on another seam) is told once on the first stand-in answer, with the stand-in's model.
+static void test_the_stand_in_tells_the_episode_once() {
+  Device dev;
+  dev.parkHead = true;
+  dev.fallbacks = {{"openai", "gpt-5.6-luna"}};
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  answerByHost(dev, {{"api.anthropic.com", sp::httpError(400, kUsageLimit)}, {"api.openai.com", sp::say("Fine.")}});
+  (void)message(dev, "first");
+  TEST_ASSERT_TRUE(has(dev.out.statusText, "You will regain access on 2026-12-01"));
+  TEST_ASSERT_TRUE(has(dev.out.statusText, "this answer came from gpt-5.6-luna."));
+  for (int i = 0; i < 2; ++i) {
+    dev.sent.clear();
+    TEST_ASSERT_EQUAL((int)plain::GateVerdict::StandIn, (int)message(dev, "again").verdict);
+    TEST_ASSERT_EQUAL_STRING("Fine.", dev.out.text.c_str());
+    TEST_ASSERT_EQUAL_STRING("", dev.out.statusText.c_str());
+    TEST_ASSERT_EQUAL(1, (int)dev.sent.size());   // the reply alone
+  }
+  // A park learned elsewhere (no turn told the owner): the first stand-in answer tells it, once.
+  nimbus::orch::providerPark().clear();
+  plain::heldReasons().clear();
+  nimbus::orch::providerPark().park("anthropic", nimbus::orch::PaidSeam::Vision, 0, nimbus::orch::ParkKind::Billing, 400,
+                                    dev.ms);
+  TEST_ASSERT_EQUAL((int)plain::GateVerdict::StandIn, (int)message(dev, "third").verdict);
+  TEST_ASSERT_EQUAL_STRING(
+      "Anthropic refused the key or the account has no credit (HTTP 400); this answer came from gpt-5.6-luna.",
+      dev.out.statusText.c_str());
+  TEST_ASSERT_EQUAL((int)plain::GateVerdict::StandIn, (int)message(dev, "fourth").verdict);
+  TEST_ASSERT_EQUAL_STRING("", dev.out.statusText.c_str());
+}
+
+// Item 3: while a stand-in answers, the 30-minute re-check is never a person's message: the message after the
+// wait still starts on the stand-in, and the re-check is one small request of its own, within the park's
+// probe lease, sent once (a 500 is not retried), at most once per kRecheckMs; a refused one costs nothing and
+// keeps the park. A changed key still ends the park at once.
+static void test_the_recheck_is_its_own_request_while_a_stand_in_answers() {
+  Device dev;
+  dev.parkHead = true;
+  dev.fallbacks = {{"openai", "gpt-5.6-luna"}};
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  answerByHost(dev, {{"api.anthropic.com", sp::httpError(400, kUsageLimit)}, {"api.openai.com", sp::say("Fine.")}});
+  (void)message(dev, "first");
+  dev.ms += nimbus::orch::ProviderPark::kRecheckMs + 1000;   // the re-check is due
+  const plain::MessageGate g = message(dev, "second");
+  TEST_ASSERT_EQUAL((int)plain::GateVerdict::StandIn, (int)g.verdict);
+  TEST_ASSERT_FALSE(g.probe);
+  TEST_ASSERT_EQUAL(1, (int)askedOf(dev, "api.anthropic.com"));
+  // The re-check: one request with engine 1's words, refused again (the same usage limit).
+  const size_t lines = dev.sent.size();
+  TEST_ASSERT_EQUAL_STRING("anthropic", plain::recheckParked(recheckDeps(dev)).c_str());
+  TEST_ASSERT_EQUAL(2, (int)askedOf(dev, "api.anthropic.com"));
+  TEST_ASSERT_EQUAL_MESSAGE(lines, dev.sent.size(), "a refused re-check adds no line");
+  TEST_ASSERT_TRUE(has(dev.model.last().body, nimbus::orch::ORCH_PARK_RECHECK_PROMPT));
+  TEST_ASSERT_FALSE(has(dev.model.last().body, "My name"));
+  TEST_ASSERT_TRUE(nimbus::orch::providerPark().isParked("anthropic"));
+  TEST_ASSERT_TRUE(nimbus::orch::providerPark().recheckInMs("anthropic") > 29u * 60u * 1000u);
+  TEST_ASSERT_EQUAL_STRING("", plain::recheckParked(recheckDeps(dev)).c_str());   // not due again
+  TEST_ASSERT_EQUAL(2, (int)askedOf(dev, "api.anthropic.com"));
+  // A server error is one request too, and re-arms the wait.
+  dev.ms += nimbus::orch::ProviderPark::kRecheckMs + 1000;
+  answerByHost(dev, {{"api.anthropic.com", sp::httpError(500)}, {"api.openai.com", sp::say("Fine.")}});
+  TEST_ASSERT_EQUAL_STRING("anthropic", plain::recheckParked(recheckDeps(dev)).c_str());
+  TEST_ASSERT_EQUAL(3, (int)askedOf(dev, "api.anthropic.com"));
+  TEST_ASSERT_TRUE(nimbus::orch::providerPark().isParked("anthropic"));
+  TEST_ASSERT_EQUAL((int)plain::GateVerdict::StandIn, (int)message(dev, "third").verdict);
+  // A changed key ends the park at once: the next message runs on the head.
+  dev.key = "sk-fake-another";
+  answerByHost(dev, {{"api.anthropic.com", sp::say("Back.")}});
+  TEST_ASSERT_EQUAL((int)plain::GateVerdict::Run, (int)message(dev, "fourth").verdict);
+  TEST_ASSERT_EQUAL_STRING("api.anthropic.com", dev.model.last().req.host.c_str());
+}
+
+// Item 4: with no fall-back open, a held message is never silent: the owner gets the episode's notice once,
+// then the short line with the minutes to the re-check at most once per chat per ten minutes; a member's chat
+// gets the neutral line with no money detail and never takes the owner's notice.
+static void test_a_held_message_gets_a_line_at_most_every_ten_minutes() {
+  Device dev;
+  dev.parkHead = true;
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  nimbus::orch::providerPark().park("anthropic", nimbus::orch::PaidSeam::Chat, 0, nimbus::orch::ParkKind::Billing, 400,
+                                    dev.ms);
+  const std::string neutral = nimbus::orch::frozenReplyTextOther();
+  TEST_ASSERT_EQUAL_STRING(neutral.c_str(), message(dev, "hi", "2002").line.c_str());   // the member first
+  const plain::MessageGate notice = message(dev, "first");
+  TEST_ASSERT_EQUAL((int)plain::GateVerdict::Held, (int)notice.verdict);
+  TEST_ASSERT_TRUE_MESSAGE(has(notice.line, "says the account is out of credit"), notice.line.c_str());
+  const std::string shortLine = message(dev, "second").line;
+  TEST_ASSERT_TRUE_MESSAGE(has(shortLine, "Your message was not answered.") && has(shortLine, "minutes"), shortLine.c_str());
+  TEST_ASSERT_EQUAL_STRING("", message(dev, "third").line.c_str());          // within ten minutes
+  TEST_ASSERT_EQUAL_STRING("", message(dev, "again", "2002").line.c_str());
+  dev.ms += plain::kShortEveryMs;
+  TEST_ASSERT_TRUE(has(message(dev, "fourth").line, "Your message was not answered."));
+  TEST_ASSERT_EQUAL_STRING(neutral.c_str(), message(dev, "still?", "2002").line.c_str());
+  TEST_ASSERT_EQUAL(0, (int)dev.model.requests().size());
+}
+
+// Item 5: the owner is told once when a park he was told about ends because the provider answered (the
+// re-check), never for one he was not told about; a lifted dollar-limit pause gets the same line once; a
+// restart keeps the told mark on the park's file, so the line is due after it, and never invented.
+static void test_the_owner_is_told_once_when_the_provider_answers_again() {
+  Device dev;
+  dev.parkHead = true;
+  dev.fallbacks = {{"openai", "gpt-5.6-luna"}};
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  // Not told: a park learned on another seam, answered by the re-check: no line.
+  nimbus::orch::providerPark().park("anthropic", nimbus::orch::PaidSeam::Vision, 0, nimbus::orch::ParkKind::Billing, 400,
+                                    dev.ms);
+  dev.ms += nimbus::orch::ProviderPark::kRecheckMs + 1000;
+  answerByHost(dev, {{"api.anthropic.com", sp::say("ok")}});
+  TEST_ASSERT_EQUAL_STRING("anthropic", plain::recheckParked(recheckDeps(dev)).c_str());
+  TEST_ASSERT_FALSE(nimbus::orch::providerPark().isParked("anthropic"));
+  TEST_ASSERT_TRUE(plain::backLines().empty());
+  // Told (the refusal's own turn), then a restart (the park's file read back, RAM lost), then the re-check.
+  answerByHost(dev, {{"api.anthropic.com", sp::httpError(400, kUsageLimit)}, {"api.openai.com", sp::say("Fine.")}});
+  (void)message(dev, "first");
+  const std::string blob = nimbus::orch::providerPark().serialize(dev.ms);
+  nimbus::orch::providerPark().clear();
+  plain::backLines().clear();
+  plain::heldReasons().clear();
+  TEST_ASSERT_TRUE(nimbus::orch::providerPark().deserialize(blob, dev.ms));
+  TEST_ASSERT_TRUE(plain::backLines().empty());   // nothing is due before the provider answers
+  dev.ms += nimbus::orch::ProviderPark::kRecheckMs + 1000;
+  answerByHost(dev, {{"api.anthropic.com", sp::say("ok")}});
+  TEST_ASSERT_EQUAL_STRING("anthropic", plain::recheckParked(recheckDeps(dev)).c_str());
+  std::string p;
+  TEST_ASSERT_TRUE(plain::backLines().take(p));
+  TEST_ASSERT_EQUAL_STRING("anthropic", p.c_str());
+  TEST_ASSERT_FALSE(plain::backLines().take(p));   // once
+  TEST_ASSERT_EQUAL_STRING("Anthropic is answering again. Replies are back on claude-haiku-5-5.",
+                           plain::backLine("anthropic", "claude-haiku-5-5").c_str());
+  answerByHost(dev, {{"api.anthropic.com", sp::say("On the head.")}});
+  TEST_ASSERT_EQUAL((int)plain::GateVerdict::Run, (int)message(dev, "next").verdict);
+  TEST_ASSERT_EQUAL_STRING("api.anthropic.com", dev.model.last().req.host.c_str());
+  // A dollar-limit pause that lifts: one line.
+  plain::noteLimitState("anthropic");
+  TEST_ASSERT_TRUE(plain::backLines().empty());
+  nimbus::orch::providerPark().pause("anthropic", nimbus::orch::kPauseProviderLimit);
+  plain::noteLimitState("anthropic");
+  TEST_ASSERT_TRUE(plain::backLines().empty());
+  nimbus::orch::providerPark().resume("anthropic", nimbus::orch::kPauseProviderLimit);
+  plain::noteLimitState("anthropic");
+  plain::noteLimitState("anthropic");
+  TEST_ASSERT_TRUE(plain::backLines().take(p));
+  TEST_ASSERT_FALSE(plain::backLines().take(p));
+}
+
 // D1: with midTurnFailover off the failed round is the turn's end, on the head only.
 static void test_no_switch_with_the_setting_off() {
   Device dev;
@@ -2640,7 +2900,7 @@ int main(int, char**) {
   RUN_TEST(test_a_second_cut_inside_the_resume_gives_the_plain_notice);
   RUN_TEST(test_a_refused_key_parks_the_head_and_the_next_message_sends_no_request);
   RUN_TEST(test_an_empty_credit_parks_the_head_until_the_recheck_answers);
-  RUN_TEST(test_a_recheck_refused_again_gets_the_short_answer_then_nothing);
+  RUN_TEST(test_a_recheck_refused_again_gets_the_short_answer_each_time);
   RUN_TEST(test_a_provider_limit_stops_turns_until_it_is_raised_and_the_ceiling_still_holds);
   RUN_TEST(test_a_reply_under_the_no_dash_rule_leaves_without_a_dash);
   RUN_TEST(test_a_reply_the_outbound_screen_blocks_sends_nothing);
@@ -2672,5 +2932,10 @@ int main(int, char**) {
   RUN_TEST(test_a_dollar_limit_pause_is_told_once_and_never_as_a_token_budget);
   RUN_TEST(test_every_chat_is_told_once_under_a_dollar_limit);
   RUN_TEST(test_a_turn_with_inline_photos_still_fails_over);
+  RUN_TEST(test_a_held_head_starts_on_its_fall_back_with_nothing_sent_to_it);
+  RUN_TEST(test_the_stand_in_tells_the_episode_once);
+  RUN_TEST(test_the_recheck_is_its_own_request_while_a_stand_in_answers);
+  RUN_TEST(test_a_held_message_gets_a_line_at_most_every_ten_minutes);
+  RUN_TEST(test_the_owner_is_told_once_when_the_provider_answers_again);
   return UNITY_END();
 }

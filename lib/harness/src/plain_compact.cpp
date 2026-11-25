@@ -21,6 +21,7 @@
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/harness/platform.h"
 #include "nimbus/harness/turn_memory.h"
+#include "nimbus/orch/compact.h"   // ORCH_PARK_RECHECK_PROMPT: engine 1's re-check words (E2-PARK1)
 #include "nimbus/orch/model_caps.h"   // the summarizer's structured form by row (lane E2-R4b)
 #include "nimbus/orch/day_start.h"   // RB-REC5: the one day rule
 #include "nimbus/orch/tx/arena.h"
@@ -1418,6 +1419,41 @@ Status askRung(const CompactDeps& d, const SummarizerRung& rung, const RungMessa
 }
 
 }  // namespace
+
+Status recheckAsk(const Platform& platform, HttpTransport& transport, const SummarizerRung& rung, ExchangeResult& out) {
+  const WireCodec* wire = rung.wire;
+  Status s = wire ? Status::success() : wireFor(rung.dialect, wire);
+  if (!s.ok() || !wire) return s.ok() ? Status::fail(Err::NotFound, "plain::recheckAsk") : s;
+  const uint64_t now = platform.nowEpoch ? platform.nowEpoch() : 0;
+  tx::TxArena arena;
+  if (!(s = messageArena(platform, "ok", now, arena)).ok()) return s;
+  TurnCtx turn;
+  turn.chatKey = turn.chatId = "recheck";
+  turn.turn = 1;
+  turn.trigger = Trigger::Notice;
+  turn.host = rung.host;
+  turn.model = rung.model;
+  turn.dialect = rung.dialect;
+  turn.startedAt = now;
+  turn.startedMs = platform.nowMs ? platform.nowMs() : 0;
+  SystemBlocks system;
+  system.core = nimbus::orch::ORCH_PARK_RECHECK_PROMPT;
+  const std::vector<ToolSpec> tools;
+  RenderInput in;
+  in.turn = &turn;
+  in.head = &rung.endpoint;
+  in.system = &system;
+  in.tools = &tools;
+  in.items = &arena;
+  ExchangeRequest req;
+  req.wire = wire;
+  req.render = &in;
+  req.timeoutMs = req.deadlineMs = kCompactMinRequestMs * 3;
+  req.capCeiling = kRecheckMaxTokens;
+  req.summary = true;   // a single-shot request: the fold's cap table and time fit (engine 1's askParkedHost)
+  req.once = true;
+  return runExchange(ExchangeDeps{&transport, &platform}, req, out);
+}
 
 // The row's structured summary (lane E2-R4b, router design section 5 item 8): none for a host no table
 // slot names (a routed or custom head: an Anthropic-shaped proxy may not have the form).

@@ -418,6 +418,7 @@ class TurnRun {
     if (!d_.setup) return fail(Status::fail(Err::InvalidArgument, "plain::PlainEngine::runTurn.setup"));
     if (!(st = d_.setup(t_.ctx, t_.setup)).ok() || !(st = sized()).ok()) return fail(st);
     if (!(st = storeOpen(in)).ok() || !(st = openChanges()).ok()) return st;
+    if (in.startPast.held && !(st = startPast(in)).ok()) return fail(st);   // E2-PARK1
     if (!(st = compose()).ok() || !(st = wired()).ok()) return fail(st);
     clampLimits();
     return Status::success();
@@ -1068,6 +1069,32 @@ class TurnRun {
     event("failover:" + ask.provider + ">" + tg.provider + ":" + exchangeErrSlug(ask.err));
     hlog::logf("plain(%s): %s/%s failed (%s): the round goes to %s/%s", d_.chatKey.c_str(), ask.provider.c_str(),
                ask.model.c_str(), exchangeErrSlug(ask.err), tg.provider.c_str(), tg.model.c_str());
+    takeHead(tg, cap);
+  }
+  // Lane E2-PARK1 (engine 1's startPastParkedHead): the head is held before the turn's first request, so the
+  // turn starts on the first head of the binding's order (the owner's rules for the held cause) and nothing
+  // is sent to the held one. The person's line is the binding's (the episode's one notice, or none).
+  Status startPast(const TurnInput& in) {
+    const FailoverAsk& ask = in.startPast;
+    std::vector<FailoverTarget> order;
+    if (d_.failover) d_.failover(ask, order);
+    t_.tried.push_back(ask.provider + "/" + ask.model);
+    for (FailoverTarget& tg : order) {
+      tx::HeadBudget b;
+      if (!tx::budgetFor(tx::HeadKey{tg.provider, tg.model, tg.head.routed}, t_.ctx.profile, b).ok()) continue;
+      closeShare(ask.provider, ask.model);   // nothing billed: its share is empty
+      t_.switchLines = in.startLine;
+      t_.switchStored = in.startStored;
+      event("startpast:" + ask.provider + ">" + tg.provider);
+      hlog::logf("plain(%s): %s is held: the turn starts on %s/%s", d_.chatKey.c_str(), ask.provider.c_str(),
+                 tg.provider.c_str(), tg.model.c_str());
+      takeHead(tg, t_.setup.bodyCapLimit ? std::min(b.bodyCap, t_.setup.bodyCapLimit) : b.bodyCap);
+      return Status::success();
+    }
+    hlog::logf("plain(%s): %s is held and no fall-back is open: no request", d_.chatKey.c_str(), ask.provider.c_str());
+    return Status::fail(Err::NotFound, "plain::PlainEngine::startPast");
+  }
+  void takeHead(FailoverTarget& tg, uint32_t cap) {
     t_.tried.push_back(tg.provider + "/" + tg.model);
     ++t_.switches;
     t_.slot = tg.provider;
@@ -1078,6 +1105,7 @@ class TurnRun {
     t_.setup.head = std::move(tg.head);
     t_.setup.cost = tg.cost;   // the spend guard prices what follows at the new head's rates
     t_.setup.wire = nullptr;
+    if (t_.setup.photoInline) t_.setup.photo = t_.setup.photoInline;   // E2-PARK1: no upload for a fall-back
     t_.bodyCap = cap;
   }
   // What the head left was billed since it took over (the turn's totals less `base`).

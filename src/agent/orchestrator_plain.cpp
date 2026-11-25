@@ -76,6 +76,7 @@
 #include "nimbus/orch/model_selectable.h"  // PickRole
 #include "adapters/image_vision.h"   // the photo set the Telegram intake keeps (R1)
 #include "budget_command.h"     // noteTurnEnd - /model's last reply
+#include "degraded_device.h"     // noteTurn: the head_fallback row (E2-PARK1)
 #include "commands_plain.h"     // the owner's slash commands
 #include "loops_subsystem.h"    // checkDue, routineGrants, quietHoursEndMinute (lane E2-SCHED)
 #include "tools_plain_connectors.h"  // connectorsdev::beforeTurn (E2-P-CONN1)
@@ -435,6 +436,11 @@ plain::Status photoFor(const std::string& ref, plain::PhotoBytes& out) {
   return st;
 }
 
+// Lane E2-PARK1: the same photo with no file id, for a fall-back head (nothing uploaded to the head's provider).
+plain::Status photoInlineFor(const std::string& ref, plain::PhotoBytes& out) {
+  return plain::photoBytesFrom(s_photos.get(), ref, out).ok() ? plain::Status::success() : carriedPhoto(ref, out);
+}
+
 // ---- a context skill too large for the pinned block: told once per file and size -------
 // E2-BFIX4: the told list is on flash, so a restart does not tell the owner again (it went out
 // once per boot, and every console open resets the board).
@@ -568,7 +574,13 @@ void recordUsage(const plain::TurnOutcome& out, const std::string& provider, con
     s_lastUsage = spend.total();
     s_sessUsage += s_lastUsage;
   }
-  budget::noteTurnEnd(provider, model, provider, "owner", out.delivered);
+  // E2-PARK1: /model's last reply and the head_fallback row name the provider that answered.
+  const bool moved = out.switches && !out.shares.empty();
+  const std::string served = moved ? out.shares.back().provider : provider;
+  budget::noteTurnEnd(served, plain::answeringModel(out, model), provider, "owner", out.delivered);
+  std::string path;
+  for (const plain::HeadShare& h : out.shares) path += (path.empty() ? "" : " -> ") + h.provider;
+  degraded::noteTurn(provider, served, path, out.rounds > 0);
 }
 
 // The boot's import of the earlier engine's conversation, on one line (what the bench reads).
@@ -734,6 +746,7 @@ plain::ChatBinding* chatFor(const String& chatId, nimbus::orch::Role role) {
     return [who](std::vector<nimbus::orch::tx::RecentFile>& out) { return files::recentFiles(who, out); };
   };
   d.photo = photoFor;
+  d.photoInline = photoInlineFor;   // E2-PARK1
   d.turnTool = historydev::answer;   // E2-SRCH: search and view read this turn's own conversation
   d.skills = [](const nimbus::orch::Principal&) { return skillsdev::chatSkills(); };
   d.skillRefused = noteSkillRefused;
@@ -964,6 +977,28 @@ void journalTurn(const String& chatId, const plain::ChatMessage& msg) {
 // provider_gate.cpp).
 std::string headKeyText() { return keyOf(std::string(store::resolvedOrchHost().c_str())); }
 
+// Lane E2-PARK1: a fall-back the owner's rules name for a held head (`cls`) is open, priced and sized, as the
+// binding's own fail-over targets are (none with mid-turn fail-over off).
+bool standInOpen(nimbus::orch::ErrorClass cls) {
+  const String host = store::resolvedOrchHost();
+  plain::FailoverAsk ask;
+  ask.provider = host.c_str();
+  ask.model = store::orchModel(host).c_str();
+  ask.held = true;
+  ask.heldClass = cls;
+  std::vector<plain::HeadSlot> slots;
+  fallbacksFor(slotSettings(), ask, slots);
+  for (const plain::HeadSlot& h : slots) {
+    nimbus::orch::tx::HeadBudget b;
+    plain::HeadRates r;
+    if (nimbus::orch::tx::budgetFor(nimbus::orch::tx::HeadKey{h.provider, h.model, h.endpoint.routed},
+                                    nimbus::orch::tx::kDefaultProfile, b).ok() &&
+        plain::slotRatesFor(h.provider, h.model, r))
+      return true;
+  }
+  return false;
+}
+
 plain::MessageGateDeps gateDeps() {
   plain::MessageGateDeps g;
   g.provider = store::resolvedOrchHost().c_str();
@@ -978,6 +1013,7 @@ plain::MessageGateDeps gateDeps() {
   };
   g.overBudget = [](const std::string& p) { return store::providerOverBudget(String(p.c_str())); };
   g.limitChat = limitChatOf;   // E2-CFIX3
+  g.standIn = standInOpen;     // E2-PARK1
   return g;
 }
 
@@ -1185,20 +1221,22 @@ plain::WaitingAnswer answerKept(const plain::WaitingMessage& w, const String& ch
   const String host = store::resolvedOrchHost();
   std::string why;
   if (std::find(s_keptStallTold.begin(), s_keptStallTold.end(), std::string(chatId.c_str())) != s_keptStallTold.end() &&
-      plain::headHeld(host.c_str(), keyOf(host.c_str()), store::providerOverBudget(host), (uint32_t)millis(), why))
+      plain::headHeld(host.c_str(), keyOf(host.c_str()), store::providerOverBudget(host), (uint32_t)millis(), why) &&
+      !standInOpen(nimbus::orch::ErrorClass::None))
     return keptStalled(chatId, nullptr);
   // E2-FIX14: a kept message's turn passes engine 1's money gates as a new message does (its inbound screen
   // ran when it came): over the limit, parked or paused, no request.
   plain::MessageGateDeps g = gateDeps();
   g.inbound = nullptr;
   const plain::MessageGate gate = plain::gateMessage(g, chatId.c_str(), w.text, /*personWrote=*/true);
-  if (gate.verdict != plain::GateVerdict::Run) {
+  if (gate.verdict != plain::GateVerdict::Run && gate.verdict != plain::GateVerdict::StandIn) {
     alogf("e2: a message to %s kept during the read-in: the head is held (%s), no request", chatId.c_str(), gate.why);
     return keptStalled(chatId, gate.line.c_str());
   }
   s_keptStallTold.clear();
   plain::ChatMessage msg;
   msg.probe = gate.probe;
+  msg.standIn = gate.verdict == plain::GateVerdict::StandIn;   // E2-PARK1
   msg.text = w.text;
   msg.ch = w.ch;
   msg.src = w.src;
@@ -1286,6 +1324,18 @@ bool answeredBeforeTurn(const String& text, const String& fromName, const String
   return true;
 }
 
+// Lane E2-PARK1: the stand-in closed between the gate and the turn (nothing stored, nothing sent): the
+// message gets the held head's line as the gate gives it with no fall-back (never silence).
+bool heldAfterAll(const String& text, const String& chatId) {
+  plain::MessageGateDeps g = gateDeps();
+  g.inbound = nullptr;
+  g.standIn = nullptr;
+  const plain::MessageGate gate = plain::gateMessage(g, chatId.c_str(), text.c_str(), /*personWrote=*/true);
+  handBack(gate.probe);
+  alogf("e2: the fall-back for %s closed before the turn: %s", chatId.c_str(), gate.why);
+  return !gate.line.empty() && sayInstead(chatId, gate.line.c_str());
+}
+
 // One person's message as one engine-2 turn (tg_poll). Returns whether a reply went out.
 bool runOne(const String& text, const String& fromName, const String& chatId) {
   const String host = store::resolvedOrchHost();
@@ -1320,6 +1370,7 @@ bool runOne(const String& text, const String& fromName, const String& chatId) {
     return true;
   }
   msg.probe = gate.probe;
+  msg.standIn = gate.verdict == plain::GateVerdict::StandIn;   // E2-PARK1: start on the fall-back
   const String row = captureOwnerRow(text, fromName, chatId, true);
   // E2-P-PHOTO: a head without image input reads each photo's one description (engine 1's caption walk,
   // made only for such a head) as its line; a seeing head gets the pixels and no caption call.
@@ -1328,7 +1379,9 @@ bool runOne(const String& text, const String& fromName, const String& chatId) {
   msg.parts = plain::photoParts(s_photos.get(), host.c_str(), model);
   msg.tzMinutes = (int16_t)(utcOffsetAt((uint32_t)time(nullptr)));
   msg.m = rowNumber(row);
-  return turnFor(*b, chatId, msg);
+  plain::Status st;
+  const bool sent = turnFor(*b, chatId, msg, &st);
+  return msg.standIn && st.err == nimbus::orch::tx::Err::Busy ? heldAfterAll(text, chatId) : sent;
 }
 
 // ---- what the owner's commands ask of engine 2 -----------------------------------------
@@ -1723,6 +1776,72 @@ void drainOutboxes() {
   }
 }
 
+// ---- lane E2-PARK1: the park's own re-check and the owner's "answering again" line ---------------
+// One small request to a parked provider whose re-check is due (engine 1's askParkedHost): the head's model on
+// its slot, never sent twice, its spend counted as engine 1 counts it.
+plain::RecheckAnswer recheckSend(const std::string& provider) {
+  plain::RecheckAnswer a;
+  const String ps(provider.c_str());
+  const std::string model(store::orchModel(ps).c_str());
+  plain::HeadSlot slot;
+  if (!plain::headSlotFor(slotSettings(), provider, model, slot).ok()) return a;
+  plain::ExchangeResult ex;
+  s_transport.reset();
+  plain::Status st;
+  {
+    PsramFirstScope psramFirst;
+    st = plain::recheckAsk(devicePlatform(), s_transport, plain::rungOf(slot), ex);
+  }
+  a.sent = ex.requests > 0;
+  a.answered = st.ok() && ex.err == plain::ExchangeErr::None;
+  a.refused = ex.parkHost;
+  a.status = ex.httpStatus;
+  a.body = ex.parkBody;
+  a.billing = ex.billing;
+  if (ex.step.usage.responses) {
+    nimbus::orch::TurnSpend spend;
+    spend.add(provider.c_str(), model.c_str(), plain::ledgerUsage(provider, model, ex.step.usage));
+    store::recordProviderSpend(spend, "recheck");
+  }
+  alogf("e2: park re-check %s/%s: sent=%d answered=%d refused=%d HTTP %d", provider.c_str(), model.c_str(),
+        (int)a.sent, (int)a.answered, (int)a.refused, a.status);
+  return a;
+}
+
+// The owner's line when a provider he was told about answers again: once, outside quiet hours, on his chat.
+void tellBack() {
+  const uint64_t now = (uint64_t)time(nullptr);
+  if (plain::backLines().empty() || now < 1000000000 || plain::inQuiet(quietNow(), now, tzNow())) return;
+  std::string provider;
+  if (!plain::backLines().take(provider)) return;
+  const String host = store::resolvedOrchHost();
+  const std::string model = provider == host.c_str() ? std::string(store::orchModel(host).c_str()) : std::string();
+  const String owner = telegram::ownerChat().length() ? telegram::ownerChat() : String("web");
+  alogf("e2: %s answers again: the owner is told", provider.c_str());
+  (void)sayInstead(owner, plain::backLine(provider, model).c_str());
+}
+
+// Between turns, every 30 s: a lifted dollar-limit pause is noted, one due re-check goes out (so no person's
+// message is the re-check while a fall-back answers), and a due "answering again" line is sent.
+void parkUpkeep() {
+  static uint32_t last = 0;
+  if (s_inTurn.load(std::memory_order_relaxed) || (last && (uint32_t)(millis() - last) < 30000)) return;
+  last = millis() | 1;
+  plain::noteLimitState(store::resolvedOrchHost().c_str());
+  if (nimbus::orch::paidCallAllowed(nimbus::orch::SpendSeam::Fold)) {
+    plain::RecheckDeps d;
+    d.askable = [](const std::string& p) {
+      const String ps(p.c_str());
+      return store::providerHasKey(ps) && !store::providerOverBudget(ps);
+    };
+    d.key = keyOf;
+    d.send = recheckSend;
+    d.nowMs = (uint32_t)millis();
+    (void)plain::recheckParked(d);
+  }
+  tellBack();
+}
+
 // The outboxes a restart left on the card: loaded once, so their notes go when quiet hours end.
 // Lane E2-FIX2B (finding P12): a listing that fails is tried again every 30 s until one answers.
 void loadOutboxes() {
@@ -1994,6 +2113,7 @@ int pollJobs() {
   loadOutboxes();
   loops::checkDue((uint64_t)time(nullptr), s_inTurn.load(std::memory_order_relaxed), ESP.getFreeHeap());
   drainOutboxes();
+  parkUpkeep();           // E2-PARK1: the park's own re-check and the "answering again" line
   if (!s_inTurn.load(std::memory_order_relaxed)) files::tickFetch();   // E2-P-OUT2: fetch_url, as engine 1 pumps it
   const int n = pumpJobs();
   refreshSessionSnapshot();
