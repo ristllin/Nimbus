@@ -1413,6 +1413,44 @@ static void test_a_dollar_limit_pause_is_told_once_and_never_as_a_token_budget()
   TEST_ASSERT_EQUAL(1, (int)dev.model.requests().size());
 }
 
+// E2-CFIX3 (review of E2-CFIX1): under a provider's dollar limit every chat whose message goes unanswered is told
+// the true reason once per pause. The freeze notice reaches only the owner's chat (and the web chat), so a
+// member's turn cut by the limit gets the members' neutral line itself; each chat's "once" is its own, so a
+// second member and the owner are each told; a lifted pause tells again next time.
+static void test_every_chat_is_told_once_under_a_dollar_limit() {
+  appendRuns = 0;
+  Device member;
+  addAppend(member.reg);
+  member.pendingSpend = [&](const std::string&, const std::string&, const nimbus::orch::TokenUsage&) {
+    nimbus::orch::providerPark().pause("anthropic", nimbus::orch::kPauseProviderLimit);   // the limits store
+    member.overBudget = true;
+  };
+  member.paidHeld = [&](const std::string& p) { return member.overBudget ? plain::overBudgetLine(p) : std::string(); };
+  TEST_ASSERT_TRUE(member.boot("claude-haiku-5-5", "2002").ok());
+  sp::Step first = sp::call("append_file", R"({"path":"budget/week47.csv","text":"2026-11-24,market,5.55\n"})");
+  first.usage.input = 1200;
+  member.model.push(first);
+  TEST_ASSERT_EQUAL((int)plain::GateVerdict::Run, (int)message(member, "Add the market to the budget.", "2002").verdict);
+  const std::string neutral = nimbus::orch::frozenReplyTextOther();
+  TEST_ASSERT_EQUAL_STRING(neutral.c_str(), member.out.statusText.c_str());   // no notice reaches this chat
+  TEST_ASSERT_EQUAL_STRING("", message(member, "Still there?", "2002").line.c_str());   // told once here
+  const std::string owner =
+      "Your message was not answered: paid requests to Anthropic are paused: its monthly limit is reached.";
+  TEST_ASSERT_EQUAL_STRING(owner.c_str(), message(member, "Reply with OK.", "1001").line.c_str());
+  TEST_ASSERT_EQUAL_STRING(neutral.c_str(), message(member, "hi", "2003").line.c_str());   // its own once
+  TEST_ASSERT_EQUAL_STRING("", message(member, "OK?", "1001").line.c_str());
+  TEST_ASSERT_EQUAL_STRING("", message(member, "hello?", "2003").line.c_str());
+  // The limit is raised: the next message runs, and a later pause tells each chat again.
+  nimbus::orch::providerPark().resume("anthropic", nimbus::orch::kPauseProviderLimit);
+  member.overBudget = false;
+  member.model.push(sp::say("Back."));
+  TEST_ASSERT_EQUAL((int)plain::GateVerdict::Run, (int)message(member, "Back?", "2002").verdict);
+  nimbus::orch::providerPark().pause("anthropic", nimbus::orch::kPauseProviderLimit);
+  member.overBudget = true;
+  TEST_ASSERT_EQUAL_STRING(owner.c_str(), message(member, "Again?", "1001").line.c_str());
+  TEST_ASSERT_EQUAL_STRING(neutral.c_str(), message(member, "Again?", "2003").line.c_str());
+}
+
 // D1: an empty credit parks the head as billing (the provider's own words decide the kind). The next
 // message gets engine 1's billing short answer and sends nothing. After the park's re-check wait one
 // message goes as the probe; its answer ends the episode, and the turns after it run.
@@ -2278,6 +2316,34 @@ static void test_a_usage_limit_refusal_fails_over_with_the_photos_and_the_true_r
   TEST_ASSERT_TRUE(has(u.slot[1].model, "gpt-5.6-luna"));
 }
 
+// E2-CFIX3 (review of E2-CFIX1): the fail-over size check counts a photo as the body cap does (its share, never
+// its base64). An OpenAI head sends a 300 KB photo inline (about 400 KB of base64, over the fall-back's body cap)
+// and answers 500: the round still moves to Anthropic, whose own request carries the photo by its own rules.
+static void test_a_turn_with_inline_photos_still_fails_over() {
+  static std::vector<uint8_t> big(300 * 1024, 0x55);
+  for (size_t i = 0; i < sizeof(kJpeg); ++i) big[i] = kJpeg[i];
+  nimbus::orch::TurnImages set;
+  nimbus::orch::TurnImage img;
+  img.ref = "0123456789abcdef";
+  img.mime = "image/jpeg";
+  img.bytes = big.data();
+  img.len = big.size();
+  set.items.push_back(img);
+  Device dev;
+  dev.provider = "openai";
+  dev.headHost = "openai";
+  dev.headModel = "gpt-5.6-luna";
+  dev.fallbacks = {{"anthropic", "claude-haiku-5-5"}};
+  TEST_ASSERT_TRUE(dev.boot("gpt-5.6-luna").ok());
+  dev.photos = &set;
+  answerByHost(dev, {{"api.openai.com", sp::httpError(500)}, {"api.anthropic.com", sp::say("A grey square.")}});
+  TEST_ASSERT_TRUE(dev.say("[image 1/1 ref=0123456789abcdef] what is this?").ok());
+  dev.photos = nullptr;
+  TEST_ASSERT_EQUAL(1, (int)dev.out.switches);
+  TEST_ASSERT_EQUAL_STRING("api.anthropic.com", dev.model.last().req.host.c_str());
+  TEST_ASSERT_EQUAL_STRING("A grey square.", dev.out.text.c_str());
+}
+
 // D1: with midTurnFailover off the failed round is the turn's end, on the head only.
 static void test_no_switch_with_the_setting_off() {
   Device dev;
@@ -2591,5 +2657,7 @@ int main(int, char**) {
   RUN_TEST(test_no_switch_with_the_setting_off);
   RUN_TEST(test_a_usage_limit_refusal_fails_over_with_the_photos_and_the_true_reason);
   RUN_TEST(test_a_dollar_limit_pause_is_told_once_and_never_as_a_token_budget);
+  RUN_TEST(test_every_chat_is_told_once_under_a_dollar_limit);
+  RUN_TEST(test_a_turn_with_inline_photos_still_fails_over);
   return UNITY_END();
 }
